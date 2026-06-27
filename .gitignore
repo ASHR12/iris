@@ -1,0 +1,10 @@
+node_modules/
+dist/
+dist-electron/
+.DS_Store
+.env
+.venv/
+__pycache__/
+*.pyc
+*.log
+sidecar/runtime/

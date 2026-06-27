@@ -1,0 +1,37 @@
+{
+  "name": "iris-hermes-voice",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A futuristic Gemini Live voice companion that delegates real work to Hermes.",
+  "type": "module",
+  "main": "electron/main.mjs",
+  "scripts": {
+    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on tcp:5173 && env -u ELECTRON_RUN_AS_NODE electron .\"",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "electron": "env -u ELECTRON_RUN_AS_NODE electron .",
+    "sidecar": ".venv/bin/python sidecar/voice_server.py --mode none",
+    "check:python": ".venv/bin/python -m py_compile sidecar/*.py"
+  },
+  "dependencies": {
+    "@google/genai": "^2.10.0",
+    "@mediapipe/tasks-vision": "^0.10.35",
+    "@vitejs/plugin-react": "latest",
+    "html2canvas": "^1.4.1",
+    "lucide-react": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "typescript": "latest",
+    "vite": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "concurrently": "latest",
+    "electron": "latest",
+    "wait-on": "latest"
+  }
+}
