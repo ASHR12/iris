@@ -315,22 +315,7 @@
   height: 100% !important;
 }
 
-.caption {
-  max-width: 80%;
-  text-align: center;
-  font-size: clamp(18px, 2.4vw, 26px);
-  font-weight: 500;
-  letter-spacing: 0.01em;
-  color: var(--text);
-  min-height: 1.4em;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.caption.dim { color: var(--muted); }
-
+/* Iris-eye aperture around the reactor: subtle, state-colored, not cartoonish. */
 /* Orb chrome: rotating tick ring + sweeping radar arc around the core */
 .orb-ring,
 .orb-radar {
