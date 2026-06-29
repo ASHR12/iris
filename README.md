@@ -374,6 +374,7 @@ Recommended example:
 ```bash
 GEMINI_API_KEY=your_google_ai_studio_key
 IRIS_USER_NAME=there
+IRIS_LOAD_TEST_DATA=false
 GEMINI_LIVE_MODEL=models/gemini-3.1-flash-live-preview
 GEMINI_LIVE_VOICE=Zephyr
 HERMES_API_URL=http://127.0.0.1:8642
@@ -383,6 +384,9 @@ API_SERVER_KEY=iris-local-dev
 `HERMES_BIN` is optional. Set it only if the packaged GUI app cannot find the
 Hermes binary on PATH. If the Hermes gateway is already running, Iris only needs
 `HERMES_API_URL` and `API_SERVER_KEY`.
+
+Set `IRIS_LOAD_TEST_DATA=true` to auto-load demo Comms messages and Hermes task
+cards at startup for UI testing. Leave it `false` for normal use.
 
 ## Exact Google Models, SDKs & Assets (pinned reference)
 

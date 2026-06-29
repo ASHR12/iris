@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld("iris", {
   startSidecar: (options) => ipcRenderer.invoke("sidecar:start", options),
   stopSidecar: () => ipcRenderer.invoke("sidecar:stop"),
   getSidecarStatus: () => ipcRenderer.invoke("sidecar:status"),
+  getAppConfig: () => ipcRenderer.invoke("app:config"),
   sendCommand: (command) => ipcRenderer.invoke("sidecar:command", command),
   sendUiContext: (context) => ipcRenderer.send("iris:ui-context", context),
   sendAudioChunk: (chunk) => ipcRenderer.send("live:audio", chunk),

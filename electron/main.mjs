@@ -99,6 +99,19 @@ function userDisplayName() {
   return (process.env.IRIS_USER_NAME || process.env.USER || process.env.USERNAME || "there").trim();
 }
 
+function envFlag(name, fallback = false) {
+  const value = process.env[name];
+  if (value == null || value === "") return fallback;
+  return ["1", "true", "yes", "on"].includes(String(value).trim().toLowerCase());
+}
+
+function appConfig() {
+  return {
+    loadTestData: envFlag("IRIS_LOAD_TEST_DATA", false),
+    userName: userDisplayName(),
+  };
+}
+
 async function hermesRequest(method, pathName, body = undefined) {
   const response = await fetch(`${hermesBaseUrl()}${pathName}`, {
     method,
@@ -165,11 +178,12 @@ function getIrisUiContext() {
   return irisUiContext;
 }
 
-function controlIrisUi({ action, target_id = undefined }) {
+function controlIrisUi({ action, target_id = undefined, query = undefined }) {
   const allowed = new Set([
     "open_latest_hermes_result",
     "open_current_hermes_result",
     "open_task",
+    "open_task_by_query",
     "open_hermes_history",
     "close_reader",
     "close_history",
@@ -178,8 +192,8 @@ function controlIrisUi({ action, target_id = undefined }) {
   if (!allowed.has(action)) {
     return { status: "error", error: `Unknown UI action: ${action}` };
   }
-  emitToRenderer("iris:ui-action", { action, target_id });
-  return { status: "sent", action, target_id };
+  emitToRenderer("iris:ui-action", { action, target_id, query });
+  return { status: "sent", action, target_id, query };
 }
 
 async function executeTool(name, args = {}) {
@@ -349,11 +363,16 @@ function buildIrisUiTools() {
               action: {
                 type: "string",
                 description:
-                  "One of: open_latest_hermes_result, open_current_hermes_result, open_task, open_hermes_history, close_reader, close_history, close_all_overlays.",
+                  "One of: open_latest_hermes_result, open_current_hermes_result, open_task, open_task_by_query, open_hermes_history, close_reader, close_history, close_all_overlays.",
               },
               target_id: {
                 type: "string",
                 description: "Optional Hermes task id for open_task.",
+              },
+              query: {
+                type: "string",
+                description:
+                  "Loose words from the user for open_task_by_query, e.g. 'failed one', 'Hermes API', 'package Iris', 'two hand design'. The renderer will fuzzy-match this against visible task titles/status. If several cards match closely, Iris will show a chooser overlay with the top matches instead of guessing.",
               },
             },
             required: ["action"],
@@ -396,6 +415,8 @@ function buildLiveConfig() {
             `CRITICAL: Be decisive. Do not ask clarifying questions for actionable tasks. If ${userDisplayName()} asks for a deal, research, coding, checking something, building something, or any work, immediately call submit_hermes_task with the request.`,
             "Routing rule: quick answer or fact lookup -> Google Search; multi-step work, monitoring, files, email, deals, coding, automation, or anything that should continue in the background -> Hermes.",
             "UI control rule: If the user says things like 'open it', 'open that result', 'show latest Hermes result', 'show history', 'close it', 'go back', or 'open the current task', use get_iris_ui_context and control_iris_ui. Do not send those UI-only commands to Hermes.",
+            "If the user refers to a task by partial words from the task header, like 'open the failed one', 'open Hermes API', 'open package Iris', or 'open two hand design', call control_iris_ui with action open_task_by_query and put those words in query. Do not require an exact title match.",
+            "If Iris shows a task chooser because multiple cards matched, the user can click a choice or say first/second/third; use get_iris_ui_context to inspect pendingTaskMatches before opening a specific task.",
             "When a UI command is ambiguous, prefer the expanded task first, then the focused task, then the latest Hermes result. Keep the spoken acknowledgement short.",
             `When you call submit_hermes_task, write the 'task' as a COMPLETE, self-contained brief. Hermes cannot hear this conversation, so do not send a short paraphrase. Expand what ${userDisplayName()} said into a precise, detailed instruction that captures the goal, every concrete detail mentioned (names, numbers, URLs, dates, budgets, preferences, constraints), any reasonable defaults you are assuming, and the expected result/format. Write it as if Hermes has zero prior context.`,
             `After submit_hermes_task returns, say one short acknowledgement like: On it, Hermes is handling that now. (Keep what you SAY to ${userDisplayName()} short, even though the task you SENT to Hermes is detailed.)`,
@@ -633,6 +654,7 @@ app.whenReady().then(() => {
   ipcMain.handle("sidecar:start", () => startLive());
   ipcMain.handle("sidecar:stop", () => stopLive());
   ipcMain.handle("sidecar:status", () => liveStatus);
+  ipcMain.handle("app:config", () => appConfig());
   ipcMain.handle("sidecar:command", (_event, command) => sendCommand(command));
   ipcMain.on("live:audio", (_event, chunk) => sendAudioChunk(chunk));
   ipcMain.on("iris:ui-context", (_event, context) => {

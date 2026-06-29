@@ -139,6 +139,74 @@ function normalizeMarkdown(text?: string): string {
     .replace(/\\t/g, "  ");
 }
 
+const QUERY_STOP_WORDS = new Set([
+  "open",
+  "show",
+  "me",
+  "the",
+  "a",
+  "an",
+  "one",
+  "task",
+  "card",
+  "result",
+  "latest",
+  "current",
+]);
+
+const QUERY_SYNONYMS: Record<string, string> = {
+  herems: "hermes",
+  herme: "hermes",
+  pakage: "package",
+  pkg: "package",
+  fialed: "failed",
+  fail: "failed",
+  errored: "failed",
+  error: "failed",
+  hands: "hand",
+  hadn: "hand",
+  deisgn: "design",
+  desing: "design",
+};
+
+function normalizeQuery(value: string): string[] {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((token) => QUERY_SYNONYMS[token] ?? token)
+    .filter((token) => !QUERY_STOP_WORDS.has(token));
+}
+
+function editDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  const curr = new Array<number>(b.length + 1);
+  for (let i = 1; i <= a.length; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      curr[j] = Math.min(
+        prev[j] + 1,
+        curr[j - 1] + 1,
+        prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+    }
+    for (let j = 0; j <= b.length; j++) prev[j] = curr[j];
+  }
+  return prev[b.length];
+}
+
+function fuzzyTokenMatch(queryToken: string, candidateToken: string): boolean {
+  if (candidateToken.includes(queryToken) || queryToken.includes(candidateToken)) return true;
+  if (queryToken.length < 4 || candidateToken.length < 4) return false;
+  const maxDistance = Math.min(queryToken.length, candidateToken.length) >= 6 ? 2 : 1;
+  return editDistance(queryToken, candidateToken) <= maxDistance;
+}
+
 export default function App() {
   const [sidecarRunning, setSidecarRunning] = useState(false);
   const [sidecarPid, setSidecarPid] = useState<number | null>(null);
@@ -150,9 +218,11 @@ export default function App() {
   const [tasks, setTasks] = useState<TaskCard[]>([]);
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
   const [focusedTaskId, setFocusedTaskId] = useState<string | null>(null);
+  const [taskChooser, setTaskChooser] = useState<{ query: string; matches: TaskCard[] } | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [muted, setMuted] = useState(false);
   const [handControl, setHandControl] = useState(false);
+  const [testDataEnabled, setTestDataEnabled] = useState(false);
 
   const hasBridge = typeof window.iris !== "undefined";
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
@@ -179,6 +249,14 @@ export default function App() {
 
   useEffect(() => {
     if (!hasBridge) return;
+    window.iris.getAppConfig().then((config) => {
+      setTestDataEnabled(Boolean(config.loadTestData));
+      if (config.loadTestData) loadUiTestData();
+    });
+  }, [hasBridge]);
+
+  useEffect(() => {
+    if (!hasBridge) return;
     const offAudio = window.iris.onAudioChunk((chunk) => playGeminiAudio(chunk));
     const offInterrupt = window.iris.onAudioInterrupt(() => flushPlayback());
     return () => {
@@ -200,14 +278,14 @@ export default function App() {
       } else if (key === "s" && sidecarRunning) {
         event.preventDefault();
         stop();
-      } else if (key === "d" && import.meta.env.DEV) {
+      } else if (key === "d" && testDataEnabled) {
         event.preventDefault();
         loadUiTestData();
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [sidecarRunning, hasBridge]);
+  }, [sidecarRunning, hasBridge, testDataEnabled]);
 
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -604,12 +682,61 @@ export default function App() {
     [sortedTasks],
   );
 
+  function findTaskMatches(query?: string): Array<{ task: TaskCard; score: number }> {
+    const queryTokens = normalizeQuery(query ?? "");
+    if (!queryTokens.length) return [];
+
+    const scored: Array<{ task: TaskCard; score: number }> = [];
+    for (const task of sortedTasks) {
+      const haystack = `${task.task} ${task.status} ${task.id}`;
+      const candidateTokens = normalizeQuery(haystack);
+      let score = 0;
+
+      for (const token of queryTokens) {
+        const exact = candidateTokens.includes(token);
+        const fuzzy = exact || candidateTokens.some((candidate) => fuzzyTokenMatch(token, candidate));
+        if (exact) score += 4;
+        else if (fuzzy) score += 2;
+      }
+
+      if ((task.output || task.error) && score > 0) score += 2;
+      if (task.status.toLowerCase() === "failed" && queryTokens.includes("failed")) score += 6;
+      if (!TERMINAL.has(task.status.toLowerCase())) score -= 1;
+
+      if (score > 0) scored.push({ task, score });
+    }
+
+    return scored
+      .sort((a, b) => b.score - a.score || b.task.updatedAt - a.task.updatedAt)
+      .slice(0, 3);
+  }
+
+  function openTaskByQuery(query?: string) {
+    const matches = findTaskMatches(query);
+    if (matches.length === 0) return;
+
+    const [best, second] = matches;
+    const clearWinner = !second || best.score - second.score >= 3;
+    if (clearWinner) {
+      openTask(best.task);
+      return;
+    }
+
+    setTaskChooser({ query: query || "task", matches: matches.map((match) => match.task) });
+  }
+
   useEffect(() => {
     if (!hasBridge) return;
     window.iris.sendUiContext({
       expandedTaskId,
       focusedTaskId,
       latestResultTaskId: latestResultTask?.id ?? null,
+      pendingTaskMatches: taskChooser?.matches.map((task, index) => ({
+        index: index + 1,
+        id: task.id,
+        task: task.task,
+        status: task.status,
+      })) ?? [],
       showHistory,
       tasks: sortedTasks.map((task) => ({
         id: task.id,
@@ -619,11 +746,11 @@ export default function App() {
         updatedAt: task.updatedAt,
       })),
     });
-  }, [hasBridge, expandedTaskId, focusedTaskId, latestResultTask?.id, showHistory, sortedTasks]);
+  }, [hasBridge, expandedTaskId, focusedTaskId, latestResultTask?.id, showHistory, sortedTasks, taskChooser]);
 
   useEffect(() => {
     if (!hasBridge) return;
-    return window.iris.onUiAction(({ action, target_id }) => {
+    return window.iris.onUiAction(({ action, target_id, query }) => {
       const taskById = target_id ? tasks.find((task) => task.id === target_id) : null;
       const currentTask = expandedTaskId ? tasks.find((task) => task.id === expandedTaskId) : null;
       const focusedTask = focusedTaskId ? tasks.find((task) => task.id === focusedTaskId) : null;
@@ -631,6 +758,10 @@ export default function App() {
 
       if (action === "open_task") {
         if (taskById) openTask(taskById);
+        return;
+      }
+      if (action === "open_task_by_query") {
+        openTaskByQuery(query);
         return;
       }
       if (action === "open_current_hermes_result") {
@@ -656,6 +787,7 @@ export default function App() {
       if (action === "close_all_overlays") {
         closeReader();
         setShowHistory(false);
+        setTaskChooser(null);
       }
     });
   }, [hasBridge, tasks, expandedTaskId, focusedTaskId, latestResultTask]);
@@ -673,6 +805,7 @@ export default function App() {
 
   function openTask(task: TaskCard) {
     if (!(task.output || task.error)) return;
+    setTaskChooser(null);
     setExpandedTaskId(task.id);
     setShowHistory(false);
   }
@@ -759,7 +892,7 @@ export default function App() {
               {transcript.length === 0 ? (
                 <div className="empty">
                   <p>No conversation yet. Wake Iris and start talking.</p>
-                  {import.meta.env.DEV ? (
+                  {testDataEnabled ? (
                     <button className="demo-load" onClick={loadUiTestData}>
                       Load demo comms
                     </button>
@@ -854,7 +987,7 @@ export default function App() {
             <Terminal size={14} />
             <span>Work Stream</span>
             {tasks.length > 0 ? <span className="count">{tasks.length}</span> : null}
-            {import.meta.env.DEV ? (
+            {testDataEnabled ? (
               <button className="view-all" onClick={loadUiTestData} title="Load UI test fixture data">
                 Load demo
               </button>
@@ -869,7 +1002,7 @@ export default function App() {
             {tasks.length === 0 ? (
               <div className="empty">
                 <p>No Hermes runs yet. Ask Iris to take on a task.</p>
-                {import.meta.env.DEV ? (
+                {testDataEnabled ? (
                   <button className="demo-load" onClick={loadUiTestData}>
                     Load demo tasks
                   </button>
@@ -918,6 +1051,15 @@ export default function App() {
         tasks={sortedTasks}
         onOpen={openTask}
         onClose={() => setShowHistory(false)}
+      />
+    ) : null}
+
+    {taskChooser ? (
+      <TaskMatchChooser
+        query={taskChooser.query}
+        matches={taskChooser.matches}
+        onOpen={openTask}
+        onClose={() => setTaskChooser(null)}
       />
     ) : null}
 
@@ -1095,6 +1237,61 @@ function HistoryDrawer({
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+function TaskMatchChooser({
+  query,
+  matches,
+  onOpen,
+  onClose,
+}: {
+  query: string;
+  matches: TaskCard[];
+  onOpen: (task: TaskCard) => void;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+      const index = Number(event.key);
+      if (index >= 1 && index <= matches.length) {
+        onOpen(matches[index - 1]);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [matches, onClose, onOpen]);
+
+  return (
+    <div
+      className="match-backdrop"
+      onPointerDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section className="match-card">
+        <div className="match-head">
+          <span>Which task did you mean?</span>
+          <button className="reader-close" onClick={onClose} title="Close">
+            <X size={16} />
+          </button>
+        </div>
+        <p className="match-query">Matched voice query: “{query || "task"}”</p>
+        <div className="match-list">
+          {matches.map((task, index) => (
+            <button key={task.id} className="match-option" onClick={() => onOpen(task)}>
+              <span className="match-number">{index + 1}</span>
+              <span className="match-copy">
+                <strong>{task.task}</strong>
+                <em>{task.status} · {shortRunId(task.id)}</em>
+              </span>
+            </button>
+          ))}
+        </div>
+        <div className="match-hint">Press 1-{matches.length}, click a result, or press Esc.</div>
+      </section>
     </div>
   );
 }

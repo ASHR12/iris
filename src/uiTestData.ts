@@ -95,6 +95,13 @@ export function makeUiTestData(now = Date.now()): {
         updatedAt: now - 120_000,
       },
       {
+        id: "fixture-run-002b-email-digest",
+        task: "Summarize email digest and highlight action items.",
+        status: "completed",
+        output: "Email digest summarized. Two informational newsletters, one product update, and no urgent action items.",
+        updatedAt: now - 125_000,
+      },
+      {
         id: "fixture-run-003-repo-audit",
         task: "Audit the Iris repository for open-source readiness.",
         status: "completed",
@@ -117,6 +124,13 @@ export function makeUiTestData(now = Date.now()): {
         updatedAt: now - 240_000,
       },
       {
+        id: "fixture-run-004b-hermes-api-client",
+        task: "Review Hermes API client error handling and gateway setup.",
+        status: "completed",
+        output: "Hermes API client review complete. Recommend clearer gateway health errors, timeout handling, and setup docs for packaged app users.",
+        updatedAt: now - 245_000,
+      },
+      {
         id: "fixture-run-005-weekend-post",
         task: "Draft a short launch post for Iris.",
         status: "completed",
@@ -131,11 +145,25 @@ export function makeUiTestData(now = Date.now()): {
         updatedAt: now - 360_000,
       },
       {
+        id: "fixture-run-006b-package-readme",
+        task: "Package Iris setup notes for README.",
+        status: "completed",
+        output: "Packaged README notes for macOS and Windows, including `.env` locations, Hermes gateway setup, and unsigned app caveats.",
+        updatedAt: now - 365_000,
+      },
+      {
         id: "fixture-run-007-two-hand-roadmap",
         task: "Design a two-hand gesture roadmap that uses spatial interactions.",
         status: "completed",
         output: "Roadmap created locally. Recommended MVP: two open palms resize the reader, both palms open command overlay, and later two-card compare mode.",
         updatedAt: now - 420_000,
+      },
+      {
+        id: "fixture-run-007b-two-hand-reader",
+        task: "Implement two-hand reader resize design.",
+        status: "completed",
+        output: "Two-hand reader resize implemented as an MVP: two open palms control reader scale, while one open palm still controls scroll.",
+        updatedAt: now - 425_000,
       },
       {
         id: "fixture-run-008-ci-check",
