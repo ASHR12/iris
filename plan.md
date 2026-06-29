@@ -1,27 +1,27 @@
 ---
-name: Iris
-overview: Current implementation snapshot for Iris: a dark-only Electron/React voice companion where Gemini Live handles realtime conversation and delegates long-running work to Hermes through the local API server.
+name: "Iris"
+overview: "Current implementation snapshot for Iris: a dark-only Electron/React voice companion where Gemini Live handles realtime conversation and delegates long-running work to Hermes through the local API server."
 todos:
   - id: confirm-env
-    content: Confirm workspace folder and required secrets/env names before implementation
+    content: "Confirm workspace folder and required secrets/env names before implementation"
     status: pending
   - id: sidecar-prototype
-    content: Create Python Gemini Live sidecar from the AI Studio sample
+    content: "Create Python Gemini Live sidecar from the AI Studio sample"
     status: pending
   - id: hermes-bridge
-    content: Add Hermes health, process start, Runs API, SSE, stop, and approval bridge
+    content: "Add Hermes health, process start, Runs API, SSE, stop, and approval bridge"
     status: pending
   - id: electron-ui
-    content: Create Electron/React futuristic UI and WebSocket protocol
+    content: "Create Electron/React futuristic UI and WebSocket protocol"
     status: pending
   - id: tool-calls
-    content: Register Gemini tools and route tool calls to the Hermes bridge
+    content: "Register Gemini tools and route tool calls to the Hermes bridge"
     status: pending
   - id: wake-word
-    content: Add local wake-word detection after push-to-wake works
+    content: "Add local wake-word detection after push-to-wake works"
     status: pending
   - id: validation
-    content: Run local smoke tests for Gemini audio, Hermes task submission, UI state, and interruption handling
+    content: "Run local smoke tests for Gemini audio, Hermes task submission, UI state, and interruption handling"
     status: pending
 isProject: false
 ---
