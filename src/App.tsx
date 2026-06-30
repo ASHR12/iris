@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   Camera,
+  Check,
+  ChevronDown,
   ChevronRight,
+  Code2,
+  Cpu,
+  FileText,
+  Globe,
   Hand,
   History,
   MessageSquare,
@@ -9,7 +15,9 @@ import {
   MicOff,
   Power,
   Radio,
+  Search,
   Terminal,
+  Wrench,
   X,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -21,6 +29,16 @@ import { makeUiTestData } from "./uiTestData";
 
 type ReactorState = "idle" | "online" | "listening" | "speaking" | "working";
 
+// One Hermes tool invocation, surfaced live from the SSE event stream.
+type TaskStep = {
+  id: string;
+  tool: string;
+  preview?: string;
+  status: "running" | "done" | "error";
+  duration?: number;
+  ts: number;
+};
+
 type TaskCard = {
   id: string;
   task: string;
@@ -28,6 +46,8 @@ type TaskCard = {
   output?: string;
   error?: string;
   updatedAt: number;
+  steps?: TaskStep[];
+  notes?: string;
 };
 
 type LogLine = {
@@ -41,6 +61,22 @@ type TranscriptLine = {
   id: string;
   speaker: string;
   text: string;
+};
+
+// Purely-visual delegation handoff effects (orb <-> Work Stream). These never
+// touch task/voice logic; they only react to changes in the tasks array.
+type HandoffTone = "amber" | "success" | "error";
+
+type Pulse = {
+  id: string;
+  kind: "out" | "in";
+  tone: HandoffTone;
+  fromX: number;
+  fromY: number;
+  dx: number;
+  dy: number;
+  lift: number;
+  angle: number;
 };
 
 const MAX_LOGS = 80;
@@ -85,6 +121,12 @@ function readStatusObject(value: unknown): {
 
 function taskKeyFor(task: string): string {
   return `starting:${task.toLowerCase().trim()}`;
+}
+
+// Stable key for the transient "mission accepted" stamp. Keyed by task text so it
+// survives Hermes swapping the placeholder card for the real run_id card.
+function acceptedKey(task: string): string {
+  return task.toLowerCase().trim();
 }
 
 function shortRunId(id: string): string {
@@ -137,6 +179,84 @@ function normalizeMarkdown(text?: string): string {
     .replace(/\\r\\n/g, "\n")
     .replace(/\\n/g, "\n")
     .replace(/\\t/g, "  ");
+}
+
+type ToolCategory = "browser" | "search" | "code" | "file" | "tool";
+
+function toolCategory(tool: string): ToolCategory {
+  const t = tool.toLowerCase();
+  if (t.includes("search")) return "search";
+  if (t.includes("browser") || t.includes("navigate") || t.includes("fetch") || t.includes("web") || t.includes("url"))
+    return "browser";
+  if (
+    t.includes("code") ||
+    t.includes("python") ||
+    t.includes("shell") ||
+    t.includes("bash") ||
+    t.includes("exec") ||
+    t.includes("terminal") ||
+    t.includes("command") ||
+    t.includes("run")
+  )
+    return "code";
+  if (t.includes("file") || t.includes("read") || t.includes("write") || t.includes("edit") || t.includes("patch"))
+    return "file";
+  return "tool";
+}
+
+function prettyToolName(tool: string): string {
+  return tool.replace(/[_.]+/g, " ").trim();
+}
+
+function hostFromUrl(value?: string): string {
+  if (!value) return "";
+  try {
+    return new URL(value).hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+function baseName(value?: string): string {
+  if (!value) return "";
+  const cleaned = value.split(/[?#]/)[0].replace(/[\\/]+$/, "");
+  const parts = cleaned.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? "";
+}
+
+// Short secondary detail for a tool step: a host for URLs, a filename for file
+// tools, or a trimmed single-line snippet for code/other tools.
+function stepDetail(step: TaskStep): string {
+  if (!step.preview) return "";
+  const category = toolCategory(step.tool);
+  if (category === "browser" || category === "search") {
+    return hostFromUrl(step.preview) || step.preview.slice(0, 60);
+  }
+  if (category === "file") {
+    return baseName(step.preview) || step.preview.slice(0, 48);
+  }
+  const oneLine = step.preview.replace(/\s+/g, " ").trim();
+  return oneLine.length > 64 ? `${oneLine.slice(0, 64)}…` : oneLine;
+}
+
+// One-line "what Hermes is doing right now" headline for an active step.
+function stepHeadline(step: TaskStep): string {
+  const category = toolCategory(step.tool);
+  const detail = stepDetail(step);
+  if (category === "browser") return detail ? `Browsing ${detail}` : "Browsing the web";
+  if (category === "search") return detail ? `Searching ${detail}` : "Searching the web";
+  if (category === "code") return "Running code";
+  if (category === "file") return detail ? `Working on ${detail}` : "Working with files";
+  return `Using ${prettyToolName(step.tool)}`;
+}
+
+function StepIcon({ tool }: { tool: string }) {
+  const category = toolCategory(tool);
+  if (category === "browser") return <Globe size={13} />;
+  if (category === "search") return <Search size={13} />;
+  if (category === "code") return <Code2 size={13} />;
+  if (category === "file") return <FileText size={13} />;
+  return <Cpu size={13} />;
 }
 
 const QUERY_STOP_WORDS = new Set([
@@ -220,9 +340,18 @@ export default function App() {
   const [focusedTaskId, setFocusedTaskId] = useState<string | null>(null);
   const [taskChooser, setTaskChooser] = useState<{ query: string; matches: TaskCard[] } | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [stepsOpenIds, setStepsOpenIds] = useState<Record<string, boolean>>({});
   const [muted, setMuted] = useState(false);
   const [handControl, setHandControl] = useState(false);
   const [testDataEnabled, setTestDataEnabled] = useState(false);
+
+  // Visual handoff (Gemini -> Hermes -> back). Purely decorative.
+  const [pulses, setPulses] = useState<Pulse[]>([]);
+  const [orbFlash, setOrbFlash] = useState<{ id: string; tone: HandoffTone } | null>(null);
+  const [acceptedIds, setAcceptedIds] = useState<Record<string, number>>({});
+  const orbStageRef = useRef<HTMLDivElement | null>(null);
+  const taskStatusRef = useRef<Map<string, string>>(new Map());
+  const lastDelegationRef = useRef<Map<string, number>>(new Map());
 
   const hasBridge = typeof window.iris !== "undefined";
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
@@ -281,6 +410,9 @@ export default function App() {
       } else if (key === "d" && testDataEnabled) {
         event.preventDefault();
         loadUiTestData();
+      } else if (key === "g" && testDataEnabled) {
+        event.preventDefault();
+        simulateHandoff();
       }
     }
     window.addEventListener("keydown", onKey);
@@ -335,6 +467,80 @@ export default function App() {
     setLogs((current) =>
       [{ id: crypto.randomUUID(), level, message, timestamp }, ...current].slice(0, MAX_LOGS),
     );
+  }
+
+  function centerOf(el: HTMLElement | null): { x: number; y: number } | null {
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) return null;
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  }
+
+  // Where a Hermes card lives in the Work Stream: prefer the actual card, fall
+  // back to the top of the work column for brand-new (not yet expandable) runs.
+  function workStreamPoint(taskId: string): { x: number; y: number } | null {
+    const card = document.querySelector<HTMLElement>(`[data-task-id="${CSS.escape(taskId)}"]`);
+    if (card) return centerOf(card);
+    const panel = workScrollRef.current;
+    if (!panel) return null;
+    const r = panel.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + 46 };
+  }
+
+  function flashOrb(tone: HandoffTone) {
+    setOrbFlash({ id: crypto.randomUUID(), tone });
+  }
+
+  function spawnPulse(
+    from: { x: number; y: number } | null,
+    to: { x: number; y: number } | null,
+    kind: "out" | "in",
+    tone: HandoffTone,
+  ) {
+    if (!from || !to) return;
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const dist = Math.hypot(dx, dy);
+    const lift = Math.min(150, Math.max(40, dist * 0.22));
+    const angle = (Math.atan2(dy, dx) * 180) / Math.PI;
+    setPulses((current) => [
+      ...current,
+      { id: crypto.randomUUID(), kind, tone, fromX: from.x, fromY: from.y, dx, dy, lift, angle },
+    ]);
+  }
+
+  // Gemini delegates -> orb flashes amber, a comet flies to the Work Stream, and
+  // the card stamps "mission accepted" as the comet lands.
+  function handoffOut(task: TaskCard) {
+    flashOrb("amber");
+    spawnPulse(centerOf(orbStageRef.current), workStreamPoint(task.id), "out", "amber");
+    // Key the "mission accepted" stamp by task TEXT, not id: Hermes swaps the
+    // placeholder ("starting:…") card for the real run_id card right after submit,
+    // so an id-keyed flag would land on a card that no longer exists. The text
+    // survives that swap, so the stamp reliably shows on the real card.
+    const key = acceptedKey(task.task);
+    window.setTimeout(() => {
+      setAcceptedIds((current) => ({ ...current, [key]: Date.now() }));
+      window.setTimeout(() => {
+        setAcceptedIds((current) => {
+          const next = { ...current };
+          delete next[key];
+          return next;
+        });
+      }, 3200);
+    }, 560);
+  }
+
+  // Hermes finishes -> a comet flies from the card back to the orb, then the orb
+  // flashes (teal for success, coral for failure) as it arrives.
+  function handoffIn(task: TaskCard) {
+    const tone: HandoffTone = TERMINAL.has(task.status.toLowerCase())
+      ? task.error || task.status.toLowerCase().includes("fail") || task.status.toLowerCase().includes("error")
+        ? "error"
+        : "success"
+      : "success";
+    spawnPulse(workStreamPoint(task.id), centerOf(orbStageRef.current), "in", tone);
+    window.setTimeout(() => flashOrb(tone), 680);
   }
 
   async function startAudioCapture() {
@@ -506,11 +712,59 @@ export default function App() {
           output: output || existing?.output,
           error: error || existing?.error,
           updatedAt: eventTime(event),
+          steps: existing?.steps,
+          notes: existing?.notes,
         };
         return [
           next,
           ...current.filter((item) => item.id !== runId && item.id !== placeholderId),
         ].slice(0, 20);
+      });
+      return;
+    }
+
+    if (event.type === "hermes_task_event") {
+      const runId = readString(event.run_id);
+      if (!runId) return;
+      const kind = readString(event.event);
+      const tool = readString(event.tool);
+      const preview = readString(event.preview);
+      const delta = readString(event.delta);
+      const text = readString(event.text);
+      const isError = event.is_error === true;
+      const duration = typeof event.duration === "number" ? event.duration : undefined;
+      const ts = typeof event.ts === "number" ? event.ts * 1000 : Date.now();
+
+      setTasks((current) => {
+        const index = current.findIndex((item) => item.id === runId);
+        if (index === -1) return current;
+        const task = current[index];
+        let steps = task.steps ? [...task.steps] : [];
+        let notes = task.notes ?? "";
+
+        if (kind === "tool.started" && tool) {
+          steps = [
+            ...steps,
+            { id: crypto.randomUUID(), tool, preview: preview || undefined, status: "running" as const, ts },
+          ].slice(-40);
+        } else if (kind === "tool.completed" && tool) {
+          for (let i = steps.length - 1; i >= 0; i--) {
+            if (steps[i].tool === tool && steps[i].status === "running") {
+              steps[i] = { ...steps[i], status: isError ? "error" : "done", duration };
+              break;
+            }
+          }
+        } else if (kind === "message.delta" && delta) {
+          notes = (notes + delta).slice(-600);
+        } else if (kind === "reasoning.available" && text) {
+          notes = text.slice(-600);
+        } else {
+          return current;
+        }
+
+        const next = [...current];
+        next[index] = { ...task, steps, notes };
+        return next;
       });
       return;
     }
@@ -579,6 +833,40 @@ export default function App() {
   const commsScrollRef = useRef<HTMLDivElement | null>(null);
   const liveHandRef = useRef<HandState | null>(hand);
   liveHandRef.current = hand;
+
+  // Visual handoff detector: diff the tasks array to know when Gemini delegated a
+  // new run (one card appears) and when a run completes (active -> terminal). A
+  // bulk load (e.g. demo/history fixture) adds many cards at once, so we only
+  // animate single-card deltas. This reads task state but never mutates it.
+  useEffect(() => {
+    const prev = taskStatusRef.current;
+    const added = tasks.filter((task) => !prev.has(task.id));
+
+    for (const task of tasks) {
+      const before = prev.get(task.id);
+      const now = task.status.toLowerCase();
+      if (before && !TERMINAL.has(before) && TERMINAL.has(now)) {
+        handoffIn(task);
+      }
+    }
+
+    if (added.length === 1) {
+      const task = added[0];
+      if (!TERMINAL.has(task.status.toLowerCase())) {
+        const key = task.task.toLowerCase().trim();
+        const last = lastDelegationRef.current.get(key) ?? 0;
+        // Dedupe the "starting:" placeholder -> real run_id swap.
+        if (Date.now() - last > 5000) {
+          lastDelegationRef.current.set(key, Date.now());
+          handoffOut(task);
+        }
+      }
+    }
+
+    const next = new Map<string, string>();
+    for (const task of tasks) next.set(task.id, task.status.toLowerCase());
+    taskStatusRef.current = next;
+  }, [tasks]);
 
   useEffect(() => {
     if (handError) pushLog("error", `Hand control: ${handError}`);
@@ -668,6 +956,14 @@ export default function App() {
     setMuted(next);
   }
 
+  function setTaskStepsOpen(id: string, open: boolean) {
+    setStepsOpenIds((current) => ({ ...current, [id]: open }));
+  }
+
+  function toggleTaskSteps(id: string) {
+    setStepsOpenIds((current) => ({ ...current, [id]: !current[id] }));
+  }
+
   const sortedTasks = useMemo(() => {
     const isActive = (task: TaskCard) => !TERMINAL.has(task.status.toLowerCase());
     return [...tasks].sort((a, b) => {
@@ -743,10 +1039,12 @@ export default function App() {
         task: task.task,
         status: task.status,
         hasResult: Boolean(task.output || task.error),
+        stepCount: task.steps?.length ?? 0,
+        stepsOpen: Boolean(stepsOpenIds[task.id]),
         updatedAt: task.updatedAt,
       })),
     });
-  }, [hasBridge, expandedTaskId, focusedTaskId, latestResultTask?.id, showHistory, sortedTasks, taskChooser]);
+  }, [hasBridge, expandedTaskId, focusedTaskId, latestResultTask?.id, showHistory, sortedTasks, stepsOpenIds, taskChooser]);
 
   useEffect(() => {
     if (!hasBridge) return;
@@ -788,6 +1086,15 @@ export default function App() {
         closeReader();
         setShowHistory(false);
         setTaskChooser(null);
+        return;
+      }
+      if (action === "show_task_steps" || action === "hide_task_steps") {
+        // Default to the running task ("the hub that's going on"), then fall back
+        // to whatever the user is focused on / the latest result.
+        const activeTask = tasks.find((task) => !TERMINAL.has(task.status.toLowerCase()));
+        const target = taskById || activeTask || focusedTask || fallbackTask;
+        if (target) setTaskStepsOpen(target.id, action === "show_task_steps");
+        return;
       }
     });
   }, [hasBridge, tasks, expandedTaskId, focusedTaskId, latestResultTask]);
@@ -812,6 +1119,31 @@ export default function App() {
 
   function closeReader() {
     setExpandedTaskId(null);
+  }
+
+  // Dev-only (testDataEnabled): drive a full delegation -> completion through the
+  // real setTasks path so the visual handoff can be previewed end to end.
+  function simulateHandoff() {
+    const id = `demo-${crypto.randomUUID().slice(0, 8)}`;
+    const task = `Research the latest AI agent frameworks (${new Date().toLocaleTimeString()}).`;
+    setTasks((current) =>
+      [{ id, task, status: "working", updatedAt: Date.now() }, ...current].slice(0, 20),
+    );
+    window.setTimeout(() => {
+      setTasks((current) =>
+        current.map((item) =>
+          item.id === id
+            ? {
+                ...item,
+                status: "completed",
+                output:
+                  "## Demo handoff complete\n\nHermes finished the simulated research run and sent the result back to Iris.",
+                updatedAt: Date.now(),
+              }
+            : item,
+        ),
+      );
+    }, 2800);
   }
 
   function loadUiTestData() {
@@ -944,11 +1276,19 @@ export default function App() {
         <div className="deck-center">
           <div
             className="orb-stage"
+            ref={orbStageRef}
             style={{ "--orb-accent": ORB_ACCENT[reactorState] } as CSSProperties}
           >
             <span className="orb-ring" />
             <span className="orb-radar" />
             <ReactorCore state={reactorState} levelRef={audioLevelRef} />
+            {orbFlash ? (
+              <span
+                key={orbFlash.id}
+                className={`orb-flash ${orbFlash.tone}`}
+                onAnimationEnd={() => setOrbFlash(null)}
+              />
+            ) : null}
           </div>
           <Telemetry
             awake={sidecarRunning}
@@ -1013,6 +1353,9 @@ export default function App() {
                 <WorkCard
                   key={task.id}
                   task={task}
+                  accepted={Boolean(acceptedIds[acceptedKey(task.task)])}
+                  stepsOpen={Boolean(stepsOpenIds[task.id])}
+                  onToggleSteps={() => toggleTaskSteps(task.id)}
                   onFocus={() => setFocusedTaskId(task.id)}
                   onOpen={() => openTask(task)}
                 />
@@ -1062,6 +1405,33 @@ export default function App() {
         onClose={() => setTaskChooser(null)}
       />
     ) : null}
+
+    <div className="handoff-layer" aria-hidden="true">
+      {pulses.map((pulse) => (
+        <span
+          key={pulse.id}
+          className={`handoff-pulse ${pulse.kind} ${pulse.tone}`}
+          style={
+            {
+              "--fx": `${pulse.fromX}px`,
+              "--fy": `${pulse.fromY}px`,
+              "--dx": `${pulse.dx}px`,
+              "--dy": `${pulse.dy}px`,
+              "--lift": `${pulse.lift}px`,
+              "--angle": `${pulse.angle}deg`,
+            } as CSSProperties
+          }
+          onAnimationEnd={(event) => {
+            if (event.target === event.currentTarget) {
+              setPulses((current) => current.filter((item) => item.id !== pulse.id));
+            }
+          }}
+        >
+          <span className="comet-tail" />
+          <span className="comet-head" />
+        </span>
+      ))}
+    </div>
 
     {handControl && hand.present
       ? (hand.hands.length ? hand.hands : hand.point ? [{ ...hand, id: "hand-0", point: hand.point }] : []).map(
@@ -1169,19 +1539,41 @@ function Telemetry({
   );
 }
 
-function WorkCard({ task, onFocus, onOpen }: { task: TaskCard; onFocus: () => void; onOpen: () => void }) {
+function WorkCard({
+  task,
+  accepted = false,
+  stepsOpen = false,
+  onToggleSteps,
+  onFocus,
+  onOpen,
+}: {
+  task: TaskCard;
+  accepted?: boolean;
+  stepsOpen?: boolean;
+  onToggleSteps?: () => void;
+  onFocus: () => void;
+  onOpen: () => void;
+}) {
+  const [localStepsOpen, setLocalStepsOpen] = useState(false);
+  const showSteps = onToggleSteps ? stepsOpen : localStepsOpen;
   const expandable = Boolean(task.output || task.error);
   const status = task.status.toLowerCase();
   const active = !TERMINAL.has(status);
+  const steps = task.steps ?? [];
+  const runningStep = [...steps].reverse().find((step) => step.status === "running");
+
   return (
     <article
-      className={`wcard ${active ? "working" : ""} ${expandable ? "expandable" : ""}`}
+      className={`wcard ${active ? "working" : ""} ${expandable ? "expandable" : ""} ${
+        accepted ? "accepted" : ""
+      }`}
       data-task-id={expandable ? task.id : undefined}
       onPointerEnter={onFocus}
       onFocus={onFocus}
       onClick={onOpen}
       tabIndex={expandable ? 0 : -1}
     >
+      {accepted ? <span className="wcard-accepted">Mission accepted</span> : null}
       <div className="wcard-top">
         <span className={`badge ${status}`}>{task.status}</span>
         <code title={task.id}>{shortRunId(task.id)}</code>
@@ -1190,6 +1582,60 @@ function WorkCard({ task, onFocus, onOpen }: { task: TaskCard; onFocus: () => vo
       {expandable ? (
         <div className="wcard-preview">{normalizeMarkdown(task.error || task.output)}</div>
       ) : null}
+
+      {active && (runningStep || steps.length > 0) ? (
+        <div className="activity-now">
+          <span className="activity-spark" />
+          <span className="activity-now-text">
+            {runningStep ? stepHeadline(runningStep) : "Thinking…"}
+          </span>
+        </div>
+      ) : null}
+
+      {active && task.notes ? <p className="activity-notes">{task.notes.slice(-180)}</p> : null}
+
+      {steps.length > 0 ? (
+        <div className="activity" onClick={(event) => event.stopPropagation()}>
+          <button
+            type="button"
+            className={`activity-toggle ${showSteps ? "open" : ""}`}
+            onClick={() => (onToggleSteps ? onToggleSteps() : setLocalStepsOpen((current) => !current))}
+          >
+            <Wrench size={11} />
+            {steps.length} step{steps.length === 1 ? "" : "s"}
+            <ChevronDown size={12} className="chev" />
+          </button>
+          {showSteps ? (
+            <ul className="activity-timeline">
+              {steps.map((step) => {
+                const detail = stepDetail(step);
+                return (
+                  <li key={step.id} className={`activity-step ${step.status} ${toolCategory(step.tool)}`}>
+                    <span className="step-icon">
+                      <StepIcon tool={step.tool} />
+                    </span>
+                    <span className="step-main">
+                      <span className="step-tool">{prettyToolName(step.tool)}</span>
+                      {detail ? <span className="step-detail">{detail}</span> : null}
+                    </span>
+                    <span className="step-meta">
+                      {step.duration !== undefined ? <em>{step.duration.toFixed(1)}s</em> : null}
+                      {step.status === "running" ? (
+                        <span className="step-run" />
+                      ) : step.status === "error" ? (
+                        <X size={12} className="step-x" />
+                      ) : (
+                        <Check size={12} className="step-ok" />
+                      )}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
+
       {active ? (
         <div className="wcard-progress">
           <i />

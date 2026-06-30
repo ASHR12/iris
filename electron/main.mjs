@@ -188,6 +188,8 @@ function controlIrisUi({ action, target_id = undefined, query = undefined }) {
     "close_reader",
     "close_history",
     "close_all_overlays",
+    "show_task_steps",
+    "hide_task_steps",
   ]);
   if (!allowed.has(action)) {
     return { status: "error", error: `Unknown UI action: ${action}` };
@@ -217,9 +219,89 @@ async function executeTool(name, args = {}) {
   }
 }
 
+// Forward only the granular events the Work Stream surfaces. The top-level API
+// error block has no `event` field, so checking for it also filters errors out.
+function forwardHermesEvent(runId, task, parsed) {
+  const kind = typeof parsed.event === "string" ? parsed.event : "";
+  if (!kind) return;
+  const relevant = new Set([
+    "tool.started",
+    "tool.completed",
+    "message.delta",
+    "reasoning.available",
+    "approval.requested",
+    "approval.required",
+    "approval.resolved",
+    "run.completed",
+    "run.failed",
+  ]);
+  if (!relevant.has(kind)) return;
+  emitEvent({
+    type: "hermes_task_event",
+    run_id: runId,
+    task,
+    event: kind,
+    ts: typeof parsed.timestamp === "number" ? parsed.timestamp : Date.now() / 1000,
+    tool: typeof parsed.tool === "string" ? parsed.tool : undefined,
+    preview: typeof parsed.preview === "string" ? parsed.preview : undefined,
+    duration: typeof parsed.duration === "number" ? parsed.duration : undefined,
+    is_error: parsed.error === true,
+    delta: typeof parsed.delta === "string" ? parsed.delta : undefined,
+    text: typeof parsed.text === "string" ? parsed.text : undefined,
+  });
+}
+
+// Connect once to the one-shot SSE event stream and stream granular activity
+// (tool use, browser/file actions, partial notes) to the renderer. This is
+// additive telemetry only; run status/output/completion stay driven by the
+// polling loop in watchHermesRun, so this can never regress the core flow.
+async function streamHermesEvents(runId, task) {
+  try {
+    const response = await fetch(`${hermesBaseUrl()}/v1/runs/${runId}/events`, {
+      method: "GET",
+      headers: hermesHeaders(),
+    });
+    if (!response.ok || !response.body) return;
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (hermesRuns.has(runId)) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let sep;
+      while ((sep = buffer.indexOf("\n\n")) !== -1) {
+        const block = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        const dataLine = block.split("\n").find((line) => line.startsWith("data:"));
+        if (!dataLine) continue;
+        const payload = dataLine.slice(5).trim();
+        if (!payload) continue;
+        try {
+          forwardHermesEvent(runId, task, JSON.parse(payload));
+        } catch {
+          // Skip malformed SSE chunks.
+        }
+      }
+    }
+    try {
+      await reader.cancel();
+    } catch {
+      // Best-effort cleanup.
+    }
+  } catch {
+    // Event stream is best-effort; the polling loop remains the source of truth.
+  }
+}
+
 async function watchHermesRun(runId, task) {
   if (hermesRuns.has(runId)) return;
   hermesRuns.set(runId, true);
+  // Fire-and-forget granular activity stream alongside the status poll below.
+  streamHermesEvents(runId, task);
   const terminal = new Set(["completed", "failed", "cancelled", "canceled", "error"]);
   let lastStatus = "";
   try {
@@ -363,11 +445,12 @@ function buildIrisUiTools() {
               action: {
                 type: "string",
                 description:
-                  "One of: open_latest_hermes_result, open_current_hermes_result, open_task, open_task_by_query, open_hermes_history, close_reader, close_history, close_all_overlays.",
+                  "One of: open_latest_hermes_result, open_current_hermes_result, open_task, open_task_by_query, open_hermes_history, close_reader, close_history, close_all_overlays, show_task_steps, hide_task_steps. Use show_task_steps/hide_task_steps to expand or collapse the live tool-step timeline on a Hermes card (defaults to the currently running task).",
               },
               target_id: {
                 type: "string",
-                description: "Optional Hermes task id for open_task.",
+                description:
+                  "Optional Hermes task id for open_task, show_task_steps, or hide_task_steps. If omitted for steps, Iris uses the currently running task.",
               },
               query: {
                 type: "string",
@@ -415,6 +498,7 @@ function buildLiveConfig() {
             `CRITICAL: Be decisive. Do not ask clarifying questions for actionable tasks. If ${userDisplayName()} asks for a deal, research, coding, checking something, building something, or any work, immediately call submit_hermes_task with the request.`,
             "Routing rule: quick answer or fact lookup -> Google Search; multi-step work, monitoring, files, email, deals, coding, automation, or anything that should continue in the background -> Hermes.",
             "UI control rule: If the user says things like 'open it', 'open that result', 'show latest Hermes result', 'show history', 'close it', 'go back', or 'open the current task', use get_iris_ui_context and control_iris_ui. Do not send those UI-only commands to Hermes.",
+            "Also handle these UI-only commands with control_iris_ui (never Hermes): 'show the steps' / 'what is it doing' / 'show what tools it used' -> show_task_steps (defaults to the running task; pass target_id only if they name a specific card); 'hide the steps' -> hide_task_steps.",
             "If the user refers to a task by partial words from the task header, like 'open the failed one', 'open Hermes API', 'open package Iris', or 'open two hand design', call control_iris_ui with action open_task_by_query and put those words in query. Do not require an exact title match.",
             "If Iris shows a task chooser because multiple cards matched, the user can click a choice or say first/second/third; use get_iris_ui_context to inspect pendingTaskMatches before opening a specific task.",
             "When a UI command is ambiguous, prefer the expanded task first, then the focused task, then the latest Hermes result. Keep the spoken acknowledgement short.",
