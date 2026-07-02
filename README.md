@@ -320,7 +320,9 @@ Please keep the two golden rules: **voice must never regress because of gestures
 
 <div align="center">
 
-Built by **[Ashutosh Shrivastava](https://x.com/ai_for_success)** · [X / Twitter](https://x.com/ai_for_success) · [GitHub](https://github.com/ASHR12)
+Built by **[Ashutosh Shrivastava](http://ashutoshai.com/)** — AI consultant & tech storyteller, 1M+ weekly reach on X
+
+[🌐 Website](http://ashutoshai.com/) · [𝕏 / Twitter](https://x.com/ai_for_success) · [YouTube](https://www.youtube.com/@AIforSuccess) · [LinkedIn](https://www.linkedin.com/in/aiforsuccess/) · [Instagram](https://www.instagram.com/ashutosh.s.ai/) · [Threads](https://www.threads.com/@ashutosh.s.ai) · [GitHub](https://github.com/ASHR12)
 
 Crafted with **Gemini Live**, **Hermes Agent**, and an unreasonable love for arc reactors.
 
