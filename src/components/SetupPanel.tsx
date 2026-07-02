@@ -27,6 +27,7 @@ type Draft = {
   IRIS_USER_NAME: string;
   IRIS_LOAD_TEST_DATA: string;
   IRIS_WAKE_WORD: string;
+  IRIS_SOUNDS: string;
 };
 
 const WIZARD_STEPS = ["welcome", "gemini", "hermes", "you", "permissions", "finish"] as const;
@@ -57,6 +58,7 @@ export default function SetupPanel({
     IRIS_USER_NAME: config.userName,
     IRIS_LOAD_TEST_DATA: config.loadTestData ? "true" : "false",
     IRIS_WAKE_WORD: config.wakeWord ? "true" : "false",
+    IRIS_SOUNDS: config.sounds ? "true" : "false",
   });
   const [step, setStep] = useState(0);
   const [gemini, setGemini] = useState<TestState>({ status: "idle" });
@@ -356,6 +358,22 @@ export default function SetupPanel({
         <small className="setup-note">
           When on, Iris listens locally for “Hey Iris” and wakes hands-free (same as pressing W). Runs fully on-device —
           no audio leaves your machine. Needs microphone permission.
+        </small>
+      </label>
+      <label className="setup-field">
+        <span>Interface sounds</span>
+        <ThemedSelect
+          ariaLabel="Interface sounds"
+          value={draft.IRIS_SOUNDS}
+          options={[
+            { value: "true", label: "On" },
+            { value: "false", label: "Off" },
+          ]}
+          onChange={(value) => set("IRIS_SOUNDS", value)}
+        />
+        <small className="setup-note">
+          Subtle audio cues for wake, sleep, task sent, task done, and approval requests. Synthesized locally — quiet by
+          design.
         </small>
       </label>
     </Section>

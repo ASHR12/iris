@@ -41,6 +41,7 @@ type IrisConfig = {
   userName: string;
   loadTestData: boolean;
   wakeWord: boolean;
+  sounds: boolean;
   configured: boolean;
   voices: string[];
   models: string[];
@@ -88,7 +89,12 @@ type IrisApi = {
   startSidecar: (options?: { mode?: SidecarMode }) => Promise<{ running: boolean; pid: number | null }>;
   stopSidecar: () => Promise<{ running: boolean; pid: number | null }>;
   getSidecarStatus: () => Promise<{ running: boolean; pid: number | null }>;
-  getAppConfig: () => Promise<{ loadTestData: boolean; userName: string; configured: boolean }>;
+  getAppConfig: () => Promise<{
+    loadTestData: boolean;
+    sounds: boolean;
+    userName: string;
+    configured: boolean;
+  }>;
   getConfig: () => Promise<IrisConfig>;
   saveConfig: (updates: Record<string, string>) => Promise<IrisConfig>;
   testGemini: (key?: string) => Promise<IrisTestResult>;

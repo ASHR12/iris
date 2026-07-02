@@ -63,7 +63,11 @@ function Telemetry({
 
 export default function CenterStage({
   reactorState,
-  audioLevelRef,
+  inputLevelRef,
+  outputLevelRef,
+  thinking,
+  wakeKey,
+  rippleKey,
   orbStageRef,
   orbFlash,
   onOrbFlashEnd,
@@ -80,7 +84,11 @@ export default function CenterStage({
   wakeWordEnabled,
 }: {
   reactorState: ReactorState;
-  audioLevelRef: { current: number };
+  inputLevelRef: { current: number };
+  outputLevelRef: { current: number };
+  thinking: boolean;
+  wakeKey: number;
+  rippleKey: number;
   orbStageRef: RefObject<HTMLDivElement | null>;
   orbFlash: { id: string; tone: HandoffTone } | null;
   onOrbFlashEnd: () => void;
@@ -105,7 +113,14 @@ export default function CenterStage({
       >
         <span className="orb-ring" />
         <span className="orb-radar" />
-        <ReactorCore state={reactorState} levelRef={audioLevelRef} />
+        <ReactorCore
+          state={reactorState}
+          inputLevelRef={inputLevelRef}
+          outputLevelRef={outputLevelRef}
+          thinking={thinking}
+          wakeKey={wakeKey}
+          rippleKey={rippleKey}
+        />
         {orbFlash ? (
           <span key={orbFlash.id} className={`orb-flash ${orbFlash.tone}`} onAnimationEnd={onOrbFlashEnd} />
         ) : null}

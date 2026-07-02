@@ -11,6 +11,12 @@ export function useHandoffFx(
   tasks: TaskCard[],
   orbStageRef: RefObject<HTMLDivElement | null>,
   workScrollRef: RefObject<HTMLDivElement | null>,
+  callbacks?: {
+    /** A new run was delegated (comet flies out). */
+    onDelegate?: () => void;
+    /** A run reached a terminal state (comet flies back). */
+    onComplete?: (tone: HandoffTone) => void;
+  },
 ) {
   const [pulses, setPulses] = useState<Pulse[]>([]);
   const [orbFlash, setOrbFlash] = useState<{ id: string; tone: HandoffTone } | null>(null);
@@ -62,6 +68,7 @@ export function useHandoffFx(
   // the card stamps "task submitted" as the comet lands.
   function handoffOut(task: TaskCard) {
     flashOrb("amber");
+    callbacks?.onDelegate?.();
     spawnPulse(centerOf(orbStageRef.current), workStreamPoint(task.id), "out", "amber");
     // Key the stamp by task TEXT, not id: Hermes swaps the placeholder
     // ("starting:…") card for the real run_id card right after submit, so an
@@ -88,6 +95,7 @@ export function useHandoffFx(
         : "success"
       : "success";
     spawnPulse(workStreamPoint(task.id), centerOf(orbStageRef.current), "in", tone);
+    callbacks?.onComplete?.(tone);
     window.setTimeout(() => flashOrb(tone), 680);
   }
 

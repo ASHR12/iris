@@ -9,6 +9,7 @@ import {
   taskKeyFor,
 } from "./lib/tasks";
 import { makeUiTestData } from "./lib/uiTestData";
+import { uiSounds } from "./lib/sounds";
 import { useAudioPipeline } from "./hooks/useAudioPipeline";
 import { useHandoffFx } from "./hooks/useHandoffFx";
 import { useHandControl, type HandState } from "./hooks/useHandControl";
@@ -59,6 +60,16 @@ export default function App() {
   const [bootClosing, setBootClosing] = useState(false);
   const bootStartRef = useRef(0);
 
+  // Orb micro-expressions + sound cues.
+  const [orbThinking, setOrbThinking] = useState(false);
+  const [wakeKey, setWakeKey] = useState(0);
+  const [rippleKey, setRippleKey] = useState(0);
+  const [soundsEnabled, setSoundsEnabled] = useState(true);
+  const soundsRef = useRef(true);
+  soundsRef.current = soundsEnabled;
+  const audioStateRef = useRef(audioState);
+  audioStateRef.current = audioState;
+
   const hasBridge = typeof window.iris !== "undefined";
   const sessionStartRef = useRef<number | null>(null);
   const orbStageRef = useRef<HTMLDivElement | null>(null);
@@ -76,7 +87,71 @@ export default function App() {
     tasks,
     orbStageRef,
     workScrollRef,
+    {
+      onDelegate: () => {
+        if (soundsRef.current) uiSounds.taskSent();
+      },
+      onComplete: (tone) => {
+        if (soundsRef.current) (tone === "error" ? uiSounds.taskFailed : uiSounds.taskDone)();
+      },
+    },
   );
+
+  // Wake/sleep edges: fire the orb's double-pulse and the audio cues.
+  const prevRunningRef = useRef(false);
+  useEffect(() => {
+    const wasRunning = prevRunningRef.current;
+    prevRunningRef.current = sidecarRunning;
+    if (!wasRunning && sidecarRunning) {
+      setWakeKey((key) => key + 1);
+      if (soundsRef.current) uiSounds.wake();
+    } else if (wasRunning && !sidecarRunning) {
+      setOrbThinking(false);
+      if (soundsRef.current) uiSounds.sleep();
+    }
+  }, [sidecarRunning]);
+
+  // "Thinking" detector: you stopped talking but Iris hasn't started speaking
+  // yet — that gap gets the orbiting swirl. Driven by the real mic level, so
+  // it needs no extra events from the model.
+  useEffect(() => {
+    if (!sidecarRunning) return;
+    let talking = false;
+    let lastLoudAt = 0;
+    let thinkingSince = 0;
+    let thinking = false;
+
+    const id = window.setInterval(() => {
+      const now = performance.now();
+      const level = audio.inputLevelRef.current;
+      const speaking = audioStateRef.current === "speaking";
+      let next = thinking;
+
+      if (speaking) {
+        next = false;
+        talking = false;
+      } else if (level > 0.13) {
+        talking = true;
+        lastLoudAt = now;
+        next = false;
+      } else if (talking && now - lastLoudAt > 420) {
+        talking = false;
+        thinkingSince = now;
+        next = true;
+      }
+      if (next && now - thinkingSince > 6000) next = false;
+
+      if (next !== thinking) {
+        thinking = next;
+        setOrbThinking(next);
+      }
+    }, 120);
+
+    return () => {
+      window.clearInterval(id);
+      setOrbThinking(false);
+    };
+  }, [sidecarRunning]);
 
   useEffect(() => {
     if (!hasBridge) return;
@@ -91,6 +166,7 @@ export default function App() {
     if (!hasBridge) return;
     window.iris.getAppConfig().then((config) => {
       setTestDataEnabled(Boolean(config.loadTestData));
+      setSoundsEnabled(config.sounds !== false);
       if (config.loadTestData) loadUiTestData();
       else initHermesSession();
     });
@@ -378,6 +454,8 @@ export default function App() {
       const speaker = readString(event.speaker, "unknown");
       const text = readString(event.text);
       if (text.trim()) {
+        // Your words just got locked in — the orb answers with a soft ripple.
+        if (/you|user/i.test(speaker)) setRippleKey((key) => key + 1);
         setTranscript((current) =>
           [...current, { id: crypto.randomUUID(), speaker, text }].slice(-40),
         );
@@ -418,6 +496,9 @@ export default function App() {
       const runId = readString(event.run_id);
       if (!runId) return;
       const kind = readString(event.event);
+      if ((kind === "approval.requested" || kind === "approval.required") && soundsRef.current) {
+        uiSounds.approval();
+      }
       const tool = readString(event.tool);
       const preview = readString(event.preview);
       const delta = readString(event.delta);
@@ -804,7 +885,11 @@ export default function App() {
       {uiMode === "hud" ? (
         <HudShell
           reactorState={reactorState}
-          audioLevelRef={audio.audioLevelRef}
+          inputLevelRef={audio.inputLevelRef}
+          outputLevelRef={audio.outputLevelRef}
+          thinking={orbThinking}
+          wakeKey={wakeKey}
+          rippleKey={rippleKey}
           orbStageRef={orbStageRef}
           orbFlash={orbFlash}
           onOrbFlashEnd={clearOrbFlash}
@@ -875,7 +960,11 @@ export default function App() {
           {/* CENTER — Iris */}
           <CenterStage
             reactorState={reactorState}
-            audioLevelRef={audio.audioLevelRef}
+            inputLevelRef={audio.inputLevelRef}
+            outputLevelRef={audio.outputLevelRef}
+            thinking={orbThinking}
+            wakeKey={wakeKey}
+            rippleKey={rippleKey}
             orbStageRef={orbStageRef}
             orbFlash={orbFlash}
             onOrbFlashEnd={clearOrbFlash}
@@ -960,6 +1049,7 @@ export default function App() {
             setFullConfig(config);
             setTestDataEnabled(config.loadTestData);
             setWakeWordEnabled(config.wakeWord);
+            setSoundsEnabled(config.sounds);
           }}
           onStart={() => {
             if (!sidecarRunning) start();

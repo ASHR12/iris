@@ -43,18 +43,61 @@ function drawArc(
 export default function ReactorCore({
   state,
   levelRef,
+  inputLevelRef,
+  outputLevelRef,
+  thinking = false,
+  wakeKey = 0,
+  rippleKey = 0,
 }: {
   state: ReactorState;
+  /** Legacy combined level (still honored if the split refs are not given). */
   levelRef?: { current: number };
+  /** Mic level — drives the sharp radial-bar "you are talking" signature. */
+  inputLevelRef?: { current: number };
+  /** Playback level — drives the smooth-wave "Iris is talking" signature. */
+  outputLevelRef?: { current: number };
+  /** Orbiting "thinking" swirl (the gap between your words and Iris's voice). */
+  thinking?: boolean;
+  /** Increment to fire the wake double-pulse. */
+  wakeKey?: number;
+  /** Increment to fire a single "understood you" ripple. */
+  rippleKey?: number;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const stateRef = useRef<ReactorState>(state);
   const energyRef = useRef(0);
   const liveRef = useRef(0);
+  const inRef = useRef(0);
+  const outRef = useRef(0);
+  const thinkingRef = useRef(thinking);
+  const thinkingAlphaRef = useRef(0);
+  const ripplesRef = useRef<Array<{ start: number; kind: "wake" | "heard" }>>([]);
+  const boostRef = useRef(0);
 
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+
+  useEffect(() => {
+    thinkingRef.current = thinking;
+  }, [thinking]);
+
+  // Wake: two quick expanding rings + a temporary energy surge.
+  useEffect(() => {
+    if (!wakeKey) return;
+    ripplesRef.current.push({ start: performance.now(), kind: "wake" });
+    boostRef.current = 0.5;
+    const second = window.setTimeout(() => {
+      ripplesRef.current.push({ start: performance.now(), kind: "wake" });
+    }, 170);
+    return () => window.clearTimeout(second);
+  }, [wakeKey]);
+
+  // "Understood you": one soft ripple as your words are locked in.
+  useEffect(() => {
+    if (!rippleKey) return;
+    ripplesRef.current.push({ start: performance.now(), kind: "heard" });
+  }, [rippleKey]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -94,12 +137,20 @@ export default function ReactorCore({
       const s = stateRef.current;
       const palette = PALETTES[s];
       energyRef.current += (targetEnergy(s) - energyRef.current) * 0.06;
-      // Live audio level (mic in / Gemini out) reacts fast on top of the smooth
-      // base energy so the core visibly breathes with the actual voice.
-      const liveTarget = levelRef ? Math.max(0, Math.min(1, levelRef.current)) : 0;
-      liveRef.current += (liveTarget - liveRef.current) * 0.35;
-      const live = liveRef.current;
-      const energy = Math.min(1, energyRef.current + live * 0.6);
+      // Live audio levels react fast on top of the smooth base energy so the
+      // core visibly breathes with the actual voice. Mic and playback are
+      // tracked separately for the two voice signatures.
+      const inTarget = inputLevelRef ? Math.max(0, Math.min(1, inputLevelRef.current)) : 0;
+      const outTarget = outputLevelRef ? Math.max(0, Math.min(1, outputLevelRef.current)) : 0;
+      inRef.current += (inTarget - inRef.current) * 0.35;
+      outRef.current += (outTarget - outRef.current) * 0.35;
+      const legacyTarget = levelRef ? Math.max(0, Math.min(1, levelRef.current)) : 0;
+      liveRef.current += (legacyTarget - liveRef.current) * 0.35;
+      const inLive = inRef.current;
+      const outLive = outRef.current;
+      const live = Math.max(liveRef.current, inLive, outLive);
+      boostRef.current *= 0.945; // wake surge decays over ~1s
+      const energy = Math.min(1, energyRef.current + live * 0.6 + boostRef.current);
       const t = time / 1000;
 
       const cx = width / 2;
@@ -215,11 +266,101 @@ export default function ReactorCore({
       drawArc(c, cx, cy, coreR, 0, Math.PI * 2, palette.accent, 1.4, 0.85, 8);
       drawArc(c, cx, cy, coreR * 1.72, t * 0.6, t * 0.6 + Math.PI * 1.65, palette.primary, 1.3, 0.5, 5);
 
-      // Voice-reactive ring: radius + brightness pulse with the live audio level.
-      if (live > 0.01) {
+      // Legacy combined voice ring (only when the split refs are not wired,
+      // e.g. the boot screen orb).
+      if (!inputLevelRef && !outputLevelRef && live > 0.01) {
         const reactR = unit * (0.46 + live * 0.34);
         drawArc(c, cx, cy, reactR, 0, Math.PI * 2, palette.secondary, 1 + live * 3, 0.18 + live * 0.6, live * 18);
       }
+
+      // ===== Micro-expressions (additive layers; the core above is untouched) =====
+
+      // YOUR voice: sharp radial bars, like a spectral halo around the orb.
+      if (inLive > 0.025) {
+        const bars = 56;
+        const baseR = unit * 0.5;
+        const alpha = Math.min(0.85, inLive * 2.4);
+        c.lineCap = "round";
+        for (let i = 0; i < bars; i++) {
+          const a = (i / bars) * Math.PI * 2 + t * 0.06;
+          const jitter =
+            0.55 + 0.45 * Math.sin(i * 3.7 + t * 11.3) + 0.25 * Math.sin(i * 1.31 - t * 7.1);
+          const len = 3 + inLive * 42 * Math.max(0.08, jitter);
+          c.beginPath();
+          c.strokeStyle = `rgba(${palette.secondary}, ${alpha})`;
+          c.lineWidth = 1.8;
+          c.moveTo(cx + Math.cos(a) * baseR, cy + Math.sin(a) * baseR);
+          c.lineTo(cx + Math.cos(a) * (baseR + len), cy + Math.sin(a) * (baseR + len));
+          c.stroke();
+        }
+      }
+
+      // IRIS's voice: a smooth breathing wave ring (low harmonics, soft glow).
+      if (outLive > 0.025) {
+        const points = 120;
+        const baseR = unit * 0.6;
+        const amp = unit * (0.025 + 0.15 * outLive);
+        const waveAlpha = 0.22 + outLive * 0.6;
+        for (let echo = 0; echo < 2; echo++) {
+          c.beginPath();
+          for (let i = 0; i <= points; i++) {
+            const th = (i / points) * Math.PI * 2;
+            const r =
+              baseR * (echo ? 0.92 : 1) +
+              amp *
+                (0.5 * Math.sin(3 * th + t * 2.2 + echo) +
+                  0.32 * Math.sin(5 * th - t * 2.9) +
+                  0.18 * Math.sin(9 * th + t * 1.6));
+            const x = cx + Math.cos(th) * r;
+            const y = cy + Math.sin(th) * r;
+            if (i === 0) c.moveTo(x, y);
+            else c.lineTo(x, y);
+          }
+          c.closePath();
+          c.strokeStyle = `rgba(${palette.primary}, ${echo ? waveAlpha * 0.35 : waveAlpha})`;
+          c.lineWidth = echo ? 1.4 : 2.6;
+          c.shadowColor = `rgba(${palette.glow}, ${waveAlpha})`;
+          c.shadowBlur = echo ? 0 : 12;
+          c.stroke();
+          c.shadowBlur = 0;
+        }
+      }
+
+      // Thinking swirl: two orbiting sparks with comet tails while Iris forms
+      // its reply (eased in/out so it never pops).
+      thinkingAlphaRef.current += ((thinkingRef.current ? 1 : 0) - thinkingAlphaRef.current) * 0.07;
+      const thinkAlpha = thinkingAlphaRef.current;
+      if (thinkAlpha > 0.02) {
+        const orbitR = unit * 0.29;
+        for (let k = 0; k < 2; k++) {
+          const a = t * 2.7 + k * Math.PI;
+          drawArc(c, cx, cy, orbitR, a - 0.85, a, palette.secondary, 2.2, 0.5 * thinkAlpha, 6);
+          const hx = cx + Math.cos(a) * orbitR;
+          const hy = cy + Math.sin(a) * orbitR;
+          c.beginPath();
+          c.fillStyle = `rgba(${palette.accent}, ${0.9 * thinkAlpha})`;
+          c.shadowColor = `rgba(${palette.glow}, ${0.9 * thinkAlpha})`;
+          c.shadowBlur = 10;
+          c.arc(hx, hy, 2.6, 0, Math.PI * 2);
+          c.fill();
+          c.shadowBlur = 0;
+        }
+        drawArc(c, cx, cy, orbitR, 0, Math.PI * 2, palette.primary, 0.8, 0.14 * thinkAlpha, 0);
+      }
+
+      // Ripples: wake double-pulse (bolder) and the "understood you" ring.
+      const nowMs = performance.now();
+      ripplesRef.current = ripplesRef.current.filter((ripple) => {
+        const life = ripple.kind === "wake" ? 750 : 620;
+        const p = (nowMs - ripple.start) / life;
+        if (p >= 1) return false;
+        const ease = 1 - Math.pow(1 - p, 3);
+        const r = unit * (0.24 + (ripple.kind === "wake" ? 0.72 : 0.5) * ease);
+        const alpha = (1 - p) * (ripple.kind === "wake" ? 0.75 : 0.5);
+        const color = ripple.kind === "wake" ? palette.secondary : palette.accent;
+        drawArc(c, cx, cy, r, 0, Math.PI * 2, color, 2.6 - 1.6 * p, alpha, 10 * (1 - p));
+        return true;
+      });
 
       raf = requestAnimationFrame(draw);
     }

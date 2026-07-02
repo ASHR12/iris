@@ -5,7 +5,8 @@ import { base64ToBytes, downsampleTo16k, parsePcmRate } from "../lib/audio";
  * Owns the whole browser audio path:
  * - WebRTC mic capture (echo-cancelled) downsampled to 16 kHz PCM -> Electron main
  * - Gemini 24 kHz PCM playback through AudioContext (with barge-in flush)
- * - a passive RMS meter (mic in / Gemini out) exposed via audioLevelRef for the orb
+ * - passive RMS meters (mic in vs Gemini out, separately) for the orb's
+ *   voice signatures and the "thinking" detector
  */
 export function useAudioPipeline(hasBridge: boolean, onLog: (level: string, message: string) => void) {
   const [muted, setMuted] = useState(false);
@@ -19,7 +20,10 @@ export function useAudioPipeline(hasBridge: boolean, onLog: (level: string, mess
   const playbackSourcesRef = useRef<AudioBufferSourceNode[]>([]);
   const inputAnalyserRef = useRef<AnalyserNode | null>(null);
   const outputAnalyserRef = useRef<AnalyserNode | null>(null);
-  const audioLevelRef = useRef(0);
+  // Separate meters so the orb can tell WHO is talking: your mic drives the
+  // radial-bar signature, Iris's playback drives the smooth wave.
+  const inputLevelRef = useRef(0);
+  const outputLevelRef = useRef(0);
 
   useEffect(() => {
     if (!hasBridge) return;
@@ -46,9 +50,10 @@ export function useAudioPipeline(hasBridge: boolean, onLog: (level: string, mess
       return Math.sqrt(sum / buf.length);
     };
     const tick = () => {
-      const level = Math.max(rms(inputAnalyserRef.current), rms(outputAnalyserRef.current));
-      const boosted = Math.min(1, level * 2.6);
-      audioLevelRef.current += (boosted - audioLevelRef.current) * 0.4;
+      const input = Math.min(1, rms(inputAnalyserRef.current) * 2.6);
+      const output = Math.min(1, rms(outputAnalyserRef.current) * 2.6);
+      inputLevelRef.current += (input - inputLevelRef.current) * 0.4;
+      outputLevelRef.current += (output - outputLevelRef.current) * 0.4;
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -176,5 +181,5 @@ export function useAudioPipeline(hasBridge: boolean, onLog: (level: string, mess
     });
   }
 
-  return { muted, toggleMute, audioLevelRef, startCapture, stopCapture, flushPlayback };
+  return { muted, toggleMute, inputLevelRef, outputLevelRef, startCapture, stopCapture, flushPlayback };
 }

@@ -181,6 +181,7 @@ function envFlag(name, fallback = false) {
 function appConfig() {
   return {
     loadTestData: envFlag("IRIS_LOAD_TEST_DATA", false),
+    sounds: envFlag("IRIS_SOUNDS", true),
     userName: userDisplayName(),
     configured: Boolean((process.env.GEMINI_API_KEY || "").trim()),
   };
@@ -204,6 +205,7 @@ const ALLOWED_CONFIG_KEYS = new Set([
   "IRIS_LOAD_TEST_DATA",
   "IRIS_WAKE_WORD",
   "IRIS_HERMES_SESSION",
+  "IRIS_SOUNDS",
 ]);
 
 function userConfigPath() {
@@ -230,6 +232,7 @@ function getFullConfig() {
     userName: process.env.IRIS_USER_NAME || "",
     loadTestData: envFlag("IRIS_LOAD_TEST_DATA", false),
     wakeWord: envFlag("IRIS_WAKE_WORD", false),
+    sounds: envFlag("IRIS_SOUNDS", true),
     configured: Boolean((process.env.GEMINI_API_KEY || "").trim()),
     voices: GEMINI_VOICES,
     models: ensureIncludes(GEMINI_LIVE_MODELS, process.env.GEMINI_LIVE_MODEL),

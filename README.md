@@ -75,6 +75,9 @@ When Hermes finishes a background task, Iris **proactively speaks up**: *"Quick 
 ### Design
 - **Deep-space design system** — electric cyan + violet on near-black, glass panels, Inter / Space Grotesk / JetBrains Mono
 - **The orb** — a canvas-drawn arc reactor that breathes with the actual audio level, changes palette per state (listening / speaking / working), and flashes when work is handed off
+- **Orb micro-expressions** — a double-pulse on wake, a soft ripple when your words are locked in, and an orbiting "thinking" swirl in the gap before Iris speaks
+- **Two voice signatures** — your voice renders as sharp radial bars around the orb; Iris's voice as a smooth breathing wave. You can *see* who's talking.
+- **Sound design** — five subtle synthesized cues (wake, sleep, task sent, task done, approval needed). No audio files; pure tuned Web Audio tones. Toggle in Settings.
 - **Comet handoff** — a particle streaks from the orb to the task card when Gemini delegates, and back when Hermes returns
 - **Cinematic boot sequence**, animated transitions, and a custom app icon rendered from the orb itself
 
@@ -235,6 +238,7 @@ HERMES_HOME=~/.hermes                             # optional, auto-detected
 IRIS_HERMES_SESSION=iris-voice                    # pinned Hermes chat (or use the UI switcher)
 IRIS_WAKE_WORD=true                               # "Hey Iris" on-device wake word
 IRIS_HUD_HOTKEY=Alt+Space                         # global Glass HUD hotkey
+IRIS_SOUNDS=true                                  # subtle interface sound cues
 IRIS_LOAD_TEST_DATA=false                         # demo mode
 ```
 

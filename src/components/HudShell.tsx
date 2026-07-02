@@ -59,7 +59,11 @@ function HudCamera({
  */
 export default function HudShell({
   reactorState,
-  audioLevelRef,
+  inputLevelRef,
+  outputLevelRef,
+  thinking,
+  wakeKey,
+  rippleKey,
   orbStageRef,
   orbFlash,
   onOrbFlashEnd,
@@ -89,7 +93,11 @@ export default function HudShell({
   handActionTone,
 }: {
   reactorState: ReactorState;
-  audioLevelRef: { current: number };
+  inputLevelRef: { current: number };
+  outputLevelRef: { current: number };
+  thinking: boolean;
+  wakeKey: number;
+  rippleKey: number;
   orbStageRef: RefObject<HTMLDivElement | null>;
   orbFlash: { id: string; tone: HandoffTone } | null;
   onOrbFlashEnd: () => void;
@@ -214,7 +222,14 @@ export default function HudShell({
         >
           <span className="orb-ring" />
           <span className="orb-radar" />
-          <ReactorCore state={reactorState} levelRef={audioLevelRef} />
+          <ReactorCore
+            state={reactorState}
+            inputLevelRef={inputLevelRef}
+            outputLevelRef={outputLevelRef}
+            thinking={thinking}
+            wakeKey={wakeKey}
+            rippleKey={rippleKey}
+          />
           {orbFlash ? (
             <span key={orbFlash.id} className={`orb-flash ${orbFlash.tone}`} onAnimationEnd={onOrbFlashEnd} />
           ) : null}
