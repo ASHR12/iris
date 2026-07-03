@@ -24,6 +24,7 @@ type Draft = {
   API_SERVER_KEY: string;
   HERMES_BIN: string;
   HERMES_HOME: string;
+  IRIS_BRAIN_PATH: string;
   IRIS_USER_NAME: string;
   IRIS_LOAD_TEST_DATA: string;
   IRIS_WAKE_WORD: string;
@@ -55,6 +56,7 @@ export default function SetupPanel({
     API_SERVER_KEY: config.hermesKey,
     HERMES_BIN: config.hermesBin,
     HERMES_HOME: config.hermesHome,
+    IRIS_BRAIN_PATH: config.brainPath,
     IRIS_USER_NAME: config.userName,
     IRIS_LOAD_TEST_DATA: config.loadTestData ? "true" : "false",
     IRIS_WAKE_WORD: config.wakeWord ? "true" : "false",
@@ -246,6 +248,20 @@ export default function SetupPanel({
         <small className="setup-note">
           Folder where Hermes keeps its data and memory (<code>memories/USER.md</code>, <code>MEMORY.md</code>) — Iris
           reads these so it knows your context. Leave blank to use <code>~/.hermes</code>.
+        </small>
+      </label>
+      <label className="setup-field">
+        <span>Hermes brain vault (optional)</span>
+        <input
+          value={draft.IRIS_BRAIN_PATH}
+          placeholder="/path/to/obsidian-vault"
+          onChange={(event) => set("IRIS_BRAIN_PATH", event.target.value)}
+          spellCheck={false}
+        />
+        <small className="setup-note">
+          An Obsidian vault of markdown notes that acts as your shared brain. When set, saying{" "}
+          <code>show your brain</code> in HUD mode renders it as a living knowledge graph (the Neural Map).
+          Read-only — Iris never edits the vault.
         </small>
       </label>
       <label className="setup-field">

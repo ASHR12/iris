@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type RefObject } from "react";
-import { ChevronDown, Hand, Maximize2, MessageSquare, Mic, MicOff, Power, Terminal } from "lucide-react";
+import { BrainCircuit, ChevronDown, Hand, Maximize2, MessageSquare, Mic, MicOff, Power, Terminal } from "lucide-react";
 import ReactorCore from "./ReactorCore";
 import WorkCard from "./WorkCard";
 import { HandSkeleton } from "./CameraDock";
@@ -91,6 +91,8 @@ export default function HudShell({
   handStream,
   handActionLabel,
   handActionTone,
+  brainAvailable,
+  onOpenBrain,
 }: {
   reactorState: ReactorState;
   inputLevelRef: { current: number };
@@ -125,6 +127,8 @@ export default function HudShell({
   handStream: MediaStream | null;
   handActionLabel: string;
   handActionTone: string;
+  brainAvailable: boolean;
+  onOpenBrain: () => void;
 }) {
   // Show the full stream (state caps at 20); the column has a fixed max height
   // and palm-scrolls like Comms.
@@ -253,6 +257,15 @@ export default function HudShell({
               <Power size={14} />
             </button>
           )}
+          {brainAvailable ? (
+            <button
+              className="hud-btn"
+              onClick={onOpenBrain}
+              title="Neural Map — say 'show your brain'"
+            >
+              <BrainCircuit size={14} />
+            </button>
+          ) : null}
           <button
             className={`hud-btn ${handControl ? "active" : ""}`}
             onClick={onToggleHand}

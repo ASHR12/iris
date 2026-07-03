@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import os from "node:os";
 
-const { app, BrowserWindow, ipcMain, session, nativeImage, Menu, Tray, screen, globalShortcut } = electron;
+const { app, BrowserWindow, ipcMain, session, nativeImage, Menu, Tray, screen, globalShortcut, shell } = electron;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
@@ -206,6 +206,7 @@ const ALLOWED_CONFIG_KEYS = new Set([
   "IRIS_WAKE_WORD",
   "IRIS_HERMES_SESSION",
   "IRIS_SOUNDS",
+  "IRIS_BRAIN_PATH",
 ]);
 
 function userConfigPath() {
@@ -229,6 +230,7 @@ function getFullConfig() {
     hermesBin: process.env.HERMES_BIN || "",
     hermesHome: process.env.HERMES_HOME || "",
     hermesSession: hermesSessionId(),
+    brainPath: process.env.IRIS_BRAIN_PATH || "",
     userName: process.env.IRIS_USER_NAME || "",
     loadTestData: envFlag("IRIS_LOAD_TEST_DATA", false),
     wakeWord: envFlag("IRIS_WAKE_WORD", false),
@@ -613,6 +615,102 @@ async function approveHermesAction({ run_id, choice }) {
   return hermesRequest("POST", `/v1/runs/${run_id}/approval`, { choice });
 }
 
+// ===== Hermes Brain (Obsidian vault -> knowledge graph) =====
+// The brain is a plain Obsidian vault: markdown notes + [[wikilinks]]. The
+// indexer builds { nodes, links } for the HUD's Neural Map. Read-only, always.
+function brainRoot() {
+  const raw = (process.env.IRIS_BRAIN_PATH || "").trim();
+  return raw ? resolveContextPath(raw) : null;
+}
+
+function walkVault(dir, files) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name.startsWith(".")) continue; // .obsidian, .git, .tmp.*
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) walkVault(full, files);
+    else if (entry.name.endsWith(".md")) files.push(full);
+  }
+}
+
+function loadBrainGraph() {
+  const root = brainRoot();
+  if (!root) return { ok: false, error: "No brain vault configured. Set it in Settings → Hermes." };
+  if (!fs.existsSync(root)) return { ok: false, error: `Brain vault not found: ${root}` };
+  try {
+    const files = [];
+    walkVault(root, files);
+
+    const nodes = [];
+    const byTitle = new Map();
+    const contents = new Map();
+    for (const file of files) {
+      const id = path.relative(root, file);
+      const title = path.basename(file, ".md");
+      const segments = id.split(path.sep);
+      nodes.push({ id, title, folder: segments.length > 1 ? segments[0] : "root", degree: 0 });
+      byTitle.set(title.toLowerCase(), id);
+      contents.set(id, fs.readFileSync(file, "utf8"));
+    }
+
+    // Obsidian links resolve by note name; [[note|alias]] and [[note#heading]]
+    // both point at "note".
+    const links = [];
+    const seen = new Set();
+    const degree = new Map();
+    for (const node of nodes) {
+      for (const match of (contents.get(node.id) ?? "").matchAll(/\[\[([^\]]+)\]\]/g)) {
+        const targetId = byTitle.get(match[1].split(/[|#]/)[0].trim().toLowerCase());
+        if (!targetId || targetId === node.id) continue;
+        const key = `${node.id}->${targetId}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        links.push({ source: node.id, target: targetId });
+        degree.set(node.id, (degree.get(node.id) ?? 0) + 1);
+        degree.set(targetId, (degree.get(targetId) ?? 0) + 1);
+      }
+    }
+    for (const node of nodes) node.degree = degree.get(node.id) ?? 0;
+    return { ok: true, root, nodes, links };
+  } catch (error) {
+    return { ok: false, error: error?.message || String(error) };
+  }
+}
+
+function readBrainNote(relPath) {
+  const root = brainRoot();
+  if (!root) return { ok: false, error: "No brain vault configured." };
+  const resolved = path.resolve(root, relPath || "");
+  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+    return { ok: false, error: "Path is outside the brain vault." };
+  }
+  if (!resolved.endsWith(".md") || !fs.existsSync(resolved)) {
+    return { ok: false, error: "Note not found." };
+  }
+  try {
+    const raw = fs.readFileSync(resolved, "utf8");
+    let body = raw;
+    const meta = {};
+    const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(raw);
+    if (frontmatter) {
+      body = raw.slice(frontmatter[0].length);
+      for (const line of frontmatter[1].split(/\r?\n/)) {
+        const idx = line.indexOf(":");
+        if (idx === -1) continue;
+        const key = line.slice(0, idx).trim();
+        const value = line
+          .slice(idx + 1)
+          .trim()
+          .replace(/^["'[]|["'\]]$/g, "")
+          .trim();
+        if (key && value) meta[key] = value;
+      }
+    }
+    return { ok: true, meta, body: body.slice(0, 20000) };
+  } catch (error) {
+    return { ok: false, error: error?.message || String(error) };
+  }
+}
+
 function getIrisUiContext() {
   return irisUiContext;
 }
@@ -629,6 +727,11 @@ function controlIrisUi({ action, target_id = undefined, query = undefined }) {
     "close_all_overlays",
     "show_task_steps",
     "hide_task_steps",
+    "open_brain_graph",
+    "close_brain_graph",
+    "focus_brain_node",
+    "open_brain_note",
+    "close_brain_note",
   ]);
   if (!allowed.has(action)) {
     return { status: "error", error: `Unknown UI action: ${action}` };
@@ -937,7 +1040,7 @@ function buildIrisUiTools() {
               action: {
                 type: "string",
                 description:
-                  "One of: open_latest_hermes_result, open_current_hermes_result, open_task, open_task_by_query, open_hermes_history, close_reader, close_history, close_all_overlays, show_task_steps, hide_task_steps. Use show_task_steps/hide_task_steps to expand or collapse the tool-step timeline for a Hermes task; when the user names a specific card, pass its words in `query` (or its exact id in `target_id`). With no target, steps default to the card the user is currently viewing (open reader / focused), then the running task.",
+                  "One of: open_latest_hermes_result, open_current_hermes_result, open_task, open_task_by_query, open_hermes_history, close_reader, close_history, close_all_overlays, show_task_steps, hide_task_steps, open_brain_graph, close_brain_graph, focus_brain_node, open_brain_note, close_brain_note. Use show_task_steps/hide_task_steps to expand or collapse the tool-step timeline for a Hermes task; when the user names a specific card, pass its words in `query` (or its exact id in `target_id`). With no target, steps default to the card the user is currently viewing (open reader / focused), then the running task. open_brain_graph shows the Neural Map — a visual graph of the shared memory vault (Iris enters HUD mode automatically); close_brain_graph dismisses it. focus_brain_node flies the map camera to the note best matching `query` and highlights it (opens the map first if needed); open_brain_note opens the note card (pass `query` to name one, or omit it to open the focused node); close_brain_note closes the note card and returns to the map.",
               },
               target_id: {
                 type: "string",
@@ -994,6 +1097,8 @@ function buildLiveConfig() {
             "Routing rule: quick answer, fact lookup, or general chat -> answer directly or use Google Search; dispatch to Hermes ONLY when explicitly requested as described above.",
             "UI control rule: If the user says things like 'open it', 'open that result', 'show latest Hermes result', 'show history', 'close it', 'go back', or 'open the current task', use get_iris_ui_context and control_iris_ui. Do not send those UI-only commands to Hermes.",
             `Sleep rule: when ${userDisplayName()} asks you to sleep ('go to sleep', 'sleep now', 'goodnight', 'that's all for now'), say a short warm goodbye and call go_to_sleep. Never call it unless explicitly asked.`,
+            `Neural Map rule: when ${userDisplayName()} says 'load the brain', 'show your brain', 'open the neural map', or 'show the knowledge graph', call control_iris_ui with action open_brain_graph — it renders the shared memory vault as a living graph over the screen. 'close the brain' / 'hide the map' -> close_brain_graph. These are UI-only commands; never send them to Hermes.`,
+            `Neural Map traversal rule: when ${userDisplayName()} asks to find, point to, focus, or zoom to a note ('where is X', 'focus on the EvoMap draft', 'show me the June content'), call control_iris_ui with action focus_brain_node and their words in query — the camera flies to the best match and highlights it (the map opens automatically if closed). Then 'open it' / 'read it' -> open_brain_note with no query; 'open X' -> open_brain_note with X in query. 'close the note' / 'go back to the map' -> close_brain_note. While the map is open, get_iris_ui_context includes brainNodes (all note titles), brainFocusedNote and brainOpenNote — consult it to pick the right title or tell ${userDisplayName()} what exists. If Iris shows a "No note matched" toast, say so and suggest close titles from brainNodes. These are UI-only commands; never send them to Hermes.`,
             "Also handle these UI-only commands with control_iris_ui (never Hermes): 'show the steps' / 'what is it doing' / 'show what tools it used' -> show_task_steps; 'hide the steps' -> hide_task_steps. If they name a specific card ('steps for the deals one', 'steps for the second card'), pass those words in query. With no target named, steps apply to the card they are viewing (open reader first), else the running task.",
             "If the user refers to a task by partial words from the task header, like 'open the failed one', 'open Hermes API', 'open package Iris', or 'open two hand design', call control_iris_ui with action open_task_by_query and put those words in query. Do not require an exact title match.",
             "If Iris shows a task chooser because multiple cards matched, the user can click a choice or say first/second/third; use get_iris_ui_context to inspect pendingTaskMatches before opening a specific task.",
@@ -1430,6 +1535,12 @@ app.whenReady().then(() => {
   ipcMain.handle("hermes:history", () => fetchHermesHistory());
   ipcMain.handle("hermes:sessions", () => listHermesSessions());
   ipcMain.handle("hermes:create-session", () => createHermesSession());
+  ipcMain.handle("brain:load", () => loadBrainGraph());
+  ipcMain.handle("brain:read", (_event, relPath) => readBrainNote(String(relPath || "")));
+  ipcMain.handle("app:open-external", (_event, url) => {
+    const target = String(url || "");
+    if (/^https?:\/\//i.test(target)) shell.openExternal(target);
+  });
   ipcMain.handle("hud:toggle", () => {
     toggleHud();
     updateTrayMenu();

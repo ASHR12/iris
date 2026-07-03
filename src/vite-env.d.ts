@@ -24,7 +24,12 @@ type IrisUiAction = {
     | "close_history"
     | "close_all_overlays"
     | "show_task_steps"
-    | "hide_task_steps";
+    | "hide_task_steps"
+    | "open_brain_graph"
+    | "close_brain_graph"
+    | "focus_brain_node"
+    | "open_brain_note"
+    | "close_brain_note";
   target_id?: string;
   query?: string;
 };
@@ -38,6 +43,7 @@ type IrisConfig = {
   hermesBin: string;
   hermesHome: string;
   hermesSession: string;
+  brainPath: string;
   userName: string;
   loadTestData: boolean;
   wakeWord: boolean;
@@ -85,6 +91,30 @@ type HermesSessionInfo = {
 
 type HermesSessionsResult = { ok: boolean; sessions: HermesSessionInfo[]; error?: string };
 
+type BrainNode = {
+  id: string;
+  title: string;
+  folder: string;
+  degree: number;
+};
+
+type BrainLink = { source: string; target: string };
+
+type BrainGraphResult = {
+  ok: boolean;
+  root?: string;
+  nodes?: BrainNode[];
+  links?: BrainLink[];
+  error?: string;
+};
+
+type BrainNoteResult = {
+  ok: boolean;
+  meta?: Record<string, string>;
+  body?: string;
+  error?: string;
+};
+
 type IrisApi = {
   startSidecar: (options?: { mode?: SidecarMode }) => Promise<{ running: boolean; pid: number | null }>;
   stopSidecar: () => Promise<{ running: boolean; pid: number | null }>;
@@ -103,6 +133,9 @@ type IrisApi = {
   getHermesHistory: () => Promise<HermesHistoryResult>;
   listHermesSessions: () => Promise<HermesSessionsResult>;
   createHermesSession: () => Promise<{ ok: boolean; id?: string; error?: string }>;
+  loadBrain: () => Promise<BrainGraphResult>;
+  readBrainNote: (relPath: string) => Promise<BrainNoteResult>;
+  openExternal: (url: string) => Promise<void>;
   toggleHud: () => Promise<{ mode: "deck" | "hud" }>;
   setHudInteractive: (on: boolean) => void;
   windowControl: (action: "close" | "minimize") => void;

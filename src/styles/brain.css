@@ -1,0 +1,341 @@
+/* ===== Neural Map — the Hermes brain as a living graph (HUD mode) ===== */
+
+.brain-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30; /* above the HUD shell, below the reader/settings overlays */
+  pointer-events: none;
+}
+
+.brain-stage {
+  position: absolute;
+  inset: 0;
+  pointer-events: auto;
+  animation: brain-in 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes brain-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.brain-canvas,
+.brain-canvas canvas {
+  position: absolute;
+  inset: 0;
+}
+
+/* Reading mode: the constellation steps aside while a note is open, and
+   returns exactly where it was when the note closes (the graph instance and
+   camera stay alive underneath — only visibility changes). */
+.brain-canvas,
+.brain-legend {
+  transition: opacity 0.35s ease;
+}
+
+.brain-stage.reading .brain-canvas,
+.brain-stage.reading .brain-legend {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Title pill, top-left */
+.brain-title {
+  position: absolute;
+  top: 18px;
+  left: 22px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #dff6ff;
+  background: rgba(22, 30, 47, 0.7);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+}
+
+.brain-title svg {
+  color: var(--cyan-bright);
+}
+
+.brain-count {
+  color: var(--cyan-bright);
+  letter-spacing: 0.08em;
+}
+
+/* Top-center — the top-right corner belongs to the HUD Tasks chip */
+.brain-close {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+/* Folder legend, bottom-center — the left edge belongs to comms + camera */
+.brain-legend {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 12px;
+  max-width: 56vw;
+  padding: 7px 16px;
+  border-radius: 999px;
+  background: rgba(22, 30, 47, 0.55);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+.brain-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #c3cfe0;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+.brain-legend-item i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+/* Status pill (loading / error), centered */
+.brain-pill {
+  position: absolute;
+  left: 50%;
+  top: 46%;
+  transform: translate(-50%, -50%);
+  padding: 10px 18px;
+  border-radius: 999px;
+  font-size: 13px;
+  color: #f2f7ff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.65);
+  background: rgba(22, 30, 47, 0.72);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+  animation: brain-pulse 1.8s ease-in-out infinite;
+}
+
+.brain-pill.error {
+  color: var(--coral);
+  animation: none;
+}
+
+/* Transient voice feedback ("No note matched…") near the bottom */
+.brain-pill.toast {
+  top: auto;
+  bottom: 64px;
+  transform: translateX(-50%);
+  font-size: 12px;
+  animation: brain-toast 2.6s ease forwards;
+}
+
+@keyframes brain-toast {
+  0% { opacity: 0; transform: translateX(-50%) translateY(6px); }
+  10%, 82% { opacity: 1; transform: translateX(-50%) translateY(0); }
+  100% { opacity: 0; transform: translateX(-50%) translateY(-4px); }
+}
+
+@keyframes brain-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+/* Note reading card — centered, reader-sized, same glass language */
+.brain-note {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(680px, 90vw);
+  max-height: 78vh;
+  display: flex;
+  flex-direction: column;
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(26, 36, 57, 0.8), rgba(10, 16, 28, 0.84));
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    0 30px 90px rgba(0, 0, 0, 0.5);
+  animation: brain-note-in 0.32s cubic-bezier(0.2, 0.8, 0.2, 1);
+  overflow: hidden;
+}
+
+@keyframes brain-note-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+.brain-note-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px 0;
+}
+
+.brain-note-folder {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+.brain-note-title {
+  margin: 6px 16px 10px;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  color: #f2f7ff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.65);
+}
+
+.brain-note-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 16px 10px;
+}
+
+.brain-meta-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  color: #e2ebf7;
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+.brain-meta-chip em {
+  font-style: normal;
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #9fb2c9;
+}
+
+.brain-note-body {
+  flex: 1;
+  min-height: 60px;
+  overflow-y: auto;
+  padding: 2px 16px 12px;
+  scrollbar-width: thin;
+}
+
+.brain-note-body .markdown-body {
+  font-size: 13.5px;
+  color: #d3ddec;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+}
+
+.brain-note-body .markdown-body img {
+  display: block;
+  max-width: 100%;
+  margin: 10px 0;
+  border-radius: 10px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+/* Wikilinks resolved against the graph — click to jump to that note */
+.brain-wikilink {
+  display: inline;
+  padding: 0 2px;
+  border-radius: 4px;
+  font: inherit;
+  color: var(--violet-bright, #b9a8ff);
+  background: rgba(167, 139, 250, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(167, 139, 250, 0.28);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.brain-wikilink:hover {
+  background: rgba(167, 139, 250, 0.22);
+}
+
+.brain-note-loading,
+.brain-note-error {
+  margin: 8px 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.brain-note-error {
+  color: var(--coral);
+}
+
+.brain-note-links {
+  flex: 0 0 auto;
+  padding: 10px 16px 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.brain-links-label {
+  display: block;
+  margin-bottom: 8px;
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #9fb2c9;
+}
+
+.brain-links-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 96px;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.brain-link-chip {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--cyan-bright);
+  background: rgba(var(--cyan-rgb), 0.08);
+  box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb), 0.22);
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.brain-link-chip:hover {
+  background: rgba(var(--cyan-rgb), 0.16);
+  box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb), 0.4);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .brain-stage,
+  .brain-note {
+    animation: none;
+  }
+}

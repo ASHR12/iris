@@ -27,6 +27,7 @@ import HandReticles from "./components/HandReticles";
 import BootSequence from "./components/BootSequence";
 import SetupPanel from "./components/SetupPanel";
 import HudShell from "./components/HudShell";
+import BrainGraph, { type BrainGraphState, type BrainVoiceCommand } from "./components/BrainGraph";
 
 const MAX_LOGS = 80;
 // Point-and-hold duration before the finger pointer "clicks" what it's over.
@@ -56,6 +57,11 @@ export default function App() {
   const [wakeWordEnabled, setWakeWordEnabled] = useState(false);
   const [hermesSession, setHermesSession] = useState<string | null>(null);
   const [uiMode, setUiMode] = useState<"deck" | "hud">("deck");
+  // Neural Map (the brain graph) — HUD-only overlay.
+  const [brainOpen, setBrainOpen] = useState(false);
+  const [brainCommand, setBrainCommand] = useState<BrainVoiceCommand | null>(null);
+  const brainSeqRef = useRef(0);
+  const [brainState, setBrainState] = useState<BrainGraphState | null>(null);
   const [bootActive, setBootActive] = useState(false);
   const [bootClosing, setBootClosing] = useState(false);
   const bootStartRef = useRef(0);
@@ -289,6 +295,8 @@ export default function App() {
 
   useEffect(() => {
     document.documentElement.classList.toggle("hud-mode", uiMode === "hud");
+    // The Neural Map is HUD-only; leaving HUD dismisses it.
+    if (uiMode !== "hud") setBrainOpen(false);
   }, [uiMode]);
 
   // Click-through management: in HUD mode the window ignores the mouse except
@@ -652,7 +660,7 @@ export default function App() {
   useEffect(() => {
     let raf = 0;
     const SCROLLABLES =
-      ".activity-timeline, .hud-comms, .comms-scroll, .work-scroll, .hud-work, .history-grid";
+      ".activity-timeline, .hud-comms, .comms-scroll, .work-scroll, .hud-work, .history-grid, .brain-note-body, .brain-links-list";
     const loop = () => {
       const h = liveHandRef.current;
       if (handControl && h?.openPalm && h.point && !expandedTaskId) {
@@ -735,6 +743,12 @@ export default function App() {
         status: task.status,
       })) ?? [],
       showHistory,
+      brainOpen,
+      // While the map is open Gemini can see what exists and what's in focus,
+      // so "focus on X" / "open it" resolve against real titles.
+      brainNodes: brainOpen ? brainState?.nodeTitles ?? [] : undefined,
+      brainFocusedNote: brainOpen ? brainState?.focusedTitle ?? null : null,
+      brainOpenNote: brainOpen ? brainState?.openNoteTitle ?? null : null,
       tasks: sortedTasks.map((task) => ({
         id: task.id,
         task: task.task,
@@ -745,7 +759,7 @@ export default function App() {
         updatedAt: task.updatedAt,
       })),
     });
-  }, [hasBridge, expandedTaskId, focusedTaskId, latestResultTask?.id, showHistory, sortedTasks, stepsOpenIds, taskChooser]);
+  }, [hasBridge, expandedTaskId, focusedTaskId, latestResultTask?.id, showHistory, brainOpen, brainState, sortedTasks, stepsOpenIds, taskChooser]);
 
   useEffect(() => {
     if (!hasBridge) return;
@@ -787,6 +801,32 @@ export default function App() {
         closeReader();
         setShowHistory(false);
         setTaskChooser(null);
+        setBrainOpen(false);
+        return;
+      }
+      if (action === "open_brain_graph") {
+        // HUD-only feature: entering HUD automatically is part of the wow.
+        if (uiMode !== "hud") window.iris.toggleHud();
+        setBrainOpen(true);
+        return;
+      }
+      if (action === "close_brain_graph") {
+        setBrainOpen(false);
+        return;
+      }
+      if (action === "focus_brain_node" || action === "open_brain_note" || action === "close_brain_note") {
+        // Focus/open auto-open the map; the command executes once the graph
+        // is mounted and its data is ready (BrainGraph tracks the seq).
+        if (action !== "close_brain_note") {
+          if (uiMode !== "hud") window.iris.toggleHud();
+          setBrainOpen(true);
+        }
+        brainSeqRef.current += 1;
+        setBrainCommand({
+          seq: brainSeqRef.current,
+          kind: action === "focus_brain_node" ? "focus" : action === "open_brain_note" ? "open" : "close",
+          query: query || undefined,
+        });
         return;
       }
       if (action === "show_task_steps" || action === "hide_task_steps") {
@@ -808,7 +848,7 @@ export default function App() {
         return;
       }
     });
-  }, [hasBridge, tasks, sortedTasks, expandedTaskId, focusedTaskId, latestResultTask]);
+  }, [hasBridge, tasks, sortedTasks, expandedTaskId, focusedTaskId, latestResultTask, uiMode]);
 
   const caption = useMemo(() => {
     if (!sidecarRunning)
@@ -917,6 +957,8 @@ export default function App() {
           handStream={handStream}
           handActionLabel={handAction.label}
           handActionTone={handAction.tone}
+          brainAvailable={Boolean(fullConfig?.brainPath)}
+          onOpenBrain={() => setBrainOpen(true)}
         />
       ) : (
       <div
@@ -1014,6 +1056,16 @@ export default function App() {
         </footer>
       </div>
       )}
+
+      {uiMode === "hud" && brainOpen ? (
+        <BrainGraph
+          hand={handControl ? hand : null}
+          active={!expandedTask}
+          onClose={() => setBrainOpen(false)}
+          voiceCommand={brainCommand}
+          onGraphState={setBrainState}
+        />
+      ) : null}
 
       {expandedTask ? (
         <ReaderOverlay
