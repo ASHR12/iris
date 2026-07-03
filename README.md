@@ -174,6 +174,7 @@ Press **W** (or say **"Hey Iris"** if you enabled the wake word). Ask it somethi
 ```bash
 npm start            # build + launch production bundle
 npm run package:mac  # macOS .app (unsigned by default)
+npm run install:mac  # build + install to /Applications + launch (macOS)
 npm run dist:win     # Windows distributable
 ```
 

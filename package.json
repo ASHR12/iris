@@ -22,6 +22,7 @@
     "start": "npm run build && node scripts/run-electron.mjs --prod",
     "start:prod": "node scripts/run-electron.mjs --prod",
     "package:mac": "npm run build && electron-builder --mac --dir",
+    "install:mac": "npm run package:mac && node scripts/install-mac.mjs",
     "dist:mac": "npm run build && electron-builder --mac",
     "package:win": "npm run build && electron-builder --win --dir",
     "dist:win": "npm run build && electron-builder --win",
