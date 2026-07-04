@@ -44,6 +44,8 @@ type IrisConfig = {
   hermesHome: string;
   hermesSession: string;
   brainPath: string;
+  brainSemantic: boolean;
+  brainAutoIndex: boolean;
   userName: string;
   loadTestData: boolean;
   wakeWord: boolean;
@@ -115,6 +117,32 @@ type BrainNoteResult = {
   error?: string;
 };
 
+type BrainIndexSyncResult = {
+  ok: boolean;
+  total?: number;
+  embedded?: number;
+  reused?: number;
+  pruned?: number;
+  ms?: number;
+  model?: string;
+  location?: string;
+  error?: string;
+};
+
+type BrainSearchResult = {
+  ok: boolean;
+  mode?: "hybrid" | "lexical";
+  results?: Array<{
+    path: string;
+    title: string;
+    folder: string;
+    snippet: string;
+    sources: string[];
+    confident: boolean;
+  }>;
+  error?: string;
+};
+
 type IrisApi = {
   startSidecar: (options?: { mode?: SidecarMode }) => Promise<{ running: boolean; pid: number | null }>;
   stopSidecar: () => Promise<{ running: boolean; pid: number | null }>;
@@ -135,6 +163,9 @@ type IrisApi = {
   createHermesSession: () => Promise<{ ok: boolean; id?: string; error?: string }>;
   loadBrain: () => Promise<BrainGraphResult>;
   readBrainNote: (relPath: string) => Promise<BrainNoteResult>;
+  searchBrain: (query: string, topK?: number) => Promise<BrainSearchResult>;
+  syncBrainIndex: (payload?: { vault?: string; key?: string }) => Promise<BrainIndexSyncResult>;
+  onBrainChanged: (callback: () => void) => () => void;
   openExternal: (url: string) => Promise<void>;
   toggleHud: () => Promise<{ mode: "deck" | "hud" }>;
   setHudInteractive: (on: boolean) => void;

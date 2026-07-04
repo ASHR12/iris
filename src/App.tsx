@@ -392,12 +392,19 @@ export default function App() {
 
   // Keep the boot sequence on screen for a minimum time so it plays as an
   // intentional intro instead of a sub-second flicker (Gemini connects fast).
+  // Trigger it ONLY on the power-ON edge: during power-off the connection
+  // status drops before the sidecar flag does, and that gap used to re-arm
+  // the boot screen right as Iris was shutting down.
+  const wasRunningRef = useRef(false);
   useEffect(() => {
-    if (!booting) return;
+    const wasRunning = wasRunningRef.current;
+    wasRunningRef.current = sidecarRunning;
+    if (!sidecarRunning || wasRunning) return;
+    if (geminiStatus === "connected") return; // instant resume — skip the intro
     bootStartRef.current = Date.now();
     setBootClosing(false);
     setBootActive(true);
-  }, [booting]);
+  }, [sidecarRunning, geminiStatus]);
 
   useEffect(() => {
     if (booting || !bootActive) return;

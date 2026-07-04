@@ -38,16 +38,27 @@ function normalizeForMatch(text: string): string {
     .trim();
 }
 
+// Filler words carry no signal about WHICH note is meant — without stripping
+// them, "the github for AI agents post" would match any title containing
+// "the" + "post". Content words must do the matching.
+const QUERY_STOPWORDS = new Set([
+  "the", "a", "an", "for", "to", "of", "in", "on", "at", "about", "with",
+  "my", "your", "our", "his", "her", "their", "its", "that", "this", "one",
+  "note", "notes", "and", "or", "me", "show", "open", "find", "focus",
+]);
+
 /**
  * Resolve a spoken query ("the evomap draft", "june content") to the best
- * node. Scoring is dominated by how much of the QUERY the title covers, so
- * "evomap draft v2" prefers the draft note over the short "EvoMap" hub, while
- * a bare "evomap" still lands on the hub (exact-title bonus + degree nudge).
+ * node BY TITLE. Scoring is dominated by how much of the query's content
+ * words the title covers; misses return null so the caller can fall back to
+ * the hybrid content search.
  */
 function resolveNodeByQuery(nodes: GraphNode[], query: string): GraphNode | null {
   const q = normalizeForMatch(query);
   if (!q) return null;
-  const qTokens = q.split(" ").filter(Boolean);
+  const allTokens = q.split(" ").filter(Boolean);
+  const qTokens = allTokens.filter((token) => !QUERY_STOPWORDS.has(token));
+  if (qTokens.length === 0) return null;
   let best: GraphNode | null = null;
   let bestScore = 0;
   for (const node of nodes) {
@@ -64,7 +75,8 @@ function resolveNodeByQuery(nodes: GraphNode[], query: string): GraphNode | null
       best = node;
     }
   }
-  return bestScore >= 35 ? best : null;
+  // >50% content-word coverage required — weak overlap defers to semantics.
+  return bestScore > 40 ? best : null;
 }
 
 // Labels render at a constant 11px on screen; wrap anything wider than this
@@ -267,6 +279,33 @@ export default function BrainGraph({
     window.setTimeout(() => setToast(null), 2600);
   }
 
+  // Hot reload: the main process watches the vault + its semantic index and
+  // pings when anything changes (Hermes brain sync, Obsidian edit, manual
+  // re-index). Re-fetch in place — the constellation re-blooms with the new
+  // data, an open note refreshes its content, and a deleted note closes.
+  useEffect(() => {
+    return window.iris.onBrainChanged(() => {
+      window.iris
+        .loadBrain()
+        .then((result) => {
+          if (!result.ok || !result.nodes || !result.links) return;
+          setData({ nodes: result.nodes, links: result.links });
+          const openId = selectedIdRef.current;
+          if (openId) {
+            if (result.nodes.some((node) => node.id === openId)) {
+              window.iris.readBrainNote(openId).then(setNote).catch(() => undefined);
+            } else {
+              select(null); // the open note no longer exists
+            }
+          }
+          const w = window as unknown as Record<string, unknown>;
+          w.__brainReloads = ((w.__brainReloads as number) ?? 0) + 1;
+        })
+        .catch(() => undefined);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Test/automation hook.
   useEffect(() => {
     (window as unknown as Record<string, unknown>).__brainSelectByTitle = (title: string) => {
@@ -430,27 +469,52 @@ export default function BrainGraph({
     if (status !== "ready" || !data) return;
     doneSeqRef.current = voiceCommand.seq;
     const command = voiceCommand;
+    let cancelled = false;
+
+    // Title matching first (instant); if it whiffs, fall back to the hybrid
+    // BM25 + embedding search in the main process, which understands content
+    // ("the note about the veed watermark") — then map the hit back to a node.
+    const resolve = async (query: string, nodes: GraphNode[]): Promise<GraphNode | null> => {
+      const byTitle = resolveNodeByQuery(nodes, query);
+      if (byTitle) return byTitle;
+      try {
+        const found = await window.iris.searchBrain(query, 1);
+        const top = found.ok ? found.results?.[0] : null;
+        // Only follow CONFIDENT content hits — embeddings rank nonsense
+        // against something no matter what; a weak match must stay a miss.
+        if (top?.confident) return nodes.find((node) => node.id === top.path) ?? null;
+      } catch {
+        /* semantic side unavailable — title miss stands */
+      }
+      return null;
+    };
 
     // Execute against the graph's live nodes (they carry x/y). Right after an
     // auto-open the physics warmup may not have positioned them yet, so poll
-    // briefly until coordinates exist.
-    const run = () => {
+    // briefly until coordinates exist. `executing` makes the command one-shot
+    // even while an async resolve is in flight.
+    let executing = false;
+    const run = async () => {
+      if (executing) return true;
       const graph = graphRef.current;
       const nodes = (graph?.graphData().nodes as GraphNode[] | undefined) ?? [];
       if (!graph || nodes.length === 0 || nodes[0].x === undefined) return false;
+      executing = true;
 
       if (command.kind === "close") {
         select(null);
         return true;
       }
       if (command.kind === "focus") {
-        const hit = command.query ? resolveNodeByQuery(nodes, command.query) : null;
+        const hit = command.query ? await resolve(command.query, nodes) : null;
+        if (cancelled) return true;
         if (hit) focusNode(hit);
         else showToast(`No note matched "${command.query ?? ""}"`);
         return true;
       }
       // open: named note, else the focused one, else the hovered one.
-      const named = command.query ? resolveNodeByQuery(nodes, command.query) : null;
+      const named = command.query ? await resolve(command.query, nodes) : null;
+      if (cancelled) return true;
       const fallbackId = focusIdRef.current ?? hoverIdRef.current;
       const target = named ?? (fallbackId ? nodes.find((item) => item.id === fallbackId) ?? null : null);
       if (target) select(target);
@@ -458,11 +522,19 @@ export default function BrainGraph({
       return true;
     };
 
-    if (run()) return;
-    const timer = window.setInterval(() => {
-      if (run()) window.clearInterval(timer);
-    }, 80);
-    return () => window.clearInterval(timer);
+    let timer = 0;
+    run().then((done) => {
+      if (done || cancelled) return;
+      timer = window.setInterval(() => {
+        run().then((ok) => {
+          if (ok) window.clearInterval(timer);
+        });
+      }, 80);
+    });
+    return () => {
+      cancelled = true;
+      if (timer) window.clearInterval(timer);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [voiceCommand, status, data]);
 

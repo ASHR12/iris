@@ -7,6 +7,17 @@ import {
   markUserSpoke,
   resetHermesGate,
 } from "./hermesGate.mjs";
+import {
+  readVaultRecords,
+  buildLexicon,
+  loadIndexFromDisk,
+  syncBrainIndex,
+  embedQuery,
+  hybridSearch,
+  indexDirFor,
+  COSINE_CONFIDENT,
+  COVERAGE_CONFIDENT,
+} from "./brainIndex.mjs";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -207,6 +218,8 @@ const ALLOWED_CONFIG_KEYS = new Set([
   "IRIS_HERMES_SESSION",
   "IRIS_SOUNDS",
   "IRIS_BRAIN_PATH",
+  "IRIS_BRAIN_SEMANTIC",
+  "IRIS_BRAIN_AUTO_INDEX",
 ]);
 
 function userConfigPath() {
@@ -231,6 +244,8 @@ function getFullConfig() {
     hermesHome: process.env.HERMES_HOME || "",
     hermesSession: hermesSessionId(),
     brainPath: process.env.IRIS_BRAIN_PATH || "",
+    brainSemantic: envFlag("IRIS_BRAIN_SEMANTIC", true),
+    brainAutoIndex: envFlag("IRIS_BRAIN_AUTO_INDEX", false),
     userName: process.env.IRIS_USER_NAME || "",
     loadTestData: envFlag("IRIS_LOAD_TEST_DATA", false),
     wakeWord: envFlag("IRIS_WAKE_WORD", false),
@@ -636,6 +651,9 @@ function loadBrainGraph() {
   const root = brainRoot();
   if (!root) return { ok: false, error: "No brain vault configured. Set it in Settings → Hermes." };
   if (!fs.existsSync(root)) return { ok: false, error: `Brain vault not found: ${root}` };
+  // Refresh search alongside the visual graph: lexicon rebuild is instant,
+  // embedding delta-sync runs in the background.
+  setTimeout(() => refreshBrainSearch(), 0);
   try {
     const files = [];
     walkVault(root, files);
@@ -711,6 +729,144 @@ function readBrainNote(relPath) {
   }
 }
 
+// ===== Brain search — BM25F + Gemini embeddings, fused =====
+// The lexicon (lexical index) rebuilds from the vault on every refresh; the
+// vector index lives at ~/.iris/brain-index and is delta-synced in the
+// background (content-hash cache — see electron/brainIndex.mjs). Searches
+// serve whatever is ready: hybrid when possible, lexical-only otherwise.
+let brainSearch = { root: null, lexicon: null, index: null, syncing: false };
+
+function brainSemanticEnabled() {
+  return envFlag("IRIS_BRAIN_SEMANTIC", true);
+}
+
+function refreshBrainSearch() {
+  const root = brainRoot();
+  if (!root || !fs.existsSync(root)) {
+    brainSearch = { root: null, lexicon: null, index: null, syncing: false };
+    return;
+  }
+  try {
+    brainSearch.root = root;
+    brainSearch.lexicon = buildLexicon(readVaultRecords(root));
+    brainSearch.index = loadIndexFromDisk(root); // possibly stale — refreshed below
+  } catch (error) {
+    emitEvent({ type: "log", level: "warn", message: `Brain lexicon failed: ${error?.message || error}` });
+    return;
+  }
+
+  // Embedding maintenance is OPT-IN (it makes Gemini API calls with no user
+  // action). Off by default: the on-disk index still loads and searches work;
+  // new/edited notes join the index only via the Settings button or an
+  // external run of the indexer (e.g. the Hermes brain-sync skill).
+  const apiKey = (process.env.GEMINI_API_KEY || "").trim();
+  if (!envFlag("IRIS_BRAIN_AUTO_INDEX", false)) return;
+  if (!brainSemanticEnabled() || !apiKey || brainSearch.syncing) return;
+  brainSearch.syncing = true;
+  syncBrainIndex({ vaultRoot: root, apiKey })
+    .then((result) => {
+      brainSearch.index = result.index;
+      if (result.embedded > 0 || result.pruned > 0) {
+        emitEvent({
+          type: "log",
+          level: "info",
+          message: `Brain index synced: ${result.embedded} embedded, ${result.reused} reused, ${result.pruned} pruned (${result.ms}ms).`,
+        });
+      }
+    })
+    .catch((error) => {
+      emitEvent({ type: "log", level: "warn", message: `Brain index sync failed: ${error?.message || error}` });
+    })
+    .finally(() => {
+      brainSearch.syncing = false;
+    });
+}
+
+// ---- Hot reload: watch the vault + its index so a Hermes sync (or an
+// Obsidian edit, or a manual re-index) lands in the app live — search state
+// refreshes and any open Neural Map re-blooms. No restart, no reopen.
+let brainWatchers = [];
+let brainChangeTimer = null;
+
+function scheduleBrainChanged() {
+  if (brainChangeTimer) clearTimeout(brainChangeTimer);
+  // The sync writes many files in a burst; let it finish, then refresh once.
+  brainChangeTimer = setTimeout(() => {
+    brainChangeTimer = null;
+    refreshBrainSearch();
+    emitToRenderer("brain:changed", {});
+  }, 1200);
+}
+
+function watchBrainVault() {
+  for (const watcher of brainWatchers) {
+    try { watcher.close(); } catch { /* ignore */ }
+  }
+  brainWatchers = [];
+  const root = brainRoot();
+  if (!root || !fs.existsSync(root)) return;
+
+  const targets = [
+    { dir: root, accept: (name) => name.endsWith(".md") && !name.split(path.sep).some((seg) => seg.startsWith(".")) },
+    // The skill / CLI re-embeds without necessarily touching the vault.
+    { dir: indexDirFor(root), accept: (name) => name.startsWith("manifest.json") || name.startsWith("vectors.f32") },
+  ];
+  for (const { dir, accept } of targets) {
+    if (!fs.existsSync(dir)) continue;
+    try {
+      const watcher = fs.watch(dir, { recursive: true }, (_event, filename) => {
+        if (filename && !accept(String(filename))) return;
+        scheduleBrainChanged();
+      });
+      brainWatchers.push(watcher);
+    } catch (error) {
+      emitEvent({ type: "log", level: "warn", message: `Brain watcher failed for ${dir}: ${error?.message || error}` });
+    }
+  }
+}
+
+async function searchBrain(query, topK = 6) {
+  const q = String(query || "").trim();
+  if (!q) return { ok: false, error: "Empty query." };
+  const root = brainRoot();
+  if (!root) return { ok: false, error: "No brain vault configured. Set it in Settings → Hermes." };
+  if (!brainSearch.lexicon || brainSearch.root !== root) refreshBrainSearch();
+  if (!brainSearch.lexicon) return { ok: false, error: "Brain vault could not be read." };
+
+  let queryVector = null;
+  const apiKey = (process.env.GEMINI_API_KEY || "").trim();
+  if (brainSearch.index && apiKey && brainSemanticEnabled()) {
+    try {
+      queryVector = await embedQuery({ apiKey, model: brainSearch.index.manifest.model, text: q });
+    } catch (error) {
+      emitEvent({ type: "log", level: "warn", message: `Query embedding failed (lexical only): ${error?.message || error}` });
+    }
+  }
+
+  const results = hybridSearch({
+    lexicon: brainSearch.lexicon,
+    index: brainSearch.index,
+    queryVector,
+    query: q,
+    topK: Math.max(1, Math.min(12, Number(topK) || 6)),
+  });
+  return {
+    ok: true,
+    mode: queryVector ? "hybrid" : "lexical",
+    results: results.map((hit) => ({
+      path: hit.rel,
+      title: hit.title,
+      folder: hit.folder,
+      snippet: hit.snippet,
+      sources: hit.sources,
+      // A hit is trustworthy when the meaning clearly matches (cosine) or the
+      // note really contains the query's content words (coverage). Nonsense
+      // queries produce hits with neither — callers treat those as misses.
+      confident: hit.cosScore >= COSINE_CONFIDENT || hit.coverage >= COVERAGE_CONFIDENT,
+    })),
+  };
+}
+
 function getIrisUiContext() {
   return irisUiContext;
 }
@@ -775,6 +931,8 @@ async function executeTool(name, args = {}) {
       return approveHermesAction(args);
     case "get_iris_ui_context":
       return getIrisUiContext();
+    case "search_brain":
+      return searchBrain(args.query, args.top_k);
     case "go_to_sleep":
       // Give the goodbye a moment to play before the renderer tears down
       // audio (its stop() flushes playback immediately).
@@ -1031,6 +1189,25 @@ function buildIrisUiTools() {
           parameters: { type: "object", properties: {} },
         },
         {
+          name: "search_brain",
+          description:
+            "Search the shared memory vault (the brain) by meaning and keywords. Returns the top notes with title, folder, a matching snippet, and a `confident` flag. Use for questions about accumulated knowledge — clients, deals, drafts, decisions, people, style ('what do we know about X', 'which note mentions Y', 'do I have anything on Z'). Read-only and instant; NOT for live/current data (that is Hermes work). Treat results with confident=false as weak leads: mention them only as a guess, or say the vault has nothing solid. After answering, you may offer to show a note on the Neural Map (focus_brain_node with its title).",
+          parameters: {
+            type: "object",
+            properties: {
+              query: {
+                type: "string",
+                description: "What to look for — natural language or keywords, e.g. 'discount code for readers', 'atomic chat referral'.",
+              },
+              top_k: {
+                type: "number",
+                description: "How many notes to return (1-12, default 6).",
+              },
+            },
+            required: ["query"],
+          },
+        },
+        {
           name: "control_iris_ui",
           description:
             "Control the Iris UI directly for UI-only requests. Use this instead of Hermes when the user asks to open/show/close the current result, latest Hermes result, task history, or overlays.",
@@ -1099,6 +1276,7 @@ function buildLiveConfig() {
             `Sleep rule: when ${userDisplayName()} asks you to sleep ('go to sleep', 'sleep now', 'goodnight', 'that's all for now'), say a short warm goodbye and call go_to_sleep. Never call it unless explicitly asked.`,
             `Neural Map rule: when ${userDisplayName()} says 'load the brain', 'show your brain', 'open the neural map', or 'show the knowledge graph', call control_iris_ui with action open_brain_graph — it renders the shared memory vault as a living graph over the screen. 'close the brain' / 'hide the map' -> close_brain_graph. These are UI-only commands; never send them to Hermes.`,
             `Neural Map traversal rule: when ${userDisplayName()} asks to find, point to, focus, or zoom to a note ('where is X', 'focus on the EvoMap draft', 'show me the June content'), call control_iris_ui with action focus_brain_node and their words in query — the camera flies to the best match and highlights it (the map opens automatically if closed). Then 'open it' / 'read it' -> open_brain_note with no query; 'open X' -> open_brain_note with X in query. 'close the note' / 'go back to the map' -> close_brain_note. While the map is open, get_iris_ui_context includes brainNodes (all note titles), brainFocusedNote and brainOpenNote — consult it to pick the right title or tell ${userDisplayName()} what exists. If Iris shows a "No note matched" toast, say so and suggest close titles from brainNodes. These are UI-only commands; never send them to Hermes.`,
+            `Brain search rule: for questions about accumulated knowledge — clients, deals, drafts, people, decisions, style ('what do we know about X', 'which note mentions Y', 'have I worked with Z') — call search_brain first and answer from its snippets, citing note titles. It searches by meaning, not just keywords. Prefer it over Google Search for anything personal, and over Hermes for simple recall (dispatch Hermes only when the user wants live data or real work done). If a result deserves a look, offer to open it on the map (focus_brain_node with the note title). If search_brain returns no strong match, say so honestly — never invent vault content.`,
             "Also handle these UI-only commands with control_iris_ui (never Hermes): 'show the steps' / 'what is it doing' / 'show what tools it used' -> show_task_steps; 'hide the steps' -> hide_task_steps. If they name a specific card ('steps for the deals one', 'steps for the second card'), pass those words in query. With no target named, steps apply to the card they are viewing (open reader first), else the running task.",
             "If the user refers to a task by partial words from the task header, like 'open the failed one', 'open Hermes API', 'open package Iris', or 'open two hand design', call control_iris_ui with action open_task_by_query and put those words in query. Do not require an exact title match.",
             "If Iris shows a task chooser because multiple cards matched, the user can click a choice or say first/second/third; use get_iris_ui_context to inspect pendingTaskMatches before opening a specific task.",
@@ -1528,7 +1706,11 @@ app.whenReady().then(() => {
   ipcMain.handle("sidecar:status", () => liveStatus);
   ipcMain.handle("app:config", () => appConfig());
   ipcMain.handle("config:get", () => getFullConfig());
-  ipcMain.handle("config:save", (_event, updates) => writeUserConfig(updates));
+  ipcMain.handle("config:save", (_event, updates) => {
+    const config = writeUserConfig(updates);
+    watchBrainVault(); // vault path may have changed
+    return config;
+  });
   ipcMain.handle("config:test-gemini", (_event, payload) => testGeminiKey(payload?.key));
   ipcMain.handle("config:test-hermes", (_event, payload) => testHermesConnection(payload || {}));
   ipcMain.handle("config:preview-voice", (_event, payload) => previewVoice(payload || {}));
@@ -1537,6 +1719,39 @@ app.whenReady().then(() => {
   ipcMain.handle("hermes:create-session", () => createHermesSession());
   ipcMain.handle("brain:load", () => loadBrainGraph());
   ipcMain.handle("brain:read", (_event, relPath) => readBrainNote(String(relPath || "")));
+  ipcMain.handle("brain:search", (_event, query, topK) => searchBrain(query, topK));
+  // Settings button: build/refresh the semantic index on demand. Accepts
+  // unsaved draft values so it works before the user hits Save. Incremental
+  // by nature — the first run embeds everything, later runs only the delta.
+  ipcMain.handle("brain:sync-index", async (_event, payload = {}) => {
+    const rawVault = String(payload?.vault || "").trim() || (process.env.IRIS_BRAIN_PATH || "").trim();
+    const apiKey = String(payload?.key || "").trim() || (process.env.GEMINI_API_KEY || "").trim();
+    if (!rawVault) return { ok: false, error: "Set the brain vault path first." };
+    if (!apiKey) return { ok: false, error: "Enter your Gemini API key first." };
+    const vaultRoot = resolveContextPath(rawVault);
+    if (!fs.existsSync(vaultRoot)) return { ok: false, error: `Vault not found: ${vaultRoot}` };
+    try {
+      const result = await syncBrainIndex({ vaultRoot, apiKey });
+      if (vaultRoot === brainRoot()) {
+        brainSearch.index = result.index;
+        if (!brainSearch.lexicon || brainSearch.root !== vaultRoot) refreshBrainSearch();
+        watchBrainVault(); // first sync creates the index dir — start watching it
+        scheduleBrainChanged(); // live-refresh an open map
+      }
+      return {
+        ok: true,
+        total: result.total,
+        embedded: result.embedded,
+        reused: result.reused,
+        pruned: result.pruned,
+        ms: result.ms,
+        model: result.model,
+        location: indexDirFor(vaultRoot),
+      };
+    } catch (error) {
+      return { ok: false, error: error?.message || String(error) };
+    }
+  });
   ipcMain.handle("app:open-external", (_event, url) => {
     const target = String(url || "");
     if (/^https?:\/\//i.test(target)) shell.openExternal(target);
@@ -1566,6 +1781,14 @@ app.whenReady().then(() => {
   });
   createWindow();
   createTray();
+  // Warm the brain search shortly after launch so the first voice recall
+  // answers instantly, even before the Neural Map is ever opened. This is
+  // always free (lexicon rebuild + loading cached vectors); it embeds new
+  // notes only when IRIS_BRAIN_AUTO_INDEX is enabled.
+  setTimeout(() => refreshBrainSearch(), 4000);
+  // Hot reload: vault or index changes (Hermes sync, Obsidian edits, manual
+  // re-index) refresh the app live — no restart needed.
+  watchBrainVault();
   const registered = globalShortcut.register(hudHotkey(), () => {
     toggleHud();
     updateTrayMenu();

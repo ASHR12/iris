@@ -25,6 +25,8 @@ type Draft = {
   HERMES_BIN: string;
   HERMES_HOME: string;
   IRIS_BRAIN_PATH: string;
+  IRIS_BRAIN_SEMANTIC: string;
+  IRIS_BRAIN_AUTO_INDEX: string;
   IRIS_USER_NAME: string;
   IRIS_LOAD_TEST_DATA: string;
   IRIS_WAKE_WORD: string;
@@ -57,6 +59,8 @@ export default function SetupPanel({
     HERMES_BIN: config.hermesBin,
     HERMES_HOME: config.hermesHome,
     IRIS_BRAIN_PATH: config.brainPath,
+    IRIS_BRAIN_SEMANTIC: config.brainSemantic ? "true" : "false",
+    IRIS_BRAIN_AUTO_INDEX: config.brainAutoIndex ? "true" : "false",
     IRIS_USER_NAME: config.userName,
     IRIS_LOAD_TEST_DATA: config.loadTestData ? "true" : "false",
     IRIS_WAKE_WORD: config.wakeWord ? "true" : "false",
@@ -66,6 +70,7 @@ export default function SetupPanel({
   const [gemini, setGemini] = useState<TestState>({ status: "idle" });
   const [hermes, setHermes] = useState<TestState>({ status: "idle" });
   const [preview, setPreview] = useState<TestState>({ status: "idle" });
+  const [brainIndex, setBrainIndex] = useState<TestState>({ status: "idle" });
   const [mic, setMic] = useState<PermState>("idle");
   const [cam, setCam] = useState<PermState>("idle");
   const [saving, setSaving] = useState(false);
@@ -114,6 +119,22 @@ export default function SetupPanel({
       result.health && typeof result.health.version === "string" ? ` · v${result.health.version}` : "";
     setHermes(
       result.ok ? { status: "ok", message: `Reachable${version}.` } : { status: "error", message: result.error },
+    );
+  }
+
+  async function buildBrainIndex() {
+    setBrainIndex({ status: "testing" });
+    const result = await window.iris.syncBrainIndex({
+      vault: draft.IRIS_BRAIN_PATH.trim(),
+      key: draft.GEMINI_API_KEY.trim(),
+    });
+    setBrainIndex(
+      result.ok
+        ? {
+            status: "ok",
+            message: `${result.total} notes · ${result.embedded} embedded · ${result.reused} reused · ${((result.ms ?? 0) / 1000).toFixed(1)}s`,
+          }
+        : { status: "error", message: result.error },
     );
   }
 
@@ -262,6 +283,56 @@ export default function SetupPanel({
           An Obsidian vault of markdown notes that acts as your shared brain. When set, saying{" "}
           <code>show your brain</code> in HUD mode renders it as a living knowledge graph (the Neural Map).
           Read-only — Iris never edits the vault.
+        </small>
+      </label>
+      <label className="setup-field">
+        <span>Semantic brain search</span>
+        <ThemedSelect
+          ariaLabel="Semantic brain search"
+          value={draft.IRIS_BRAIN_SEMANTIC}
+          options={[
+            { value: "true", label: "On — meaning + keywords (Gemini embeddings)" },
+            { value: "false", label: "Off — keywords only, fully local" },
+          ]}
+          onChange={(value) => set("IRIS_BRAIN_SEMANTIC", value)}
+        />
+        <small className="setup-note">
+          On: note excerpts are embedded once via the Gemini API (cached under <code>~/.iris/brain-index</code>, never
+          inside the vault or any repo) so voice search understands meaning, not just words. Off: search still works,
+          keyword-only, and nothing ever leaves your machine.
+        </small>
+      </label>
+      <div className="setup-actions">
+        <button
+          className="setup-btn"
+          onClick={buildBrainIndex}
+          disabled={brainIndex.status === "testing" || !draft.IRIS_BRAIN_PATH.trim()}
+        >
+          {brainIndex.status === "testing" ? <Loader2 size={14} className="spin" /> : null}
+          {brainIndex.status === "testing" ? "Indexing…" : "Build index now"}
+        </button>
+        <TestBadge state={brainIndex} okLabel="Indexed" />
+      </div>
+      <small className="setup-note">
+        Builds the semantic index on demand. Incremental: the first run embeds every note; after that only notes whose
+        content changed are re-embedded, so re-running is instant and free. (If Hermes syncs your vault, its brain skill
+        can run the same indexer automatically after each sync.)
+      </small>
+      <label className="setup-field">
+        <span>Auto-index on launch</span>
+        <ThemedSelect
+          ariaLabel="Auto-index on launch"
+          value={draft.IRIS_BRAIN_AUTO_INDEX}
+          options={[
+            { value: "false", label: "Off — index only when I run it (default)" },
+            { value: "true", label: "On — keep the index fresh automatically" },
+          ]}
+          onChange={(value) => set("IRIS_BRAIN_AUTO_INDEX", value)}
+        />
+        <small className="setup-note">
+          On: every time Iris starts (or the Neural Map opens), new or edited notes are embedded in the background —
+          convenient, but it makes Gemini API calls without you pressing anything. Unchanged notes are never re-sent, so
+          a quiet vault costs zero calls; still, leave this off if you want API usage only on your explicit action.
         </small>
       </label>
       <label className="setup-field">
