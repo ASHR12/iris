@@ -248,6 +248,79 @@
   box-shadow: 0 0 12px rgba(var(--violet-rgb), 0.95);
 }
 
+/* Pinch — loud ORANGE (grab: drag a node or the canvas). Deliberately
+   unmistakable: orange ring + dot + a PINCH tag under the cursor, so you
+   always know the instant the system thinks you are grabbing. */
+.hand-reticle.pinch .hand-ring {
+  width: 30px;
+  height: 30px;
+  margin: -15px 0 0 -15px;
+  border: 3.5px solid #ff9f43;
+  box-shadow:
+    0 0 26px rgba(255, 159, 67, 0.9),
+    inset 0 0 10px rgba(255, 159, 67, 0.4);
+  animation: pinch-pop 0.16s ease-out;
+}
+
+.hand-reticle.pinch .hand-dot {
+  width: 11px;
+  height: 11px;
+  margin: -5.5px 0 0 -5.5px;
+  background: #ff9f43;
+  box-shadow: 0 0 16px rgba(255, 159, 67, 1);
+}
+
+/* Gesture tag under every reticle — the same logic for all states, color-
+   matched to the ring: POINT/HOLD cyan, PALM violet, FIST amber. PINCH is
+   the loud one (solid orange) because grabbing must never be ambiguous. */
+.hand-gesture-label {
+  position: absolute;
+  top: 22px;
+  left: 0;
+  transform: translateX(-50%);
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  white-space: nowrap;
+  background: rgba(10, 16, 28, 0.78);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
+
+.hand-gesture-label.pointing {
+  color: var(--cyan-bright);
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--cyan-rgb), 0.45),
+    0 0 10px rgba(var(--cyan-rgb), 0.35);
+}
+
+.hand-gesture-label.open {
+  color: #c4b5fd;
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--violet-rgb), 0.5),
+    0 0 10px rgba(var(--violet-rgb), 0.35);
+}
+
+.hand-gesture-label.fist {
+  color: var(--amber);
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--amber-rgb), 0.5),
+    0 0 10px rgba(var(--amber-rgb), 0.4);
+}
+
+.hand-gesture-label.pinch {
+  color: #1a0e00;
+  background: #ff9f43;
+  box-shadow: 0 0 14px rgba(255, 159, 67, 0.8);
+}
+
+@keyframes pinch-pop {
+  from { transform: scale(1.5); opacity: 0.4; }
+  to { transform: scale(1); opacity: 1; }
+}
+
 /* Closed fist — amber (close) */
 .hand-reticle.fist .hand-ring {
   width: 22px;

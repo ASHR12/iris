@@ -141,10 +141,26 @@
 /* Transient voice feedback ("No note matched…") near the bottom */
 .brain-pill.toast {
   top: auto;
-  bottom: 64px;
+  bottom: 104px;
   transform: translateX(-50%);
   font-size: 12px;
   animation: brain-toast 2.6s ease forwards;
+}
+
+/* Isolation banner — persistent while the local-graph filter is active */
+.brain-pill.filter {
+  top: auto;
+  bottom: 60px;
+  transform: translateX(-50%);
+  font-size: 12px;
+  color: #d9e6f5;
+  animation: none;
+  white-space: nowrap;
+}
+
+.brain-pill.filter strong {
+  color: var(--cyan-bright);
+  font-weight: 600;
 }
 
 @keyframes brain-toast {

@@ -398,6 +398,17 @@
 .gesture-chip.open .dot { background: var(--violet-soft); }
 .gesture-chip.fist .dot { background: var(--amber); }
 
+/* Pinch is the one state you must never be unsure about — loud orange. */
+.gesture-chip.pinch {
+  color: #ff9f43;
+  font-weight: 700;
+  opacity: 1;
+}
+.gesture-chip.pinch .dot {
+  background: #ff9f43;
+  box-shadow: 0 0 10px #ff9f43;
+}
+
 .gesture-chip .dot {
   width: 6px;
   height: 6px;

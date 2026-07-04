@@ -30,6 +30,7 @@
     "sidecar": "node scripts/python-command.mjs sidecar",
     "check:python": "node scripts/python-command.mjs check",
     "brain:index": "node electron/brainIndex.mjs",
+    "demo:vault": "node scripts/generate-demo-vault.mjs",
     "brain:skill-sync": "cp electron/brainIndex.mjs \"${HERMES_BRAIN_SKILL_DIR:-$HOME/.hermes/skills/memory/hermes-brain}/scripts/brain_embed_index.mjs\""
   },
   "dependencies": {

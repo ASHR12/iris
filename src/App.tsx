@@ -693,6 +693,7 @@ export default function App() {
 
   const handAction = useMemo(() => {
     if (!hand.present) return { label: "Show your hand", tone: "idle" };
+    if (hand.hands.some((item) => item.pinch)) return { label: "PINCH · grab", tone: "pinch" };
     if (hand.hands.filter((item) => item.openPalm).length >= 2) return { label: "Two palms · resize", tone: "open" };
     if (hand.fist) return { label: "Closed_Fist · close", tone: "fist" };
     if (hand.openPalm) return { label: "Open_Palm · scroll", tone: "open" };
@@ -756,6 +757,10 @@ export default function App() {
       brainNodes: brainOpen ? brainState?.nodeTitles ?? [] : undefined,
       brainFocusedNote: brainOpen ? brainState?.focusedTitle ?? null : null,
       brainOpenNote: brainOpen ? brainState?.openNoteTitle ?? null : null,
+      // Isolation ("local graph") filter: which note the map is filtered to
+      // and the connected notes currently visible around it.
+      brainIsolatedNote: brainOpen ? brainState?.isolatedTitle ?? null : null,
+      brainIsolationNeighbors: brainOpen ? brainState?.isolationNeighbors ?? null : null,
       tasks: sortedTasks.map((task) => ({
         id: task.id,
         task: task.task,
@@ -821,17 +826,29 @@ export default function App() {
         setBrainOpen(false);
         return;
       }
-      if (action === "focus_brain_node" || action === "open_brain_note" || action === "close_brain_note") {
+      if (
+        action === "focus_brain_node" ||
+        action === "open_brain_note" ||
+        action === "close_brain_note" ||
+        action === "show_full_brain_graph"
+      ) {
         // Focus/open auto-open the map; the command executes once the graph
         // is mounted and its data is ready (BrainGraph tracks the seq).
-        if (action !== "close_brain_note") {
+        if (action === "focus_brain_node" || action === "open_brain_note") {
           if (uiMode !== "hud") window.iris.toggleHud();
           setBrainOpen(true);
         }
         brainSeqRef.current += 1;
         setBrainCommand({
           seq: brainSeqRef.current,
-          kind: action === "focus_brain_node" ? "focus" : action === "open_brain_note" ? "open" : "close",
+          kind:
+            action === "focus_brain_node"
+              ? "focus"
+              : action === "open_brain_note"
+                ? "open"
+                : action === "close_brain_note"
+                  ? "close"
+                  : "showAll",
           query: query || undefined,
         });
         return;
