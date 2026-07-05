@@ -70,6 +70,7 @@ export default function HudShell({
   awake,
   caption,
   captionDim,
+  captionCompact,
   wakeWordEnabled,
   muted,
   onToggleMute,
@@ -92,6 +93,7 @@ export default function HudShell({
   handActionLabel,
   handActionTone,
   brainAvailable,
+  brainOpen,
   onOpenBrain,
 }: {
   reactorState: ReactorState;
@@ -106,6 +108,7 @@ export default function HudShell({
   awake: boolean;
   caption: string;
   captionDim: boolean;
+  captionCompact: boolean;
   wakeWordEnabled: boolean;
   muted: boolean;
   onToggleMute: () => void;
@@ -128,6 +131,7 @@ export default function HudShell({
   handActionLabel: string;
   handActionTone: string;
   brainAvailable: boolean;
+  brainOpen: boolean;
   onOpenBrain: () => void;
 }) {
   // Show the full stream (state caps at 20); the column has a fixed max height
@@ -139,6 +143,12 @@ export default function HudShell({
   // HUD, so they start open but can be tucked away the same way.
   const [commsOpen, setCommsOpen] = useState(false);
   const [workOpen, setWorkOpen] = useState(true);
+
+  // The Neural Map wants the whole sky: opening it tucks the task panel away
+  // (the chip stays for bringing it back); closing the map leaves it as-is.
+  useEffect(() => {
+    if (brainOpen) setWorkOpen(false);
+  }, [brainOpen]);
 
   return (
     <div className={`hud-shell ${awake ? "awake" : "asleep"}`}>
@@ -216,7 +226,7 @@ export default function HudShell({
 
       {/* Orb cluster, bottom-right */}
       <div className="hud-orb-cluster hud-hit">
-        <div className={`hud-caption ${captionDim ? "dim" : ""}`}>
+        <div className={`hud-caption ${captionDim ? "dim" : ""} ${!awake || captionCompact ? "hint" : ""}`}>
           {awake ? caption : wakeWordEnabled ? "Say “Hey Iris”" : "Iris is asleep"}
         </div>
         <div
@@ -259,9 +269,9 @@ export default function HudShell({
           )}
           {brainAvailable ? (
             <button
-              className="hud-btn"
+              className={`hud-btn ${brainOpen ? "active" : ""}`}
               onClick={onOpenBrain}
-              title="Neural Map — say 'show your brain'"
+              title={brainOpen ? "Close the Neural Map" : "Neural Map — say 'show your brain'"}
             >
               <BrainCircuit size={14} />
             </button>

@@ -1,0 +1,14 @@
+---
+description: Keep .ui-shots/ clean — screenshots are transient analysis artifacts
+alwaysApply: true
+---
+
+# UI screenshot hygiene
+
+`.ui-shots/` (gitignored) holds UI verification tooling. Keep it clean:
+
+- **Delete screenshots (`*.png`) right after analyzing them.** They are
+  transient artifacts, not deliverables. Never let them accumulate.
+- Keep only the reusable verification scripts: `capture-brain.mjs`,
+  `check-hud-layout.mjs`, `composite-hud.mjs`. One-off probe/capture scripts
+  should also be deleted once their purpose is served.

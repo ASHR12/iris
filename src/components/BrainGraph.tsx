@@ -455,14 +455,51 @@ export default function BrainGraph({
   const hitTestNodeRef = useRef(hitTestNode);
   hitTestNodeRef.current = hitTestNode;
 
-  // Click-through support: App's HUD tracker asks "is the mouse over
-  // something the map actually owns?" — a node, that is. Everything else
-  // passes through to the desktop.
+  // Click-through support: App's HUD tracker asks "is the mouse near
+  // anything the map owns?" — if yes the window takes the mouse (hover,
+  // click, wheel-zoom); if not, clicks pass through to the desktop.
+  //
+  // Deliberately MUCH looser than the gesture grab test: no minimum node
+  // size (at overview zoom most nodes render under 2.5px — the strict gate
+  // here once locked the mouse out of the map entirely) and a generous
+  // radius, so the whole constellation area is mouse-active while far-away
+  // empty desktop stays yours. Precise targeting is force-graph's job.
+  function nodeNear(screenX: number, screenY: number, radiusPx: number): boolean {
+    const graph = graphRef.current;
+    if (!graph) return false;
+    const graphPoint = graph.screen2GraphCoords(screenX, screenY);
+    const k = graph.zoom();
+    const visible = visibleIdsRef.current;
+    const reach = radiusPx / k;
+    for (const rawNode of graph.graphData().nodes as GraphNode[]) {
+      if (rawNode.x === undefined || rawNode.y === undefined) continue;
+      if (visible && !visible.has(rawNode.id)) continue;
+      if (Math.hypot(rawNode.x - graphPoint.x, rawNode.y - graphPoint.y) <= reach) return true;
+    }
+    return false;
+  }
+  const nodeNearRef = useRef(nodeNear);
+  nodeNearRef.current = nodeNear;
+
   useEffect(() => {
-    (window as unknown as Record<string, unknown>).__brainNodeAt = (x: number, y: number) =>
-      Boolean(hitTestNodeRef.current(x, y, 12));
+    const w = window as unknown as Record<string, unknown>;
+    w.__brainNodeAt = (x: number, y: number) => nodeNearRef.current(x, y, 28);
+    // Test hooks: current zoom + a node's screen position (real-mouse tests).
+    w.__brainZoom = () => graphRef.current?.zoom() ?? null;
+    w.__brainScreenPos = (title: string) => {
+      const graph = graphRef.current;
+      if (!graph) return null;
+      const node = (graph.graphData().nodes as GraphNode[]).find(
+        (item) => item.title.toLowerCase() === title.toLowerCase(),
+      );
+      if (!node || node.x === undefined || node.y === undefined) return null;
+      const point = graph.graph2ScreenCoords(node.x, node.y);
+      return { x: point.x, y: point.y };
+    };
     return () => {
-      delete (window as unknown as Record<string, unknown>).__brainNodeAt;
+      delete w.__brainNodeAt;
+      delete w.__brainZoom;
+      delete w.__brainScreenPos;
     };
   }, []);
 
@@ -1057,6 +1094,9 @@ export default function BrainGraph({
 
   return (
     <div className="brain-overlay">
+      {/* Whisper veil: settles any wallpaper so the constellation pops.
+          Click-through — purely visual. */}
+      <div className="brain-veil" />
       <div className={`brain-stage ${selectedId ? "reading" : ""}`} ref={stageRef}>
         <div className="brain-canvas" ref={canvasHostRef} />
 

@@ -71,10 +71,17 @@ html:not(.hud-mode) .setup-backdrop {
 .hud-orb-cluster {
   position: absolute;
   right: 26px;
-  bottom: 24px;
+  /* Same Dock-clearance line as the camera and the control column — the
+     reactor never sits behind the Dock. */
+  bottom: 100px;
+  /* Above the Neural Map canvas (z 30): the orb and its buttons stay
+     clickable while the map is open. */
+  z-index: 40;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  /* Right-aligned so the orb hugs the corner deterministically — the
+     control column anchors to its left edge regardless of caption width. */
+  align-items: flex-end;
   gap: 10px;
   /* Delayed + backwards-filled so elements stay invisible until the window
      has finished jumping to fullscreen bounds. */
@@ -96,7 +103,14 @@ html:not(.hud-mode) .setup-backdrop {
 }
 
 .hud-caption {
-  max-width: 360px;
+  /* Centered above the reactor: the orb is right-aligned in the cluster, so
+     its center sits 95px from the cluster's right edge. */
+  position: absolute;
+  bottom: calc(100% + 10px);
+  right: 95px;
+  transform: translateX(50%);
+  width: max-content;
+  max-width: 240px; /* stays fully on-screen when centered on the orb */
   padding: 8px 15px;
   border-radius: 14px;
   background: linear-gradient(180deg, rgba(26, 36, 57, 0.68), rgba(10, 16, 28, 0.72));
@@ -119,11 +133,32 @@ html:not(.hud-mode) .setup-backdrop {
   color: #c3cfe0;
 }
 
+/* Whisper-size states: the asleep hint ("Say Hey Iris") and transient status
+   pills (Listening…, Speaking…, Working…). Real conversation captions keep
+   the full size above. */
+.hud-caption.hint {
+  max-width: 200px;
+  padding: 4px 10px;
+  border-radius: 9px;
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  opacity: 0.85;
+}
+
+/* Control buttons: a vertical column to the LEFT of the orb, bottom-aligned
+   with the camera's 100px Dock-clearance line — never under the Dock, no
+   matter how many buttons or how wide the Dock gets. (Fixed-positioned, but
+   hover still works: the column is a DOM child of the cluster.) */
 .hud-controls {
+  position: fixed;
+  right: 230px; /* 26px margin + 190px orb + 14px gap */
+  bottom: 100px;
   display: flex;
+  flex-direction: column;
+  align-items: center;
   gap: 8px;
   opacity: 0;
-  transform: translateY(4px);
+  transform: translateX(6px);
   transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
@@ -182,6 +217,7 @@ html:not(.hud-mode) .setup-backdrop {
   position: absolute;
   top: 18px;
   right: 18px;
+  z-index: 40; /* clickable above the Neural Map canvas */
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -191,7 +227,8 @@ html:not(.hud-mode) .setup-backdrop {
 
 .hud-work {
   width: 342px;
-  max-height: 70vh;
+  /* Capped well above the orb cluster — task cards never reach the reactor. */
+  max-height: 42vh;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -208,7 +245,11 @@ html:not(.hud-mode) .setup-backdrop {
 .hud-left {
   position: absolute;
   left: 22px;
-  bottom: 24px;
+  /* Raised clear of the macOS Dock (~80px tall) so it never hides behind
+     the camera, and roughly level with the arc reactor's body across the
+     screen. The strip below stays click-through — Dock always reachable. */
+  bottom: 100px;
+  z-index: 40; /* clickable above the Neural Map canvas */
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -414,18 +455,29 @@ html:not(.hud-mode) .setup-backdrop {
 
 /* ===== Compact boot card (HUD mode) =====
    The fullscreen boot takeover would blank the whole desktop; in HUD mode the
-   boot log becomes a small glass card above the orb cluster instead. */
+   boot log is a small glass card slotted into the one free stretch of the
+   right rail: BELOW the task panel's maximum extent (chip + 42vh), ABOVE the
+   caption that floats over the reactor. Centered in that slot, clipped
+   gracefully if a short screen leaves less room than the log needs. */
 .hud-mode .boot.compact {
   position: fixed;
-  inset: auto 26px 250px auto;
+  top: calc(42vh + 66px);
+  bottom: 342px;
+  left: auto;
+  right: 26px;
   z-index: 55;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  width: 320px;
-  padding: 16px 18px 14px;
-  border-radius: 16px;
+  gap: 3px;
+  width: 300px;
+  height: fit-content;
+  max-height: max(0px, calc(58vh - 408px));
+  margin-top: auto;
+  margin-bottom: auto;
+  overflow: hidden;
+  padding: 10px 14px 9px;
+  border-radius: 14px;
   background: rgba(8, 12, 22, 0.94);
   border: 1px solid var(--hairline-strong);
   box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
@@ -433,17 +485,26 @@ html:not(.hud-mode) .setup-backdrop {
 }
 
 .boot.compact .boot-title {
-  font-size: 15px;
+  font-size: 12.5px;
 }
 
 .boot.compact .boot-sub {
-  font-size: 7.5px;
+  font-size: 6.5px;
 }
 
 .boot.compact .boot-log {
   width: 100%;
-  margin-top: 4px;
-  font-size: 10px;
+  margin-top: 2px;
+  font-size: 9px;
+}
+
+.boot.compact .boot-line {
+  gap: 7px;
+  padding: 1.5px 0;
+}
+
+.boot.compact .boot-line .boot-state {
+  font-size: 8px;
 }
 
 .boot.compact .boot-bar {

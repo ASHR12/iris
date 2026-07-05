@@ -904,19 +904,22 @@ export default function App() {
     });
   }, [hasBridge, tasks, sortedTasks, expandedTaskId, focusedTaskId, latestResultTask, uiMode]);
 
+  // `compact` marks short status pills (Listening…, Speaking…) that render
+  // whisper-sized in the HUD; real conversation captions stay full size.
   const caption = useMemo(() => {
     if (!sidecarRunning)
       return {
         text: wakeWordEnabled ? "Say “Hey Iris” or press W to wake" : "Press W to wake Iris",
         dim: true,
+        compact: true,
       };
-    if (audioState === "speaking") return { text: "Speaking…", dim: false };
-    if (audioState === "listening") return { text: "Listening…", dim: false };
-    if (working) return { text: "Working on it…", dim: false };
+    if (audioState === "speaking") return { text: "Speaking…", dim: false, compact: true };
+    if (audioState === "listening") return { text: "Listening…", dim: false, compact: true };
+    if (working) return { text: "Working on it…", dim: false, compact: true };
     const last = transcript[transcript.length - 1];
-    if (last) return { text: last.text, dim: false };
-    if (geminiStatus === "connected") return { text: "How can I help?", dim: true };
-    return { text: "Connecting…", dim: true };
+    if (last) return { text: last.text, dim: false, compact: false };
+    if (geminiStatus === "connected") return { text: "How can I help?", dim: true, compact: true };
+    return { text: "Connecting…", dim: true, compact: true };
   }, [sidecarRunning, audioState, working, transcript, geminiStatus, wakeWordEnabled]);
 
   function openTask(task: TaskCard) {
@@ -990,6 +993,7 @@ export default function App() {
           awake={sidecarRunning}
           caption={caption.text}
           captionDim={caption.dim}
+          captionCompact={caption.compact}
           wakeWordEnabled={wakeWordEnabled}
           muted={audio.muted}
           onToggleMute={audio.toggleMute}
@@ -1012,7 +1016,8 @@ export default function App() {
           handActionLabel={handAction.label}
           handActionTone={handAction.tone}
           brainAvailable={Boolean(fullConfig?.brainPath)}
-          onOpenBrain={() => setBrainOpen(true)}
+          brainOpen={brainOpen}
+          onOpenBrain={() => setBrainOpen((current) => !current)}
         />
       ) : (
       <div

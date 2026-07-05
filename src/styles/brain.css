@@ -3,13 +3,32 @@
 .brain-overlay {
   position: fixed;
   inset: 0;
-  z-index: 30; /* above the HUD shell, below the reader/settings overlays */
+  /* BELOW the HUD shell (z 5): the orb, its controls, the camera, and the
+     task chip stay visible and clickable while the constellation floats
+     behind them. The map's own UI lives inside this layer. */
+  z-index: 4;
   pointer-events: none;
 }
 
 /* The stage never captures the mouse wholesale — the desktop stays usable
    under the constellation. The window's click-through tracker grants mouse
    interactivity only over real nodes (__brainNodeAt) and .hud-hit UI. */
+/* A veil even lighter than the card backdrops (0.16): enough to settle a
+   bright or busy wallpaper behind the constellation, never a blackout. The
+   soft vignette keeps the center bright where the graph lives. */
+.brain-veil {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse 90% 80% at 50% 46%,
+    rgba(2, 5, 10, 0.16) 0%,
+    rgba(2, 5, 10, 0.24) 55%,
+    rgba(2, 5, 10, 0.38) 100%
+  );
+  animation: brain-in 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
 .brain-stage {
   position: absolute;
   inset: 0;
