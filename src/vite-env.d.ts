@@ -28,6 +28,7 @@ type IrisUiAction = {
     | "open_brain_graph"
     | "close_brain_graph"
     | "focus_brain_node"
+    | "filter_brain_graph"
     | "open_brain_note"
     | "close_brain_note"
     | "show_full_brain_graph";
@@ -50,6 +51,7 @@ type IrisConfig = {
   userName: string;
   loadTestData: boolean;
   wakeWord: boolean;
+  wakeSensitivity: string;
   sounds: boolean;
   configured: boolean;
   voices: string[];
@@ -130,6 +132,13 @@ type BrainIndexSyncResult = {
   error?: string;
 };
 
+type BrainFilterResult = {
+  ok: boolean;
+  mode?: "hybrid" | "lexical";
+  results?: Array<{ path: string; title: string; folder: string }>;
+  error?: string;
+};
+
 type BrainSearchResult = {
   ok: boolean;
   mode?: "hybrid" | "lexical";
@@ -165,6 +174,7 @@ type IrisApi = {
   loadBrain: () => Promise<BrainGraphResult>;
   readBrainNote: (relPath: string) => Promise<BrainNoteResult>;
   searchBrain: (query: string, topK?: number) => Promise<BrainSearchResult>;
+  filterBrain: (query: string) => Promise<BrainFilterResult>;
   syncBrainIndex: (payload?: { vault?: string; key?: string }) => Promise<BrainIndexSyncResult>;
   onBrainChanged: (callback: () => void) => () => void;
   openExternal: (url: string) => Promise<void>;

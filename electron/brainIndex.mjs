@@ -519,6 +519,38 @@ export function queryCoverage(lexicon, rel, query) {
 }
 
 /**
+ * Obsidian-style full-text FILTER: every note whose text (title, folder,
+ * aliases, tags, body — all live in the BM25 term map) contains ALL of the
+ * query's content words, substring-tolerant ("hash" matches "Hashmatrix").
+ * Pure local string matching — no API, no ranking, returns the complete set.
+ */
+export function lexicalFilter(lexicon, query) {
+  const tokens = contentTokens(query);
+  if (tokens.length === 0) return [];
+  const out = [];
+  for (const doc of lexicon.docs) {
+    let all = true;
+    for (const wanted of tokens) {
+      let hit = doc.tf.has(wanted);
+      if (!hit) {
+        for (const term of doc.tf.keys()) {
+          if (term.includes(wanted)) {
+            hit = true;
+            break;
+          }
+        }
+      }
+      if (!hit) {
+        all = false;
+        break;
+      }
+    }
+    if (all) out.push({ rel: doc.record.rel, title: doc.record.title, folder: doc.record.folder });
+  }
+  return out;
+}
+
+/**
  * Hybrid retrieval: reciprocal-rank fusion of BM25F and cosine rankings.
  * Either side may be missing (no index yet / no API key) — degrades cleanly.
  * Each hit carries its raw lexScore/cosScore + coverage so callers can judge

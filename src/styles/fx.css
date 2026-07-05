@@ -196,8 +196,10 @@
   height: 54px;
   margin: -27px 0 0 -27px;
   border-radius: 50%;
-  border: 2px solid rgba(var(--cyan-rgb), 0.8);
-  box-shadow: 0 0 18px rgba(var(--cyan-rgb), 0.5);
+  /* Idle (no recognized gesture) is deliberately MUTED — a quiet gray
+     ghost — so a real POINT's bright cyan can never be confused with it. */
+  border: 2px solid rgba(148, 163, 184, 0.42);
+  box-shadow: 0 0 10px rgba(148, 163, 184, 0.2);
   transition: width 0.12s ease, height 0.12s ease, border-color 0.12s ease, margin 0.12s ease;
 }
 
@@ -207,14 +209,24 @@
   height: 8px;
   margin: -4px 0 0 -4px;
   border-radius: 50%;
-  background: #ffffff;
-  box-shadow: 0 0 12px rgba(var(--cyan-rgb), 0.9);
+  background: rgba(203, 213, 225, 0.75);
+  box-shadow: 0 0 8px rgba(148, 163, 184, 0.5);
 }
 
 /* Pointing — cyan (primary cursor) */
 .hand-reticle.pointing .hand-ring {
   border-color: rgba(var(--cyan-rgb), 0.9);
   box-shadow: 0 0 20px rgba(var(--cyan-rgb), 0.55);
+}
+
+.hand-reticle.pointing .hand-dot,
+.hand-reticle.open .hand-dot,
+.hand-reticle.fist .hand-dot {
+  background: #ffffff;
+}
+
+.hand-reticle.pointing .hand-dot {
+  box-shadow: 0 0 12px rgba(var(--cyan-rgb), 0.9);
 }
 
 /* Dwell charge: the ring contracts onto the target for the hold duration so

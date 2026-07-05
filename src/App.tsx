@@ -55,10 +55,12 @@ export default function App() {
   const [fullConfig, setFullConfig] = useState<IrisConfig | null>(null);
   const [setup, setSetup] = useState<{ mode: "onboarding" | "settings" } | null>(null);
   const [wakeWordEnabled, setWakeWordEnabled] = useState(false);
+  const [wakeSensitivity, setWakeSensitivity] = useState("balanced");
   const [hermesSession, setHermesSession] = useState<string | null>(null);
   const [uiMode, setUiMode] = useState<"deck" | "hud">("deck");
   // Neural Map (the brain graph) — HUD-only overlay.
   const [brainOpen, setBrainOpen] = useState(false);
+  const prevBrainOpenRef = useRef(false);
   const [brainCommand, setBrainCommand] = useState<BrainVoiceCommand | null>(null);
   const brainSeqRef = useRef(0);
   const [brainState, setBrainState] = useState<BrainGraphState | null>(null);
@@ -250,6 +252,7 @@ export default function App() {
     window.iris.getConfig().then((config) => {
       setFullConfig(config);
       setWakeWordEnabled(config.wakeWord);
+      setWakeSensitivity(config.wakeSensitivity || "balanced");
       if (!config.configured) setSetup({ mode: "onboarding" });
     });
   }, [hasBridge]);
@@ -313,10 +316,16 @@ export default function App() {
       raf = requestAnimationFrame(() => {
         raf = 0;
         const el = document.elementFromPoint(event.clientX, event.clientY);
+        const brainNodeAt = (
+          window as unknown as { __brainNodeAt?: (x: number, y: number) => boolean }
+        ).__brainNodeAt;
         const next = Boolean(
           el?.closest?.(
             ".hud-hit, .reader-backdrop, .history-backdrop, .match-backdrop, .setup-backdrop, .boot",
-          ),
+          ) ||
+            // Neural Map: the canvas is click-through except directly over a
+            // node — the desktop stays usable while the map is up.
+            brainNodeAt?.(event.clientX, event.clientY),
         );
         if (next !== interactive) {
           interactive = next;
@@ -335,12 +344,17 @@ export default function App() {
 
   // Local "Hey Iris" wake word: only listens while asleep; a detection wakes Iris
   // exactly like pressing W. Fully on-device, opt-in via Settings.
+  // Sensitivity -> score threshold: relaxed wakes easily (quiet rooms / soft
+  // voices), strict needs a loud clear phrase. The adaptive noise floor in
+  // the hook handles noisy rooms automatically at every level.
+  const wakeThreshold = wakeSensitivity === "relaxed" ? 0.08 : wakeSensitivity === "strict" ? 0.2 : 0.12;
   useWakeWord(
     hasBridge && wakeWordEnabled && !sidecarRunning,
     () => {
       if (!sidecarRunning) start();
     },
     (message) => pushLog("error", `Wake word: ${message}`),
+    wakeThreshold,
   );
 
   async function openSettings() {
@@ -738,6 +752,17 @@ export default function App() {
     setTaskChooser({ query: query || "task", matches: matches.map((match) => match.task) });
   }
 
+  // The Neural Map is voice + gesture native: opening it brings up the mic
+  // (wake) and the gesture camera automatically when they're not already on.
+  useEffect(() => {
+    const wasOpen = prevBrainOpenRef.current;
+    prevBrainOpenRef.current = brainOpen;
+    if (!brainOpen || wasOpen) return;
+    if (!sidecarRunning) void start(); // start() also enables the camera
+    else if (!handControl) setHandControl(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [brainOpen]);
+
   useEffect(() => {
     if (!hasBridge) return;
     window.iris.sendUiContext({
@@ -761,6 +786,8 @@ export default function App() {
       // and the connected notes currently visible around it.
       brainIsolatedNote: brainOpen ? brainState?.isolatedTitle ?? null : null,
       brainIsolationNeighbors: brainOpen ? brainState?.isolationNeighbors ?? null : null,
+      brainFilterQuery: brainOpen ? brainState?.filterQuery ?? null : null,
+      brainFilterMatches: brainOpen ? brainState?.filterMatches ?? null : null,
       tasks: sortedTasks.map((task) => ({
         id: task.id,
         task: task.task,
@@ -828,13 +855,14 @@ export default function App() {
       }
       if (
         action === "focus_brain_node" ||
+        action === "filter_brain_graph" ||
         action === "open_brain_note" ||
         action === "close_brain_note" ||
         action === "show_full_brain_graph"
       ) {
-        // Focus/open auto-open the map; the command executes once the graph
-        // is mounted and its data is ready (BrainGraph tracks the seq).
-        if (action === "focus_brain_node" || action === "open_brain_note") {
+        // Focus/filter/open auto-open the map; the command executes once the
+        // graph is mounted and its data is ready (BrainGraph tracks the seq).
+        if (action === "focus_brain_node" || action === "filter_brain_graph" || action === "open_brain_note") {
           if (uiMode !== "hud") window.iris.toggleHud();
           setBrainOpen(true);
         }
@@ -844,11 +872,13 @@ export default function App() {
           kind:
             action === "focus_brain_node"
               ? "focus"
-              : action === "open_brain_note"
-                ? "open"
-                : action === "close_brain_note"
-                  ? "close"
-                  : "showAll",
+              : action === "filter_brain_graph"
+                ? "filter"
+                : action === "open_brain_note"
+                  ? "open"
+                  : action === "close_brain_note"
+                    ? "close"
+                    : "showAll",
           query: query || undefined,
         });
         return;
@@ -1125,6 +1155,7 @@ export default function App() {
             setFullConfig(config);
             setTestDataEnabled(config.loadTestData);
             setWakeWordEnabled(config.wakeWord);
+            setWakeSensitivity(config.wakeSensitivity || "balanced");
             setSoundsEnabled(config.sounds);
           }}
           onStart={() => {

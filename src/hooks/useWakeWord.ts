@@ -13,9 +13,19 @@ const EMB_WINDOW = 76; // mel frames per embedding
 const EMB_STRIDE = 8; // mel frames between embeddings
 const N_EMB = 16; // classifier input length
 const PREDICT_INTERVAL_MS = 200;
-// Balanced default (model's eval-optimal): high enough to reject random words,
-// low enough for a clear "Hey Iris". 0.10 caused false wakes; 0.18 missed too much.
-const DEFAULT_THRESHOLD = 0.15;
+// Balanced default: the model is trained on synthetic voices, so real speech
+// tends to produce ONE brief score spike per utterance — a wake must fire on
+// a single hot frame, instantly. The Settings "sensitivity" select passes a
+// different threshold in (relaxed/strict).
+const DEFAULT_THRESHOLD = 0.12;
+// False-wake guard that can never block clear speech: an adaptive noise
+// floor. A rolling average of recent scores estimates how "hot" the room is;
+// the effective firing bar is raised only while that background level is
+// elevated (TV, music, chatter) and decays back within seconds of quiet.
+// In a quiet room the bar IS the configured threshold — nothing extra.
+const NOISE_ALPHA = 0.05; // ~4s memory at 5 predictions/sec
+const NOISE_MULTIPLIER = 3.5; // spike must stand this far above the background
+const FLOOR_CAP_FACTOR = 2.2; // the bar can never exceed threshold * this
 const COOLDOWN_MS = 2500;
 
 let ortConfigured = false;
@@ -63,6 +73,7 @@ export function useWakeWord(
   enabled: boolean,
   onWake: () => void,
   onError?: (message: string) => void,
+  threshold: number = DEFAULT_THRESHOLD,
 ) {
   const onWakeRef = useRef(onWake);
   const onErrorRef = useRef(onError);
@@ -89,6 +100,7 @@ export function useWakeWord(
     let lastWakeAt = 0;
     let peakScore = 0;
     let lastPeakLogAt = 0;
+    let noiseEma = 0;
 
     async function predict() {
       if (busy || cancelled || !mel || !emb || !cls || filled < WINDOW_SAMPLES) return;
@@ -129,24 +141,38 @@ export function useWakeWord(
         // Logging so you can see it working in the DevTools console:
         // - a live peak score once per second, and
         // - any "near miss" frame that gets reasonably close to the threshold.
+        // Effective firing bar: the configured threshold, lifted only while
+        // the recent background has been scoring hot (noisy room), capped so
+        // it can never run away and permanently deafen the detector.
+        const floor = Math.min(
+          threshold * FLOOR_CAP_FACTOR,
+          Math.max(threshold, noiseEma * NOISE_MULTIPLIER),
+        );
+
         const now = performance.now();
         peakScore = Math.max(peakScore, score);
         if (now - lastPeakLogAt >= 1000) {
-          console.log(`[wakeword] listening… peak score ${peakScore.toFixed(3)} (fires at ${DEFAULT_THRESHOLD})`);
+          const floorNote = floor > threshold + 0.001 ? ` (noisy room — bar raised to ${floor.toFixed(3)})` : "";
+          console.log(`[wakeword] listening… peak score ${peakScore.toFixed(3)} (fires at ${threshold})${floorNote}`);
           peakScore = 0;
           lastPeakLogAt = now;
         }
-        if (score >= 0.05 && score < DEFAULT_THRESHOLD) {
-          console.log(`[wakeword] near miss: ${score.toFixed(3)}`);
+        if (score >= 0.05 && score < floor) {
+          console.log(`[wakeword] near miss: ${score.toFixed(3)} (bar ${floor.toFixed(3)})`);
         }
 
-        // Fire on the first frame that clears the threshold (cooldown prevents
-        // rapid double-fires from the same utterance).
-        if (score >= DEFAULT_THRESHOLD && now - lastWakeAt > COOLDOWN_MS) {
+        // Fire INSTANTLY on a single frame over the bar — the synthetic-data
+        // model spikes briefly for real voices, so no multi-frame demands.
+        // The cooldown prevents rapid double-fires from the same utterance.
+        if (score >= floor && now - lastWakeAt > COOLDOWN_MS) {
           lastWakeAt = now;
           console.log(`[wakeword] ✅ WAKE — "Hey Iris" detected (score ${score.toFixed(3)})`);
           onWakeRef.current();
         }
+
+        // Update the background estimate AFTER the decision, clamped at the
+        // threshold so genuine wake spikes never inflate the noise floor.
+        noiseEma += NOISE_ALPHA * (Math.min(score, threshold) - noiseEma);
       } catch (error) {
         // Best-effort: a single failed frame shouldn't kill the listener.
         console.error("[wakeword] predict failed", error);
@@ -223,5 +249,5 @@ export function useWakeWord(
       // NOTE: ONNX sessions are cached module-level and intentionally NOT released
       // here, so re-arming after sleep is instant.
     };
-  }, [enabled]);
+  }, [enabled, threshold]);
 }

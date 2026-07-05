@@ -30,6 +30,7 @@ type Draft = {
   IRIS_USER_NAME: string;
   IRIS_LOAD_TEST_DATA: string;
   IRIS_WAKE_WORD: string;
+  IRIS_WAKE_SENSITIVITY: string;
   IRIS_SOUNDS: string;
 };
 
@@ -64,6 +65,7 @@ export default function SetupPanel({
     IRIS_USER_NAME: config.userName,
     IRIS_LOAD_TEST_DATA: config.loadTestData ? "true" : "false",
     IRIS_WAKE_WORD: config.wakeWord ? "true" : "false",
+    IRIS_WAKE_SENSITIVITY: config.wakeSensitivity || "balanced",
     IRIS_SOUNDS: config.sounds ? "true" : "false",
   });
   const [step, setStep] = useState(0);
@@ -445,6 +447,24 @@ export default function SetupPanel({
         <small className="setup-note">
           When on, Iris listens locally for “Hey Iris” and wakes hands-free (same as pressing W). Runs fully on-device —
           no audio leaves your machine. Needs microphone permission.
+        </small>
+      </label>
+      <label className="setup-field">
+        <span>Wake word sensitivity</span>
+        <ThemedSelect
+          ariaLabel="Wake word sensitivity"
+          value={draft.IRIS_WAKE_SENSITIVITY}
+          options={[
+            { value: "balanced", label: "Balanced (recommended)" },
+            { value: "relaxed", label: "Relaxed — wakes easily (quiet rooms)" },
+            { value: "strict", label: "Strict — needs a loud, clear phrase (noisy rooms)" },
+          ]}
+          onChange={(value) => set("IRIS_WAKE_SENSITIVITY", value)}
+        />
+        <small className="setup-note">
+          If Iris misses your voice, choose Relaxed; if she still wakes too easily, choose Strict. Every level wakes
+          instantly on a clear phrase and automatically demands a stronger score while the room has been noisy (TV,
+          music, chatter) — the bar drops back within seconds of quiet.
         </small>
       </label>
       <label className="setup-field">

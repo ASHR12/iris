@@ -14,6 +14,7 @@ import {
   syncBrainIndex,
   embedQuery,
   hybridSearch,
+  lexicalFilter,
   indexDirFor,
   COSINE_CONFIDENT,
   COVERAGE_CONFIDENT,
@@ -217,6 +218,7 @@ const ALLOWED_CONFIG_KEYS = new Set([
   "IRIS_WAKE_WORD",
   "IRIS_HERMES_SESSION",
   "IRIS_SOUNDS",
+  "IRIS_WAKE_SENSITIVITY",
   "IRIS_BRAIN_PATH",
   "IRIS_BRAIN_SEMANTIC",
   "IRIS_BRAIN_AUTO_INDEX",
@@ -249,6 +251,7 @@ function getFullConfig() {
     userName: process.env.IRIS_USER_NAME || "",
     loadTestData: envFlag("IRIS_LOAD_TEST_DATA", false),
     wakeWord: envFlag("IRIS_WAKE_WORD", false),
+    wakeSensitivity: process.env.IRIS_WAKE_SENSITIVITY || "balanced",
     sounds: envFlag("IRIS_SOUNDS", true),
     configured: Boolean((process.env.GEMINI_API_KEY || "").trim()),
     voices: GEMINI_VOICES,
@@ -867,6 +870,46 @@ async function searchBrain(query, topK = 6) {
   };
 }
 
+// Obsidian-equivalent graph filter: the COMPLETE set of notes whose text
+// mentions the query (instant, fully local), optionally widened by confident
+// semantic hits so paraphrased voice queries still land.
+async function filterBrainNotes(query) {
+  const q = String(query || "").trim();
+  if (!q) return { ok: false, error: "Empty query." };
+  const root = brainRoot();
+  if (!root) return { ok: false, error: "No brain vault configured." };
+  if (!brainSearch.lexicon || brainSearch.root !== root) refreshBrainSearch();
+  if (!brainSearch.lexicon) return { ok: false, error: "Brain vault could not be read." };
+
+  const matches = new Map();
+  for (const hit of lexicalFilter(brainSearch.lexicon, q)) {
+    matches.set(hit.rel, { path: hit.rel, title: hit.title, folder: hit.folder });
+  }
+  let mode = "lexical";
+  const apiKey = (process.env.GEMINI_API_KEY || "").trim();
+  if (brainSearch.index && apiKey && brainSemanticEnabled()) {
+    try {
+      const queryVector = await embedQuery({ apiKey, model: brainSearch.index.manifest.model, text: q });
+      const ranked = hybridSearch({
+        lexicon: brainSearch.lexicon,
+        index: brainSearch.index,
+        queryVector,
+        query: q,
+        topK: 12,
+      });
+      for (const hit of ranked) {
+        if (hit.cosScore >= COSINE_CONFIDENT || hit.coverage >= COVERAGE_CONFIDENT) {
+          if (!matches.has(hit.rel)) matches.set(hit.rel, { path: hit.rel, title: hit.title, folder: hit.folder });
+        }
+      }
+      mode = "hybrid";
+    } catch {
+      /* lexical set already complete for literal queries */
+    }
+  }
+  return { ok: true, mode, results: [...matches.values()] };
+}
+
 function getIrisUiContext() {
   return irisUiContext;
 }
@@ -886,6 +929,7 @@ function controlIrisUi({ action, target_id = undefined, query = undefined }) {
     "open_brain_graph",
     "close_brain_graph",
     "focus_brain_node",
+    "filter_brain_graph",
     "open_brain_note",
     "close_brain_note",
     "show_full_brain_graph",
@@ -1218,7 +1262,7 @@ function buildIrisUiTools() {
               action: {
                 type: "string",
                 description:
-                  "One of: open_latest_hermes_result, open_current_hermes_result, open_task, open_task_by_query, open_hermes_history, close_reader, close_history, close_all_overlays, show_task_steps, hide_task_steps, open_brain_graph, close_brain_graph, focus_brain_node, open_brain_note, close_brain_note. Use show_task_steps/hide_task_steps to expand or collapse the tool-step timeline for a Hermes task; when the user names a specific card, pass its words in `query` (or its exact id in `target_id`). With no target, steps default to the card the user is currently viewing (open reader / focused), then the running task. open_brain_graph shows the Neural Map — a visual graph of the shared memory vault (Iris enters HUD mode automatically); close_brain_graph dismisses it. focus_brain_node flies the map camera to the note best matching `query`, highlights it, and FILTERS the map to just that note plus its direct connections (its local graph — everything else fades to ghosts); show_full_brain_graph removes that filter and shows the whole constellation again; open_brain_note opens the note card (pass `query` to name one, or omit it to open the focused node); close_brain_note closes the note card and returns to the map.",
+                  "One of: open_latest_hermes_result, open_current_hermes_result, open_task, open_task_by_query, open_hermes_history, close_reader, close_history, close_all_overlays, show_task_steps, hide_task_steps, open_brain_graph, close_brain_graph, focus_brain_node, open_brain_note, close_brain_note. Use show_task_steps/hide_task_steps to expand or collapse the tool-step timeline for a Hermes task; when the user names a specific card, pass its words in `query` (or its exact id in `target_id`). With no target, steps default to the card the user is currently viewing (open reader / focused), then the running task. open_brain_graph shows the Neural Map — a visual graph of the shared memory vault (Iris enters HUD mode automatically); close_brain_graph dismisses it. focus_brain_node flies the map camera to the ONE note best matching `query`, highlights it, and shows just that note plus its direct connections (its local graph); filter_brain_graph instead keeps EVERY note matching `query` visible (title matches plus content matches — like typing in Obsidian's graph filter box) and hides the rest; show_full_brain_graph removes either filter and shows the whole constellation again (idempotent — ALWAYS call it when the user asks for the full map, even if you think no filter is active); open_brain_note opens the note card (pass `query` to name one, or omit it to open the focused node); close_brain_note closes the note card and returns to the map.",
               },
               target_id: {
                 type: "string",
@@ -1276,7 +1320,7 @@ function buildLiveConfig() {
             "UI control rule: If the user says things like 'open it', 'open that result', 'show latest Hermes result', 'show history', 'close it', 'go back', or 'open the current task', use get_iris_ui_context and control_iris_ui. Do not send those UI-only commands to Hermes.",
             `Sleep rule: when ${userDisplayName()} asks you to sleep ('go to sleep', 'sleep now', 'goodnight', 'that's all for now'), say a short warm goodbye and call go_to_sleep. Never call it unless explicitly asked.`,
             `Neural Map rule: when ${userDisplayName()} says 'load the brain', 'show your brain', 'open the neural map', or 'show the knowledge graph', call control_iris_ui with action open_brain_graph — it renders the shared memory vault as a living graph over the screen. 'close the brain' / 'hide the map' -> close_brain_graph. These are UI-only commands; never send them to Hermes.`,
-            `Neural Map traversal rule: when ${userDisplayName()} asks to find, point to, focus, or zoom to a note ('where is X', 'focus on the EvoMap draft', 'show me the June content'), call control_iris_ui with action focus_brain_node and their words in query — the camera flies to the best match, highlights it, and filters the map to that note's local graph (only its direct connections stay visible; the rest ghost out). When they ask to see the whole map again ('show everything', 'show all notes', 'unfilter', 'zoom out to the full map'), call show_full_brain_graph. Then 'open it' / 'read it' -> open_brain_note with no query; 'open X' -> open_brain_note with X in query. 'close the note' / 'go back to the map' -> close_brain_note. While the map is open, get_iris_ui_context includes brainNodes (all note titles), brainFocusedNote, brainOpenNote, plus brainIsolatedNote and brainIsolationNeighbors (the visible connections while filtered) — use the neighbors list to answer 'what is it connected to?' or resolve 'open the second one'. If Iris shows a "No note matched" toast, say so and suggest close titles from brainNodes. These are UI-only commands; never send them to Hermes.`,
+            `Neural Map traversal rule: when ${userDisplayName()} asks to find, point to, focus, or zoom to ONE note ('where is X', 'focus on the EvoMap draft'), call control_iris_ui with action focus_brain_node and their words in query — the camera flies to the single best match and shows its local graph (the note + its direct connections). When they ask to FILTER or SEARCH the map — 'filter the map to hash', 'show all Kimi notes', 'show everything about deals from June' — call filter_brain_graph with the query instead: EVERY matching note stays visible (like Obsidian's graph filter), the rest hide, and the pill shows the match count. STRICT show-all rule: when they ask to see the whole map ('show everything', 'show all notes', 'show the full map', 'remove the filter', 'unfilter', 'zoom out to the full map'), ALWAYS call control_iris_ui with action show_full_brain_graph IMMEDIATELY — never skip it because you believe the map is already full or no filter is active; your belief may be stale, the action is idempotent and harmless, and Iris confirms with an on-screen toast either way. Never reply 'it is already showing everything' INSTEAD of calling the action. Then 'open it' / 'read it' -> open_brain_note with no query; 'open X' -> open_brain_note with X in query. 'close the note' / 'go back to the map' -> close_brain_note. While the map is open, get_iris_ui_context includes brainNodes (all note titles), brainFocusedNote, brainOpenNote, brainIsolatedNote + brainIsolationNeighbors (local-graph view), and brainFilterQuery + brainFilterMatches (query-filter view) — use these lists to answer 'what is it connected to?', 'what matched?', or resolve 'open the second one'. If Iris shows a "No note matched" toast, say so and suggest close titles from brainNodes. These are UI-only commands; never send them to Hermes.`,
             `Brain search rule: for questions about accumulated knowledge — clients, deals, drafts, people, decisions, style ('what do we know about X', 'which note mentions Y', 'have I worked with Z') — call search_brain first and answer from its snippets, citing note titles. It searches by meaning, not just keywords. Prefer it over Google Search for anything personal, and over Hermes for simple recall (dispatch Hermes only when the user wants live data or real work done). If a result deserves a look, offer to open it on the map (focus_brain_node with the note title). If search_brain returns no strong match, say so honestly — never invent vault content.`,
             "Also handle these UI-only commands with control_iris_ui (never Hermes): 'show the steps' / 'what is it doing' / 'show what tools it used' -> show_task_steps; 'hide the steps' -> hide_task_steps. If they name a specific card ('steps for the deals one', 'steps for the second card'), pass those words in query. With no target named, steps apply to the card they are viewing (open reader first), else the running task.",
             "If the user refers to a task by partial words from the task header, like 'open the failed one', 'open Hermes API', 'open package Iris', or 'open two hand design', call control_iris_ui with action open_task_by_query and put those words in query. Do not require an exact title match.",
@@ -1721,6 +1765,7 @@ app.whenReady().then(() => {
   ipcMain.handle("brain:load", () => loadBrainGraph());
   ipcMain.handle("brain:read", (_event, relPath) => readBrainNote(String(relPath || "")));
   ipcMain.handle("brain:search", (_event, query, topK) => searchBrain(query, topK));
+  ipcMain.handle("brain:filter", (_event, query) => filterBrainNotes(query));
   // Settings button: build/refresh the semantic index on demand. Accepts
   // unsaved draft values so it works before the user hits Save. Incremental
   // by nature — the first run embeds everything, later runs only the delta.

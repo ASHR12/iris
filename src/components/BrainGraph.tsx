@@ -21,7 +21,7 @@ const DWELL_MS = 320;
 
 export type BrainVoiceCommand = {
   seq: number;
-  kind: "focus" | "open" | "close" | "showAll";
+  kind: "focus" | "open" | "close" | "showAll" | "filter";
   query?: string;
 };
 
@@ -31,6 +31,8 @@ export type BrainGraphState = {
   openNoteTitle: string | null;
   isolatedTitle: string | null;
   isolationNeighbors: string[] | null;
+  filterQuery: string | null;
+  filterMatches: string[] | null;
 };
 
 function normalizeForMatch(text: string): string {
@@ -79,6 +81,21 @@ function resolveNodeByQuery(nodes: GraphNode[], query: string): GraphNode | null
   }
   // >50% content-word coverage required — weak overlap defers to semantics.
   return bestScore > 40 ? best : null;
+}
+
+/**
+ * Obsidian-filter-style matching: EVERY node whose title/folder contains all
+ * of the query's content words (single word = substring anywhere).
+ */
+function matchNodesByQuery(nodes: GraphNode[], query: string): GraphNode[] {
+  const q = normalizeForMatch(query);
+  if (!q) return [];
+  const tokens = q.split(" ").filter((token) => !QUERY_STOPWORDS.has(token));
+  if (tokens.length === 0) return [];
+  return nodes.filter((node) => {
+    const haystack = `${normalizeForMatch(node.folder)} ${normalizeForMatch(node.title)}`;
+    return tokens.every((token) => haystack.includes(token));
+  });
 }
 
 // Labels render at a constant 11px on screen; wrap anything wider than this
@@ -181,8 +198,11 @@ export default function BrainGraph({
   const [note, setNote] = useState<BrainNoteResult | null>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
   // Isolation ("local graph"): when set, only this node + direct connections
-  // paint at full strength; the rest of the constellation ghosts out.
+  // exist on screen.
   const [isolatedId, setIsolatedId] = useState<string | null>(null);
+  // Query filter (Obsidian-style): ALL notes matching a search stay visible,
+  // everything else is hidden. Mutually exclusive with isolation.
+  const [queryFilter, setQueryFilter] = useState<{ query: string; ids: string[] } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
   const hoverIdRef = useRef<string | null>(null);
@@ -191,6 +211,7 @@ export default function BrainGraph({
   const focusIdRef = useRef<string | null>(null);
   focusIdRef.current = focusId;
   const isolatedIdRef = useRef<string | null>(null);
+  const queryFilterRef = useRef<{ query: string; ids: string[] } | null>(null);
   const visibleIdsRef = useRef<Set<string> | null>(null);
   const focusAtRef = useRef(0);
   // Once a deliberate camera move happens (voice focus / node select), the
@@ -230,17 +251,20 @@ export default function BrainGraph({
   );
 
   // Keep the painter-facing refs in sync; drop isolation if a hot reload
-  // removed the isolated note from the vault.
+  // removed the isolated note from the vault. The query filter wins when set.
   useEffect(() => {
     if (isolatedId && data && !data.nodes.some((node) => node.id === isolatedId)) {
       setIsolatedId(null);
       return;
     }
     isolatedIdRef.current = isolatedId;
-    visibleIdsRef.current = isolatedId
-      ? new Set([isolatedId, ...(adjacency.get(isolatedId) ?? [])])
-      : null;
-  }, [isolatedId, adjacency, data]);
+    queryFilterRef.current = queryFilter;
+    visibleIdsRef.current = queryFilter
+      ? new Set(queryFilter.ids)
+      : isolatedId
+        ? new Set([isolatedId, ...(adjacency.get(isolatedId) ?? [])])
+        : null;
+  }, [isolatedId, queryFilter, adjacency, data]);
 
   // Load the vault graph.
   useEffect(() => {
@@ -274,9 +298,14 @@ export default function BrainGraph({
     if (node?.id) {
       setFocusId(node.id); // "open it" after closing re-targets this note
       // While filtered, navigation follows you: hopping to a note (wikilink,
-      // dwell, click) re-centers the isolation on it, so you never come back
-      // from a note to find it ghosted out.
+      // dwell, click) keeps it visible — a node outside the current filter
+      // re-centers the view on its own neighborhood instead.
       if (isolatedIdRef.current && isolatedIdRef.current !== node.id) setIsolatedId(node.id);
+      if (queryFilterRef.current && !queryFilterRef.current.ids.includes(node.id)) {
+        setQueryFilter(null);
+        queryFilterRef.current = null;
+        setIsolatedId(node.id);
+      }
       suppressAutoFitRef.current = true;
       window.iris.readBrainNote(node.id).then(setNote).catch(() => undefined);
       const graph = graphRef.current;
@@ -316,10 +345,12 @@ export default function BrainGraph({
     setFocusId(node.id);
     focusAtRef.current = performance.now();
     suppressAutoFitRef.current = true;
-    // Isolate to the node's local graph (Obsidian-style): everything else
-    // ghosts out, and the camera frames just the neighborhood. "Show
-    // everything", a background tap, or Esc restores the full map.
+    // Isolate to the node's local graph (Obsidian-style): only the
+    // neighborhood stays on screen. "Show everything", a background tap, or
+    // Esc restores the full map.
     const visible = new Set([node.id, ...(adjacency.get(node.id) ?? [])]);
+    setQueryFilter(null);
+    queryFilterRef.current = null;
     setIsolatedId(node.id);
     isolatedIdRef.current = node.id;
     visibleIdsRef.current = visible;
@@ -331,15 +362,61 @@ export default function BrainGraph({
     }
   }
 
-  function showAll() {
+  /**
+   * Obsidian-style filter: keep EVERY note mentioning the spoken query
+   * visible. The main process runs the full-text pass over all note bodies
+   * (instant, local) plus confident semantic widening; title matching here
+   * is only the offline fallback.
+   */
+  async function applyFilter(query: string) {
+    const graph = graphRef.current;
+    const nodes = (graph?.graphData().nodes as GraphNode[] | undefined) ?? [];
+    if (!graph || nodes.length === 0) return;
+    const matched = new Map<string, GraphNode>();
+    const byId = new Map(nodes.map((node) => [node.id, node]));
+    try {
+      const found = await window.iris.filterBrain(query);
+      if (found.ok) {
+        for (const hit of found.results ?? []) {
+          const node = byId.get(hit.path);
+          if (node) matched.set(node.id, node);
+        }
+      }
+    } catch {
+      /* fall back to title matching below */
+    }
+    for (const node of matchNodesByQuery(nodes, query)) matched.set(node.id, node);
+    if (matched.size === 0) {
+      showToast(`No notes matched "${query}"`);
+      return;
+    }
+    if (selectedIdRef.current) select(null);
+    const ids = [...matched.keys()];
+    const visible = new Set(ids);
     setIsolatedId(null);
     isolatedIdRef.current = null;
+    setQueryFilter({ query, ids });
+    queryFilterRef.current = { query, ids };
+    visibleIdsRef.current = visible;
+    suppressAutoFitRef.current = true;
+    graph.zoomToFit(850, 110, (raw) => visible.has((raw as GraphNode).id));
+  }
+
+  function showAll() {
+    const hadFilter = Boolean(isolatedIdRef.current || queryFilterRef.current);
+    setIsolatedId(null);
+    isolatedIdRef.current = null;
+    setQueryFilter(null);
+    queryFilterRef.current = null;
     visibleIdsRef.current = null;
     const graph = graphRef.current;
     if (graph) {
       suppressAutoFitRef.current = true;
       graph.zoomToFit(700, 70);
     }
+    // Confirm the command landed, filter or not — kills the "did it work?"
+    // ambiguity when the map already looked full.
+    showToast(hadFilter ? "Filter removed — showing the full map" : "Already showing the full map");
   }
   const showAllRef = useRef(showAll);
   showAllRef.current = showAll;
@@ -348,6 +425,46 @@ export default function BrainGraph({
     setToast(message);
     window.setTimeout(() => setToast(null), 2600);
   }
+
+  // Screen-pixel hit-test shared by gestures, and by the HUD click-through
+  // tracker (the window only becomes mouse-interactive over a real node).
+  // Sub-2.5px dust is untargetable; halos scale with on-screen size.
+  function hitTestNode(screenX: number, screenY: number, maxSnapPx: number): GraphNode | null {
+    const graph = graphRef.current;
+    if (!graph) return null;
+    const graphPoint = graph.screen2GraphCoords(screenX, screenY);
+    const k = graph.zoom();
+    const visible = visibleIdsRef.current;
+    const radiusOf = (node: GraphNode) => Math.max(2.2, Math.min(9, 2 + Math.sqrt(node.degree || 0) * 1.1));
+    let best: GraphNode | null = null;
+    let bestEdgePx = Infinity;
+    for (const rawNode of graph.graphData().nodes as GraphNode[]) {
+      if (rawNode.x === undefined || rawNode.y === undefined) continue;
+      if (visible && !visible.has(rawNode.id)) continue;
+      const rScreen = radiusOf(rawNode) * k;
+      if (rScreen < 2.5) continue;
+      const halo = Math.min(maxSnapPx, Math.max(5, rScreen * 0.9));
+      const edgePx = (Math.hypot(rawNode.x - graphPoint.x, rawNode.y - graphPoint.y) - radiusOf(rawNode)) * k;
+      if (edgePx <= halo && edgePx < bestEdgePx) {
+        bestEdgePx = edgePx;
+        best = rawNode;
+      }
+    }
+    return best;
+  }
+  const hitTestNodeRef = useRef(hitTestNode);
+  hitTestNodeRef.current = hitTestNode;
+
+  // Click-through support: App's HUD tracker asks "is the mouse over
+  // something the map actually owns?" — a node, that is. Everything else
+  // passes through to the desktop.
+  useEffect(() => {
+    (window as unknown as Record<string, unknown>).__brainNodeAt = (x: number, y: number) =>
+      Boolean(hitTestNodeRef.current(x, y, 12));
+    return () => {
+      delete (window as unknown as Record<string, unknown>).__brainNodeAt;
+    };
+  }, []);
 
   // Hot reload: the main process watches the vault + its semantic index and
   // pings when anything changes (Hermes brain sync, Obsidian edit, manual
@@ -397,6 +514,13 @@ export default function BrainGraph({
 
     const labelCache = new Map<string, string[]>();
 
+    const linkIds = (rawLink: unknown): [string, string] => {
+      const link = rawLink as { source: unknown; target: unknown };
+      const s = typeof link.source === "object" ? (link.source as GraphNode).id : (link.source as string);
+      const t = typeof link.target === "object" ? (link.target as GraphNode).id : (link.target as string);
+      return [s, t];
+    };
+
     const graph = new ForceGraph(host)
       .graphData({ nodes: data.nodes.map((node) => ({ ...node })), links: data.links.map((l) => ({ ...l })) })
       .nodeId("id")
@@ -408,15 +532,22 @@ export default function BrainGraph({
       .cooldownTime(3000)
       .d3VelocityDecay(0.32)
       .linkColor((rawLink) => {
+        const [s, t] = linkIds(rawLink);
+        // While isolated, links outside the neighborhood are fully hidden.
         const visible = visibleIdsRef.current;
-        if (!visible) return "rgba(148, 196, 255, 0.12)";
-        const link = rawLink as { source: unknown; target: unknown };
-        const s = typeof link.source === "object" ? (link.source as GraphNode).id : (link.source as string);
-        const t = typeof link.target === "object" ? (link.target as GraphNode).id : (link.target as string);
-        // Inside the isolated neighborhood links brighten; outside they ghost.
-        return visible.has(s) && visible.has(t) ? "rgba(148, 196, 255, 0.3)" : "rgba(148, 196, 255, 0.015)";
+        if (visible && !(visible.has(s) && visible.has(t))) return "rgba(0, 0, 0, 0)";
+        // Obsidian-style hover: the highlighted node's own connections turn
+        // active cyan; everything else falls far back.
+        const highlight = hoverIdRef.current;
+        if (highlight && (s === highlight || t === highlight)) return "rgba(34, 211, 238, 0.7)";
+        if (highlight) return "rgba(148, 196, 255, 0.05)";
+        return visible ? "rgba(148, 196, 255, 0.3)" : "rgba(148, 196, 255, 0.12)";
       })
-      .linkWidth(0.4)
+      .linkWidth((rawLink) => {
+        const [s, t] = linkIds(rawLink);
+        const highlight = hoverIdRef.current;
+        return highlight && (s === highlight || t === highlight) ? 1.3 : 0.4;
+      })
       .nodeCanvasObject((rawNode, ctx, scale) => {
         const node = rawNode as GraphNode;
         if (node.x === undefined || node.y === undefined) return;
@@ -426,18 +557,18 @@ export default function BrainGraph({
         const isFocused = node.id === focusIdRef.current;
         const r = Math.max(2.2, Math.min(9, 2 + Math.sqrt(node.degree || 0) * 1.1));
 
-        // Isolation mode: non-neighbors become barely-there ghosts — the
-        // constellation keeps its shape for orientation, without competing.
+        // Isolation mode: non-neighbors are fully hidden — only the focused
+        // node's local graph exists on screen.
         const visible = visibleIdsRef.current;
-        if (visible && !visible.has(node.id)) {
-          ctx.globalAlpha = 0.06;
-          ctx.fillStyle = color;
-          ctx.beginPath();
-          ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.globalAlpha = 1;
-          return;
-        }
+        if (visible && !visible.has(node.id)) return;
+
+        // Obsidian-style hover: while a node is highlighted (mouse hover,
+        // point hover, or pinch hold), it and its direct connections stay at
+        // full strength and everything else recedes.
+        const highlight = hoverIdRef.current;
+        const dimmed =
+          highlight && node.id !== highlight && !adjacency.get(highlight)?.has(node.id);
+        if (dimmed) ctx.globalAlpha = 0.2;
 
         ctx.shadowColor = color;
         ctx.shadowBlur = isSelected || isHovered || isFocused ? 18 : 8;
@@ -471,9 +602,12 @@ export default function BrainGraph({
           }
         }
 
-        // In isolation the handful of visible nodes always carry labels.
+        // Labels: always on for the isolation neighborhood, the highlighted
+        // node, and its direct connections; zoom-gated otherwise.
+        const isNearHighlight =
+          highlight && (node.id === highlight || adjacency.get(highlight)?.has(node.id));
         const labelAlpha =
-          isSelected || isHovered || isFocused || visible
+          isSelected || isHovered || isFocused || visible || isNearHighlight
             ? 1
             : Math.min(1, Math.max(0, (scale - 2.2) / 1.4));
         if (labelAlpha > 0.02) {
@@ -492,6 +626,7 @@ export default function BrainGraph({
             ctx.fillText(lines[i], node.x, node.y + r + 3 / scale + i * lineStep);
           }
         }
+        ctx.globalAlpha = 1; // never leak the dim state into the next node
       })
       .nodePointerAreaPaint((rawNode, color, ctx) => {
         const node = rawNode as GraphNode;
@@ -509,9 +644,9 @@ export default function BrainGraph({
       })
       .onNodeClick((node) => select(node as GraphNode))
       .onBackgroundClick(() => {
-        // Tap-away: leave isolation first; with the full map showing, a
-        // background tap just clears any selection.
-        if (isolatedIdRef.current) showAllRef.current();
+        // Tap-away: leave the filter/isolation first; with the full map
+        // showing, a background tap just clears any selection.
+        if (isolatedIdRef.current || queryFilterRef.current) showAllRef.current();
         else select(null);
       })
       .width(window.innerWidth)
@@ -610,6 +745,11 @@ export default function BrainGraph({
         showAll();
         return true;
       }
+      if (command.kind === "filter") {
+        if (command.query) void applyFilter(command.query);
+        else showToast("Say what to filter by");
+        return true;
+      }
       if (command.kind === "focus") {
         const hit = command.query ? await resolve(command.query, nodes) : null;
         if (cancelled) return true;
@@ -653,21 +793,30 @@ export default function BrainGraph({
           .map((id) => data?.nodes.find((node) => node.id === id)?.title ?? id)
           .slice(0, 40)
       : null;
+    const filterMatches = queryFilter
+      ? queryFilter.ids
+          .map((id) => data?.nodes.find((node) => node.id === id)?.title ?? id)
+          .slice(0, 40)
+      : null;
     onGraphState?.({
       nodeTitles: (data?.nodes ?? []).map((node) => node.title),
       focusedTitle,
       openNoteTitle,
       isolatedTitle,
       isolationNeighbors,
+      filterQuery: queryFilter?.query ?? null,
+      filterMatches,
     });
     (window as unknown as Record<string, unknown>).__brainState = {
       focusedTitle,
       openNoteTitle,
       isolatedTitle,
-      visibleCount: neighborIds ? neighborIds.length + 1 : null,
+      filterQuery: queryFilter?.query ?? null,
+      filterCount: queryFilter?.ids.length ?? null,
+      visibleCount: queryFilter ? queryFilter.ids.length : neighborIds ? neighborIds.length + 1 : null,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, focusId, selectedId, isolatedId, isolatedTitle]);
+  }, [data, focusId, selectedId, isolatedId, isolatedTitle, queryFilter]);
 
   // Gesture bridge: pinch drags a node (or pans) · point+dwell selects ·
   // one palm pans · two palms zoom · fist closes the open note.
@@ -691,39 +840,10 @@ export default function BrainGraph({
       return Boolean(rect && x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom);
     };
 
-    const nodeRadius = (node: GraphNode) =>
-      Math.max(2.2, Math.min(9, 2 + Math.sqrt(node.degree || 0) * 1.1));
-
-    // Shared hit-test for dwell and pinch, in SCREEN pixels. Two rules kill
-    // the "invisible node steals the grab" problem for good:
-    //   1. A node must be visually real to be a target at all — anything
-    //      rendering smaller than ~2.5px on screen is background dust, not
-    //      something you can aim at, so it can never be hit.
-    //   2. The grab halo scales WITH the node's on-screen size: a big node
-    //      is easy (up to maxSnapPx around it), a small dot demands a
-    //      near-direct hit. Aiming at empty space grabs nothing.
-    const nodeAt = (screenX: number, screenY: number, maxSnapPx: number): GraphNode | null => {
-      const graph = graphRef.current;
-      if (!graph) return null;
-      const graphPoint = graph.screen2GraphCoords(screenX, screenY);
-      const k = graph.zoom();
-      const visible = visibleIdsRef.current;
-      let best: GraphNode | null = null;
-      let bestEdgePx = Infinity;
-      for (const rawNode of graph.graphData().nodes as GraphNode[]) {
-        if (rawNode.x === undefined || rawNode.y === undefined) continue;
-        if (visible && !visible.has(rawNode.id)) continue;
-        const rScreen = nodeRadius(rawNode) * k;
-        if (rScreen < 2.5) continue; // sub-pixel dust is untargetable
-        const halo = Math.min(maxSnapPx, Math.max(5, rScreen * 0.9));
-        const edgePx = (Math.hypot(rawNode.x - graphPoint.x, rawNode.y - graphPoint.y) - nodeRadius(rawNode)) * k;
-        if (edgePx <= halo && edgePx < bestEdgePx) {
-          bestEdgePx = edgePx;
-          best = rawNode;
-        }
-      }
-      return best;
-    };
+    // Gestures share the component-level screen-pixel hit-test (same rules
+    // as mouse click-through: visually-real nodes only, size-aware halos).
+    const nodeAt = (screenX: number, screenY: number, maxSnapPx: number): GraphNode | null =>
+      hitTestNodeRef.current(screenX, screenY, maxSnapPx);
 
     const endPinchDrag = () => {
       if (!pinchDrag) return;
@@ -905,7 +1025,7 @@ export default function BrainGraph({
     function onKey(event: KeyboardEvent) {
       if (event.key !== "Escape" || !activeRef.current) return;
       if (selectedIdRef.current) select(null);
-      else if (isolatedIdRef.current) showAllRef.current();
+      else if (isolatedIdRef.current || queryFilterRef.current) showAllRef.current();
       else onCloseRef.current();
     }
     window.addEventListener("keydown", onKey);
@@ -937,7 +1057,7 @@ export default function BrainGraph({
 
   return (
     <div className="brain-overlay">
-      <div className={`brain-stage hud-hit ${selectedId ? "reading" : ""}`} ref={stageRef}>
+      <div className={`brain-stage ${selectedId ? "reading" : ""}`} ref={stageRef}>
         <div className="brain-canvas" ref={canvasHostRef} />
 
         <div className="brain-title">
@@ -950,7 +1070,7 @@ export default function BrainGraph({
           ) : null}
         </div>
 
-        <button type="button" className="hud-btn brain-close" onClick={onClose} title="Close (fist / Esc)">
+        <button type="button" className="hud-btn hud-hit brain-close" onClick={onClose} title="Close (Esc)">
           <X size={14} />
         </button>
 
@@ -970,12 +1090,18 @@ export default function BrainGraph({
         {toast ? <div className="brain-pill toast">{toast}</div> : null}
         {isolatedId && !selectedId ? (
           <div className="brain-pill filter">
-            Connections of <strong>{isolatedTitle}</strong> — say “show everything” or tap the background
+            Connections of <strong>{isolatedTitle}</strong> — say “show everything” or press Esc
+          </div>
+        ) : null}
+        {queryFilter && !selectedId ? (
+          <div className="brain-pill filter">
+            Filter <strong>“{queryFilter.query}”</strong> · {queryFilter.ids.length} notes — say “show
+            everything” or press Esc
           </div>
         ) : null}
 
         {selectedNode ? (
-          <div className="brain-note" ref={panelRef}>
+          <div className="brain-note hud-hit" ref={panelRef}>
             <header className="brain-note-head">
               <span
                 className="brain-note-folder"

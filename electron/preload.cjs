@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld("iris", {
   loadBrain: () => ipcRenderer.invoke("brain:load"),
   readBrainNote: (relPath) => ipcRenderer.invoke("brain:read", relPath),
   searchBrain: (query, topK) => ipcRenderer.invoke("brain:search", query, topK),
+  filterBrain: (query) => ipcRenderer.invoke("brain:filter", query),
   syncBrainIndex: (payload) => ipcRenderer.invoke("brain:sync-index", payload),
   onBrainChanged: (callback) => {
     const handler = () => callback();

@@ -7,11 +7,19 @@
   pointer-events: none;
 }
 
+/* The stage never captures the mouse wholesale — the desktop stays usable
+   under the constellation. The window's click-through tracker grants mouse
+   interactivity only over real nodes (__brainNodeAt) and .hud-hit UI. */
 .brain-stage {
   position: absolute;
   inset: 0;
-  pointer-events: auto;
+  pointer-events: none;
   animation: brain-in 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.brain-canvas,
+.brain-canvas canvas {
+  pointer-events: auto;
 }
 
 @keyframes brain-in {
@@ -34,6 +42,7 @@
 }
 
 .brain-stage.reading .brain-canvas,
+.brain-stage.reading .brain-canvas canvas,
 .brain-stage.reading .brain-legend {
   opacity: 0;
   pointer-events: none;
