@@ -343,7 +343,7 @@ export default function App() {
   }, [hasBridge, uiMode]);
 
   // Local "Hey Iris" wake word: only listens while asleep; a detection wakes Iris
-  // exactly like pressing W. Fully on-device, opt-in via Settings.
+  // exactly like pressing ⌥W. Fully on-device, opt-in via Settings.
   // Sensitivity -> score threshold: relaxed wakes easily (quiet rooms / soft
   // voices), strict needs a loud clear phrase. The adaptive noise floor in
   // the hook handles noisy rooms automatically at every level.
@@ -366,18 +366,29 @@ export default function App() {
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
-      if (event.metaKey || event.ctrlKey || event.altKey || event.repeat) return;
+      // Alt is OUR modifier (⌥W wake, ⌥S sleep) — only reject meta/ctrl
+      // chords and key repeat here.
+      if (event.metaKey || event.ctrlKey || event.repeat) return;
       const target = event.target as HTMLElement | null;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
 
-      const key = event.key.toLowerCase();
-      if (key === "w" && !sidecarRunning) {
+      // Wake/sleep require the Option modifier so ordinary typing can never
+      // toggle Iris. Match on event.code — on macOS Option+letter mutates
+      // event.key into a special character (⌥W -> "∑").
+      if (event.altKey && event.code === "KeyW" && !sidecarRunning) {
         event.preventDefault();
         start();
-      } else if (key === "s" && sidecarRunning) {
+        return;
+      }
+      if (event.altKey && event.code === "KeyS" && sidecarRunning) {
         event.preventDefault();
         stop();
-      } else if (key === "d" && testDataEnabled) {
+        return;
+      }
+      if (event.altKey) return; // other ⌥ chords are not ours
+
+      const key = event.key.toLowerCase();
+      if (key === "d" && testDataEnabled) {
         event.preventDefault();
         loadUiTestData();
       } else if (key === "g" && testDataEnabled) {
@@ -843,6 +854,14 @@ export default function App() {
         setBrainOpen(false);
         return;
       }
+      if (action === "enter_hud_mode") {
+        if (uiMode !== "hud") window.iris.toggleHud();
+        return;
+      }
+      if (action === "exit_hud_mode") {
+        if (uiMode === "hud") window.iris.toggleHud();
+        return;
+      }
       if (action === "open_brain_graph") {
         // HUD-only feature: entering HUD automatically is part of the wow.
         if (uiMode !== "hud") window.iris.toggleHud();
@@ -909,7 +928,7 @@ export default function App() {
   const caption = useMemo(() => {
     if (!sidecarRunning)
       return {
-        text: wakeWordEnabled ? "Say “Hey Iris” or press W to wake" : "Press W to wake Iris",
+        text: wakeWordEnabled ? "Say “Hey Iris” or press ⌥W to wake" : "Press ⌥W to wake Iris",
         dim: true,
         compact: true,
       };

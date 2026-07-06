@@ -446,7 +446,7 @@ export default function SetupPanel({
           onChange={(value) => set("IRIS_WAKE_WORD", value)}
         />
         <small className="setup-note">
-          When on, Iris listens locally for “Hey Iris” and wakes hands-free (same as pressing W). Runs fully on-device —
+          When on, Iris listens locally for “Hey Iris” and wakes hands-free (same as pressing ⌥W). Runs fully on-device —
           no audio leaves your machine. Needs microphone permission.
         </small>
       </label>
@@ -578,7 +578,7 @@ export default function SetupPanel({
     body = (
       <div className="setup-welcome">
         <h2>You're all set</h2>
-        <p>Iris will save your settings and wake up. Press W any time to wake, S to sleep.</p>
+        <p>Iris will save your settings and wake up. Press ⌥W any time to wake, ⌥S to sleep, ⌥H for the Glass HUD.</p>
         <ul className="setup-summary">
           <li>
             Gemini key {gemini.status === "ok" ? <Check size={13} className="ok" /> : keyReady ? "added" : "missing"}

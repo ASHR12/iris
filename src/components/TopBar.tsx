@@ -58,7 +58,7 @@ export default function TopBar({
         <button
           className="theme-toggle"
           onClick={() => window.iris?.toggleHud()}
-          title="Glass HUD — float Iris over your screen (⌥Space)"
+          title="Glass HUD — float Iris over your screen (⌥H)"
         >
           <PictureInPicture2 size={15} />
         </button>

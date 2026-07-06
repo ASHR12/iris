@@ -31,7 +31,9 @@ type IrisUiAction = {
     | "filter_brain_graph"
     | "open_brain_note"
     | "close_brain_note"
-    | "show_full_brain_graph";
+    | "show_full_brain_graph"
+    | "enter_hud_mode"
+    | "exit_hud_mode";
   target_id?: string;
   query?: string;
 };

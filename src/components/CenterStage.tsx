@@ -162,10 +162,18 @@ export default function CenterStage({
             <div className="wake-say">Iris is asleep</div>
           )}
           <div className="wake-keys">
-            {wakeWordEnabled ? "or press " : "press "}
-            <span className="key">W</span> wake
+            <span>{wakeWordEnabled ? "or press" : "press"}</span>
+            <span className="combo">
+              <span className="key">⌥</span>
+              <span className="key">W</span>
+            </span>
+            <span>wake</span>
             <span className="wake-sep">·</span>
-            <span className="key">S</span> sleep
+            <span className="combo">
+              <span className="key">⌥</span>
+              <span className="key">S</span>
+            </span>
+            <span>sleep</span>
           </div>
         </div>
       )}

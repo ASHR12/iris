@@ -108,7 +108,7 @@ When Hermes finishes a background task, Iris **proactively speaks up**: *"Quick 
 
 ## 🪟 Glass HUD mode
 
-The signature feature. Press **⌥ Space** anywhere:
+The signature feature. Press **⌥H** anywhere (or say *"enter HUD mode"*):
 
 
 
@@ -169,7 +169,7 @@ Iris opens an **onboarding wizard** on first launch — paste your Gemini key (w
 
 ### 4 — Wake it up
 
-Press **W** (or say **"Hey Iris"** if you enabled the wake word). Ask it something. Then ask it to *do* something — "check my unread emails and summarize what needs attention" — confirm the brief, and watch Hermes go to work while you keep talking.
+Press **⌥W** (or say **"Hey Iris"** if you enabled the wake word). Ask it something. Then ask it to *do* something — "check my unread emails and summarize what needs attention" — confirm the brief, and watch Hermes go to work while you keep talking.
 
 > **Try it with zero keys:** toggle **demo mode** in Settings → Advanced. `D` loads a full fake workspace, `G` plays a simulated handoff. Great for screenshots and poking at the UI.
 
@@ -195,8 +195,8 @@ The packaged app reads config from `~/.iris/.env` (`%USERPROFILE%\.iris\.env` on
 
 | Input             | Action                                                                             |
 | ----------------- | ---------------------------------------------------------------------------------- |
-| **W** / **S**     | Wake / sleep                                                                       |
-| **⌥ Space**       | Toggle Glass HUD (global — works from any app; configurable via `IRIS_HUD_HOTKEY`) |
+| **⌥W** / **⌥S**   | Wake / sleep (modifier required — plain typing can never toggle Iris)              |
+| **⌥H**            | Toggle Glass HUD (global — works from any app; configurable via `IRIS_HUD_HOTKEY`) |
 | **"Hey Iris"**    | Wake by voice (opt-in, on-device)                                                  |
 | Top-right buttons | HUD toggle · Settings · hand-tracking toggle · link status                         |
 | Menu-bar icon     | Wake/sleep, HUD, show deck, quit                                                   |
@@ -287,7 +287,7 @@ API_SERVER_KEY=<openssl rand -hex 32>             # 16+ chars, must match Hermes
 HERMES_HOME=~/.hermes                             # optional, auto-detected
 IRIS_HERMES_SESSION=iris-voice                    # pinned Hermes chat (or use the UI switcher)
 IRIS_WAKE_WORD=true                               # "Hey Iris" on-device wake word
-IRIS_HUD_HOTKEY=Alt+Space                         # global Glass HUD hotkey
+IRIS_HUD_HOTKEY=Alt+H                             # global Glass HUD hotkey
 IRIS_SOUNDS=true                                  # subtle interface sound cues
 IRIS_LOAD_TEST_DATA=false                         # demo mode
 ```

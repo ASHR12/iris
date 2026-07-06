@@ -283,7 +283,7 @@ export default function HudShell({
           >
             <Hand size={14} />
           </button>
-          <button className="hud-btn" onClick={onExitHud} title="Back to deck (⌥Space)">
+          <button className="hud-btn" onClick={onExitHud} title="Back to deck (⌥H)">
             <Maximize2 size={14} />
           </button>
         </div>
