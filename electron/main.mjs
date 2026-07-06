@@ -23,6 +23,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import os from "node:os";
+import { spawn } from "node:child_process";
 
 const { app, BrowserWindow, ipcMain, session, nativeImage, Menu, Tray, screen, globalShortcut, shell } = electron;
 
@@ -222,6 +223,7 @@ const ALLOWED_CONFIG_KEYS = new Set([
   "IRIS_BRAIN_PATH",
   "IRIS_BRAIN_SEMANTIC",
   "IRIS_BRAIN_AUTO_INDEX",
+  "IRIS_HERMES_AUTOSTART",
 ]);
 
 function userConfigPath() {
@@ -331,6 +333,125 @@ async function testHermesConnection(payload = {}) {
     return { ok: true, health };
   } catch (error) {
     return { ok: false, error: error?.message || String(error) };
+  }
+}
+
+// ===== Hermes auto-start =====
+// Iris only TALKS to the Hermes gateway's API server — it never owned its
+// lifecycle. But a dead gateway (or one whose API platform refused to start,
+// e.g. after a key rotation) means every dispatch fails, so: if the API is
+// unreachable at launch, start/restart the gateway automatically. Opt out
+// with IRIS_HERMES_AUTOSTART=false.
+let hermesAutostartBusy = false;
+
+function runCommand(cmd, args, timeoutMs = 20000) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+    } catch (error) {
+      resolve({ ok: false, out: String(error?.message || error) });
+      return;
+    }
+    let out = "";
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch { /* already gone */ }
+      resolve({ ok: false, out: `${out}\n(timed out)` });
+    }, timeoutMs);
+    child.stdout?.on("data", (chunk) => { out += chunk; });
+    child.stderr?.on("data", (chunk) => { out += chunk; });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      resolve({ ok: false, out: String(error?.message || error) });
+    });
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      resolve({ ok: code === 0, out });
+    });
+  });
+}
+
+function hermesCliCandidates() {
+  const home = process.env.HERMES_HOME
+    ? resolveContextPath(process.env.HERMES_HOME)
+    : path.join(os.homedir(), ".hermes");
+  const candidates = [];
+  if ((process.env.HERMES_BIN || "").trim()) {
+    candidates.push({ cmd: resolveContextPath(process.env.HERMES_BIN.trim()), args: [] });
+  }
+  candidates.push({ cmd: "hermes", args: [] }); // PATH
+  const venvPython = path.join(
+    home, "hermes-agent", "venv", "bin", process.platform === "win32" ? "python.exe" : "python",
+  );
+  if (fs.existsSync(venvPython)) candidates.push({ cmd: venvPython, args: ["-m", "hermes_cli.main"] });
+  return candidates;
+}
+
+async function ensureHermesRunning() {
+  if (!envFlag("IRIS_HERMES_AUTOSTART", true) || hermesAutostartBusy) return;
+  hermesAutostartBusy = true;
+  try {
+    const first = await testHermesConnection();
+    if (first.ok) return;
+    emitEvent({
+      type: "log",
+      level: "warn",
+      message: `Hermes API not reachable (${first.error}) — starting the Hermes gateway…`,
+    });
+
+    // The Hermes desktop app manages the gateway through launchd on macOS —
+    // restarting the service also makes it re-read ~/.hermes/.env (fresh
+    // API_SERVER_KEY etc.). Fall back to the Hermes CLI wherever it lives.
+    const attempts = [];
+    if (process.platform === "darwin") {
+      const service = `gui/${process.getuid?.() ?? 501}/ai.hermes.gateway`;
+      const probe = await runCommand("launchctl", ["print", service], 4000);
+      if (probe.ok) {
+        attempts.push({ label: "launchctl kickstart", cmd: "launchctl", args: ["kickstart", "-k", service] });
+      }
+    }
+    for (const cli of hermesCliCandidates()) {
+      attempts.push({
+        label: `${path.basename(cli.cmd)} gateway restart`,
+        cmd: cli.cmd,
+        args: [...cli.args, "gateway", "restart"],
+      });
+    }
+
+    for (const attempt of attempts) {
+      const run = await runCommand(attempt.cmd, attempt.args, 30000);
+      if (!run.ok) {
+        emitEvent({
+          type: "log",
+          level: "warn",
+          message: `Hermes autostart: ${attempt.label} failed — ${run.out.trim().slice(0, 180) || "unknown error"}`,
+        });
+        continue;
+      }
+      // The gateway takes a few seconds to bring its platforms up.
+      for (let poll = 0; poll < 22; poll += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const check = await testHermesConnection();
+        if (check.ok) {
+          emitEvent({ type: "log", level: "info", message: `Hermes gateway is up (via ${attempt.label}).` });
+          emitEvent({ type: "hermes_status", status: "ready", detail: check.health });
+          return;
+        }
+      }
+      emitEvent({
+        type: "log",
+        level: "warn",
+        message: `Hermes autostart: ${attempt.label} ran but the API did not come up.`,
+      });
+    }
+    emitEvent({
+      type: "log",
+      level: "error",
+      message:
+        "Could not start Hermes automatically. Run `hermes gateway restart` yourself, and check API_SERVER_KEY (16+ chars, identical in ~/.hermes/.env and ~/.iris/.env).",
+    });
+  } finally {
+    hermesAutostartBusy = false;
   }
 }
 
@@ -1832,6 +1953,8 @@ app.whenReady().then(() => {
   // always free (lexicon rebuild + loading cached vectors); it embeds new
   // notes only when IRIS_BRAIN_AUTO_INDEX is enabled.
   setTimeout(() => refreshBrainSearch(), 4000);
+  // If the Hermes API is down, bring the gateway up so dispatches just work.
+  setTimeout(() => void ensureHermesRunning(), 1500);
   // Hot reload: vault or index changes (Hermes sync, Obsidian edits, manual
   // re-index) refresh the app live — no restart needed.
   watchBrainVault();

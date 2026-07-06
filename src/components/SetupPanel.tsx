@@ -241,7 +241,7 @@ export default function SetupPanel({
         <span>API key</span>
         <input
           value={draft.API_SERVER_KEY}
-          placeholder="iris-local-dev"
+          placeholder="paste output of: openssl rand -hex 32"
           onChange={(event) => {
             set("API_SERVER_KEY", event.target.value);
             setHermes({ status: "idle" });
@@ -249,8 +249,9 @@ export default function SetupPanel({
           spellCheck={false}
         />
         <small className="setup-note">
-          Must match <code>API_SERVER_KEY</code> in Hermes's own <code>~/.hermes/.env</code>. Default for local dev is{" "}
-          <code>iris-local-dev</code>.
+          Must match <code>API_SERVER_KEY</code> in Hermes's own <code>~/.hermes/.env</code>. Hermes requires a strong
+          secret (16+ characters) and refuses to start its API with a weak one — generate yours with{" "}
+          <code>openssl rand -hex 32</code>.
         </small>
       </label>
       <div className="setup-actions">

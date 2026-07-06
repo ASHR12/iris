@@ -153,9 +153,13 @@ npm run dev
 
 ```bash
 echo 'API_SERVER_ENABLED=true' >> ~/.hermes/.env
-echo 'API_SERVER_KEY=iris-local-dev' >> ~/.hermes/.env
+echo "API_SERVER_KEY=$(openssl rand -hex 32)" >> ~/.hermes/.env
 hermes gateway restart
 ```
+
+> Hermes requires a strong key (16+ chars) and refuses to start its API server
+> with a short or placeholder one — this endpoint dispatches terminal-capable
+> agent work. Use the same key in Iris's `~/.iris/.env`.
 
 
 
@@ -279,7 +283,7 @@ IRIS_USER_NAME=Ashutosh                           # what Iris calls you
 GEMINI_LIVE_MODEL=models/gemini-3.1-flash-live-preview
 GEMINI_LIVE_VOICE=Zephyr                          # pick + preview in Settings
 HERMES_API_URL=http://127.0.0.1:8642
-API_SERVER_KEY=iris-local-dev                     # must match Hermes's ~/.hermes/.env
+API_SERVER_KEY=<openssl rand -hex 32>             # 16+ chars, must match Hermes's ~/.hermes/.env
 HERMES_HOME=~/.hermes                             # optional, auto-detected
 IRIS_HERMES_SESSION=iris-voice                    # pinned Hermes chat (or use the UI switcher)
 IRIS_WAKE_WORD=true                               # "Hey Iris" on-device wake word
@@ -347,7 +351,7 @@ Please keep the two golden rules: **voice must never regress because of gestures
 - Your Gemini key and Hermes key live in `~/.iris/.env` — never committed.
 - Camera frames and wake-word audio are processed **entirely on-device** and never uploaded.
 - Conversation audio goes to Gemini Live (Google) while Iris is awake; asleep, nothing streams anywhere.
-- The default `API_SERVER_KEY=iris-local-dev` is for local development — change it if you expose Hermes beyond localhost.
+- `API_SERVER_KEY` must be a strong secret (Hermes enforces 16+ chars and refuses weak keys — the endpoint dispatches terminal-capable agent work). Generate one with `openssl rand -hex 32` and use the same value on both sides.
 
 
 
