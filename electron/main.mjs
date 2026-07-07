@@ -26,7 +26,7 @@ import path from "node:path";
 import os from "node:os";
 import { spawn } from "node:child_process";
 
-const { app, BrowserWindow, ipcMain, session, nativeImage, Menu, Tray, screen, globalShortcut, shell } = electron;
+const { app, BrowserWindow, ipcMain, session, nativeImage, Menu, Tray, screen, globalShortcut, shell, powerMonitor } = electron;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
@@ -98,14 +98,17 @@ let closedDuringConnect = false; // server hung up while connect() was resolving
 let sessionConnectedAt = 0; // when the current connection opened
 let sessionUsedHandle = false; // current connection tried to resume
 let announcementsInFlight = []; // Hermes results sent but possibly not yet spoken
-const RESUME_HANDLE_TTL_MS = 110 * 60 * 1000; // stay under the 2h validity
-// Google expires resumption handles 2h after disconnect — far too short for
-// all-day standby. While napping, a silent micro-reconnect every 90 minutes
-// rotates the handle (no audio, no turns, ~zero cost), so the conversation
-// context survives naps of any length.
+// Google expires resumption handles 2h (120 min) after disconnect — far too
+// short for all-day standby. While napping, a silent micro-reconnect rotates
+// the handle when it turns 110 minutes old (no audio, no turns, ~zero cost,
+// never wakes the UI), so the conversation survives naps of any length.
+// TTL sits between the two: refresh fires at 110, anything older than 118 is
+// treated as dead, 120 is Google's hard cutoff.
+const RESUME_HANDLE_TTL_MS = 118 * 60 * 1000;
+const HANDLE_REFRESH_AGE_MS = 110 * 60 * 1000;
+const HANDLE_REFRESH_RETRY_MS = 3 * 60 * 1000; // failed renewals retry quickly
 let handleRefreshTimer = null;
 let handleRefreshPromise = null;
-const HANDLE_REFRESH_MS = 90 * 60 * 1000;
 
 function autoSleepMs() {
   const raw = Number(process.env.IRIS_AUTO_SLEEP_SECONDS ?? 30);
@@ -1951,9 +1954,9 @@ async function stopLive() {
 
 // ===== Standby handle keep-alive =====
 // Google invalidates resumption handles 2h after disconnect. During long naps
-// (overnight standby) we briefly reconnect every 90 minutes purely to be
-// issued a fresh handle, then hang up — the conversation stays resumable
-// indefinitely at ~zero cost (no audio flows, no tokens are billed).
+// (overnight standby) we briefly reconnect — headless, no UI wake, no audio,
+// no tokens billed — purely to be issued a fresh handle, then hang up. The
+// conversation stays resumable indefinitely.
 function stopHandleRefresh() {
   if (handleRefreshTimer) {
     clearTimeout(handleRefreshTimer);
@@ -1961,17 +1964,29 @@ function stopHandleRefresh() {
   }
 }
 
+function runHandleRefreshNow() {
+  if (handleRefreshPromise || liveSession || connectInFlight) return;
+  handleRefreshPromise = refreshResumeHandle().finally(() => {
+    handleRefreshPromise = null;
+    // Keep rotating for as long as the nap lasts.
+    if (!liveSession && !connectInFlight) scheduleHandleRefresh();
+  });
+}
+
 function scheduleHandleRefresh() {
   stopHandleRefresh();
   if (!freshResumeHandle()) return;
+  // Fire when the handle turns HANDLE_REFRESH_AGE_MS old (scheduled off the
+  // handle's own timestamp, so late timers and reschedules stay correct). A
+  // past-due handle (failed attempt, timer drift, system sleep) retries on
+  // the short interval instead — freshResumeHandle() ends the loop once the
+  // handle truly expires, and the fresh-session fallback covers the wake.
+  const age = Date.now() - resumeHandleAt;
+  const delay = Math.max(age >= HANDLE_REFRESH_AGE_MS ? HANDLE_REFRESH_RETRY_MS : HANDLE_REFRESH_AGE_MS - age, 15000);
   handleRefreshTimer = setTimeout(() => {
     handleRefreshTimer = null;
-    handleRefreshPromise = refreshResumeHandle().finally(() => {
-      handleRefreshPromise = null;
-      // Keep rotating for as long as the nap lasts.
-      if (!liveSession && !connectInFlight) scheduleHandleRefresh();
-    });
-  }, HANDLE_REFRESH_MS);
+    runHandleRefreshNow();
+  }, delay);
 }
 
 async function refreshResumeHandle() {
@@ -2114,17 +2129,20 @@ function sendCommand(command) {
 }
 
 function createWindow() {
-  // Frameless + transparent from birth so the same window can morph into the
-  // Glass HUD overlay. The deck paints its own rounded background in CSS, and
-  // the top bar provides custom window controls (native traffic lights don't
-  // exist on transparent windows).
+  // Transparent from birth so the same window can morph into the Glass HUD
+  // overlay. The deck paints its own rounded background in CSS. Instead of a
+  // frame we use titleBarStyle:hiddenInset — macOS renders its REAL traffic
+  // lights (native hover glyphs, tiling menu, focus dimming) over our content;
+  // they're hidden while in HUD mode.
   mainWindow = new BrowserWindow({
     width: 1180,
     height: 860,
     minWidth: 1120,
     minHeight: 820,
     show: false,
-    frame: false,
+    titleBarStyle: "hiddenInset",
+    // Vertically centered on the 42px top bar (12px deck padding + 21 - 6).
+    trafficLightPosition: { x: 22, y: 27 },
     transparent: true,
     backgroundColor: "#00000000",
     hasShadow: true,
@@ -2164,6 +2182,8 @@ function enterHud() {
   deckBounds = mainWindow.getBounds();
   // Let the renderer fade the deck out before the window jumps to full screen.
   emitToRenderer("hud:mode", { mode: "hud" });
+  // The OS traffic lights must not float over the fullscreen overlay.
+  try { mainWindow.setWindowButtonVisibility(false); } catch { /* non-mac */ }
   setTimeout(() => {
     if (!mainWindow || uiMode !== "hud") return;
     const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
@@ -2191,6 +2211,12 @@ function exitHud() {
     mainWindow.setHasShadow(true);
     mainWindow.setMinimumSize(1120, 820);
     if (deckBounds) mainWindow.setBounds(deckBounds);
+    try {
+      mainWindow.setWindowButtonVisibility(true);
+      // Bounds changes can reset the native buttons to the default corner
+      // (Electron quirk) — re-pin them to the deck's top-bar position.
+      mainWindow.setWindowButtonPosition({ x: 22, y: 27 });
+    } catch { /* non-mac */ }
     mainWindow.show();
     mainWindow.focus();
   }, 170);
@@ -2293,6 +2319,17 @@ app.whenReady().then(() => {
     callback(permission === "media" || permission === "audioCapture" || permission === "videoCapture");
   });
 
+  // macOS system sleep freezes all timers, so a scheduled handle renewal may
+  // have been missed entirely. The moment the Mac wakes, renew immediately if
+  // Iris is napping and the handle survived; if it already expired, the
+  // fresh-session fallback covers the next wake.
+  powerMonitor.on("resume", () => {
+    if (!liveSession && !connectInFlight && freshResumeHandle()) {
+      stopHandleRefresh();
+      runHandleRefreshNow();
+    }
+  });
+
   ipcMain.handle("sidecar:start", () => startLive());
   ipcMain.handle("sidecar:stop", () => stopLive());
   ipcMain.handle("sidecar:status", () => liveStatus);
@@ -2358,11 +2395,6 @@ app.whenReady().then(() => {
     if (mainWindow && uiMode === "hud") {
       mainWindow.setIgnoreMouseEvents(!on, { forward: true });
     }
-  });
-  ipcMain.on("win:control", (_event, action) => {
-    if (!mainWindow) return;
-    if (action === "close") mainWindow.close();
-    else if (action === "minimize") mainWindow.minimize();
   });
   ipcMain.handle("sidecar:command", (_event, command) => sendCommand(command));
   ipcMain.on("live:audio", (_event, chunk) => sendAudioChunk(chunk));

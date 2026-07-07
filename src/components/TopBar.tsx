@@ -31,20 +31,8 @@ export default function TopBar({
   return (
     <header className="deck-top">
       <div className="deck-top-left">
-        <div className="win-controls">
-          <button
-            className="win-dot close"
-            onClick={() => window.iris?.windowControl("close")}
-            title="Close"
-            aria-label="Close window"
-          />
-          <button
-            className="win-dot min"
-            onClick={() => window.iris?.windowControl("minimize")}
-            title="Minimize"
-            aria-label="Minimize window"
-          />
-        </div>
+        {/* The real macOS traffic lights render here (titleBarStyle:
+            hiddenInset) — padding in .deck-top-left clears their footprint. */}
         <div className="deck-status">
           <StatusDot tone="gemini" state={geminiDot} label="Gemini" />
           <StatusDot tone="hermes" state={hermesDot} label="Hermes" />

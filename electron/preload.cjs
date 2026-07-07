@@ -26,7 +26,6 @@ contextBridge.exposeInMainWorld("iris", {
   openExternal: (url) => ipcRenderer.invoke("app:open-external", url),
   toggleHud: () => ipcRenderer.invoke("hud:toggle"),
   setHudInteractive: (on) => ipcRenderer.send("hud:interactive", Boolean(on)),
-  windowControl: (action) => ipcRenderer.send("win:control", action),
   onHudMode: (callback) => {
     const handler = (_event, payload) => callback(payload);
     ipcRenderer.on("hud:mode", handler);

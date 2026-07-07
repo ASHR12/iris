@@ -184,7 +184,6 @@ type IrisApi = {
   openExternal: (url: string) => Promise<void>;
   toggleHud: () => Promise<{ mode: "deck" | "hud" }>;
   setHudInteractive: (on: boolean) => void;
-  windowControl: (action: "close" | "minimize") => void;
   onHudMode: (callback: (payload: { mode: "deck" | "hud" }) => void) => () => void;
   onWakeRequest: (callback: () => void) => () => void;
   onSleepRequest: (callback: () => void) => () => void;
