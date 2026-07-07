@@ -71,7 +71,6 @@ export default function HudShell({
   caption,
   captionDim,
   captionCompact,
-  wakeWordEnabled,
   muted,
   onToggleMute,
   onWake,
@@ -95,6 +94,7 @@ export default function HudShell({
   brainAvailable,
   brainOpen,
   onOpenBrain,
+  autoSlept,
 }: {
   reactorState: ReactorState;
   inputLevelRef: { current: number };
@@ -109,7 +109,6 @@ export default function HudShell({
   caption: string;
   captionDim: boolean;
   captionCompact: boolean;
-  wakeWordEnabled: boolean;
   muted: boolean;
   onToggleMute: () => void;
   onWake: () => void;
@@ -133,6 +132,7 @@ export default function HudShell({
   brainAvailable: boolean;
   brainOpen: boolean;
   onOpenBrain: () => void;
+  autoSlept: boolean;
 }) {
   // Show the full stream (state caps at 20); the column has a fixed max height
   // and palm-scrolls like Comms.
@@ -149,6 +149,28 @@ export default function HudShell({
   useEffect(() => {
     if (brainOpen) setWorkOpen(false);
   }, [brainOpen]);
+
+  // The control column reveals for the hand only when it is actually NEAR
+  // the reactor corner (cluster + the column to its left) — a hand merely
+  // being on camera should not pop UI open across the screen.
+  const clusterRef = useRef<HTMLDivElement | null>(null);
+  const handNearOrb = (() => {
+    if (!hand.present) return false;
+    const rect = clusterRef.current?.getBoundingClientRect();
+    if (!rect) return false;
+    const points = hand.hands.length
+      ? hand.hands.map((item) => item.point)
+      : hand.point
+        ? [hand.point]
+        : [];
+    return points.some(
+      (point) =>
+        point.x >= rect.left - 220 &&
+        point.x <= rect.right + 60 &&
+        point.y >= rect.top - 120 &&
+        point.y <= rect.bottom + 80,
+    );
+  })();
 
   return (
     <div className={`hud-shell ${awake ? "awake" : "asleep"}`}>
@@ -225,12 +247,14 @@ export default function HudShell({
       </div>
 
       {/* Orb cluster, bottom-right */}
-      <div className="hud-orb-cluster hud-hit">
+      <div className="hud-orb-cluster hud-hit" ref={clusterRef}>
+        {/* One source of truth: App's caption already covers awake states,
+            asleep hints, and the token-saving nap (with/without Hermes). */}
         <div className={`hud-caption ${captionDim ? "dim" : ""} ${!awake || captionCompact ? "hint" : ""}`}>
-          {awake ? caption : wakeWordEnabled ? "Say “Hey Iris”" : "Iris is asleep"}
+          {caption}
         </div>
         <div
-          className="orb-stage hud-orb"
+          className={`orb-stage hud-orb ${autoSlept && !awake ? "napping" : ""}`}
           ref={orbStageRef}
           style={{ "--orb-accent": ORB_ACCENT[reactorState] } as CSSProperties}
         >
@@ -244,11 +268,18 @@ export default function HudShell({
             wakeKey={wakeKey}
             rippleKey={rippleKey}
           />
+          {autoSlept && !awake ? (
+            <span className="nap-zzz" aria-hidden="true">
+              <i>z</i>
+              <i>z</i>
+              <i>z</i>
+            </span>
+          ) : null}
           {orbFlash ? (
             <span key={orbFlash.id} className={`orb-flash ${orbFlash.tone}`} onAnimationEnd={onOrbFlashEnd} />
           ) : null}
         </div>
-        <div className={`hud-controls ${hand.present ? "show" : ""}`}>
+        <div className={`hud-controls ${handNearOrb ? "show" : ""}`}>
           {awake ? (
             <>
               <button

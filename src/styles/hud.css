@@ -135,14 +135,16 @@ html:not(.hud-mode) .setup-backdrop {
 
 /* Whisper-size states: the asleep hint ("Say Hey Iris") and transient status
    pills (Listening…, Speaking…, Working…). Real conversation captions keep
-   the full size above. */
+   the full size above. Three lines allowed — the standby-with-Hermes message
+   is the longest and must never clip mid-sentence. */
 .hud-caption.hint {
-  max-width: 200px;
+  max-width: 230px;
   padding: 4px 10px;
   border-radius: 9px;
   font-size: 9.5px;
   letter-spacing: 0.04em;
   opacity: 0.85;
+  -webkit-line-clamp: 3;
 }
 
 /* Control buttons: a vertical column to the LEFT of the orb, bottom-aligned

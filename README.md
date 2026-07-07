@@ -288,6 +288,8 @@ HERMES_HOME=~/.hermes                             # optional, auto-detected
 IRIS_HERMES_SESSION=iris-voice                    # pinned Hermes chat (or use the UI switcher)
 IRIS_WAKE_WORD=true                               # "Hey Iris" on-device wake word
 IRIS_HUD_HOTKEY=Alt+H                             # global Glass HUD hotkey
+IRIS_AUTO_SLEEP_SECONDS=30                        # standby after N s of silence (0 = never) — saves ~80% of Live API cost
+IRIS_AUTO_WAKE_ON_HERMES=true                     # Hermes results wake Iris from standby to announce themselves
 IRIS_SOUNDS=true                                  # subtle interface sound cues
 IRIS_LOAD_TEST_DATA=false                         # demo mode
 ```

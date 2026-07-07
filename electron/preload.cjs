@@ -42,6 +42,11 @@ contextBridge.exposeInMainWorld("iris", {
     ipcRenderer.on("iris:sleep", handler);
     return () => ipcRenderer.removeListener("iris:sleep", handler);
   },
+  onAutoSleep: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on("iris:auto-sleep", handler);
+    return () => ipcRenderer.removeListener("iris:auto-sleep", handler);
+  },
   sendCommand: (command) => ipcRenderer.invoke("sidecar:command", command),
   sendUiContext: (context) => ipcRenderer.send("iris:ui-context", context),
   sendAudioChunk: (chunk) => ipcRenderer.send("live:audio", chunk),

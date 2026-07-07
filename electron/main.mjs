@@ -6,6 +6,7 @@ import {
   markModelTurnComplete,
   markUserSpoke,
   resetHermesGate,
+  hasPendingProposal,
 } from "./hermesGate.mjs";
 import {
   readVaultRecords,
@@ -78,6 +79,51 @@ const hermesRuns = new Map();
 const pendingHermesAnnouncements = [];
 let welcomeGreeted = false;
 let welcomeFallbackTimer = null;
+
+// ===== Auto-sleep / auto-wake / session resumption state =====
+// The Live API bills the whole accumulated context on every turn, and an open
+// mic streams 25 tokens/sec even in silence — so an idle-but-connected session
+// bleeds money. Iris closes the session after a quiet spell and resumes it
+// (with full context, via the resumption handle) when you speak or when a
+// Hermes task completes.
+let lastVoiceActivityAt = Date.now();
+let autoSleepTimer = null;
+let autoSlept = false; // last sleep was the idle timer, not the user
+let resumeHandle = null; // latest Live API session resumption token
+let resumeHandleAt = 0; // handles are valid ~2h after disconnect
+let intentionalClose = false; // distinguishes stopLive() from server drops
+let reconnectAttempts = 0;
+let connectInFlight = false; // dedupe racing startLive() calls (wake + safety net)
+let closedDuringConnect = false; // server hung up while connect() was resolving
+let sessionConnectedAt = 0; // when the current connection opened
+let sessionUsedHandle = false; // current connection tried to resume
+let announcementsInFlight = []; // Hermes results sent but possibly not yet spoken
+const RESUME_HANDLE_TTL_MS = 110 * 60 * 1000; // stay under the 2h validity
+// Google expires resumption handles 2h after disconnect — far too short for
+// all-day standby. While napping, a silent micro-reconnect every 90 minutes
+// rotates the handle (no audio, no turns, ~zero cost), so the conversation
+// context survives naps of any length.
+let handleRefreshTimer = null;
+let handleRefreshPromise = null;
+const HANDLE_REFRESH_MS = 90 * 60 * 1000;
+
+function autoSleepMs() {
+  const raw = Number(process.env.IRIS_AUTO_SLEEP_SECONDS ?? 30);
+  if (!Number.isFinite(raw) || raw <= 0) return 0; // 0 disables auto-sleep
+  return Math.max(15, raw) * 1000;
+}
+
+function autoWakeOnHermes() {
+  return envFlag("IRIS_AUTO_WAKE_ON_HERMES", true);
+}
+
+function bumpVoiceActivity() {
+  lastVoiceActivityAt = Date.now();
+}
+
+function freshResumeHandle() {
+  return resumeHandle && Date.now() - resumeHandleAt < RESUME_HANDLE_TTL_MS ? resumeHandle : null;
+}
 let irisUiContext = {
   tasks: [],
   expandedTaskId: null,
@@ -224,6 +270,8 @@ const ALLOWED_CONFIG_KEYS = new Set([
   "IRIS_BRAIN_SEMANTIC",
   "IRIS_BRAIN_AUTO_INDEX",
   "IRIS_HERMES_AUTOSTART",
+  "IRIS_AUTO_SLEEP_SECONDS",
+  "IRIS_AUTO_WAKE_ON_HERMES",
 ]);
 
 function userConfigPath() {
@@ -255,6 +303,8 @@ function getFullConfig() {
     wakeWord: envFlag("IRIS_WAKE_WORD", false),
     wakeSensitivity: process.env.IRIS_WAKE_SENSITIVITY || "balanced",
     sounds: envFlag("IRIS_SOUNDS", true),
+    autoSleepSeconds: String(process.env.IRIS_AUTO_SLEEP_SECONDS ?? "30"),
+    autoWakeOnHermes: envFlag("IRIS_AUTO_WAKE_ON_HERMES", true),
     configured: Boolean((process.env.GEMINI_API_KEY || "").trim()),
     voices: GEMINI_VOICES,
     models: ensureIncludes(GEMINI_LIVE_MODELS, process.env.GEMINI_LIVE_MODEL),
@@ -1231,6 +1281,7 @@ async function watchHermesRun(runId, task) {
 }
 
 function announceHermesCompletion({ runId, task, status, output }) {
+  const wakingFromSleep = !liveSession;
   const eventText = [
     "SYSTEM_EVENT_HERMES_COMPLETE",
     `run_id: ${runId}`,
@@ -1243,6 +1294,11 @@ function announceHermesCompletion({ runId, task, status, output }) {
     "- Ask whether he wants to go through the details before continuing the current conversation.",
     "- If (and ONLY if) this update interrupted a discussion that was actively in progress, return to it afterwards by naming the topic yourself (e.g. \"Anyway, back to <topic> — you were saying...\"). If there was no ongoing discussion, or it had naturally finished, just end after the summary. NEVER ask \"what were we discussing\" — if you cannot name the interrupted topic yourself, there is nothing to resume.",
     "- Do not say you personally did the work; Hermes did.",
+    ...(wakingFromSleep
+      ? [
+          `- You were WOKEN FROM SLEEP specifically to deliver this. Open with the update directly (no greeting), then ask if ${userDisplayName()} needs anything else. If they stay quiet you will simply doze off again — do not mention sleeping, tokens, or costs; keep it natural.`,
+        ]
+      : []),
     "hermes_result:",
     output || "(Hermes returned no text output.)",
   ].join("\n");
@@ -1256,10 +1312,37 @@ function announceHermesCompletion({ runId, task, status, output }) {
   });
 
   if (liveSession) {
+    // Tracked until a turn completes: if the connection dies before Iris
+    // speaks this result, the reconnect path re-sends it.
+    announcementsInFlight.push(eventText);
     liveSession.sendRealtimeInput({ text: eventText });
   } else {
     pendingHermesAnnouncements.push(eventText);
+    requestAutoWake(`Hermes finished "${String(task).slice(0, 80)}" while Iris was asleep.`);
   }
+}
+
+// Test hooks (only with IRIS_TEST_HOOKS=1): let the verification scripts
+// simulate a Hermes completion and inspect the sleep machinery without a
+// real 10-minute agent run.
+if (process.env.IRIS_TEST_HOOKS === "1") {
+  globalThis.__irisTest = {
+    simulateHermesComplete: (task = "Test task", output = "Test output.") =>
+      announceHermesCompletion({ runId: `test-${Date.now()}`, task, status: "completed", output }),
+    isLive: () => Boolean(liveSession),
+    idleForMs: () => Date.now() - lastVoiceActivityAt,
+    hasResumeHandle: () => Boolean(freshResumeHandle()),
+    // Simulates the 9-hour nap: the handle exists but its 2h validity is gone,
+    // so the next wake MUST fall back to a fresh session.
+    expireResumeHandle: () => {
+      resumeHandleAt = 0;
+    },
+    // Simulates the server refusing a handle (invalidated on their side).
+    corruptResumeHandle: () => {
+      if (resumeHandle) resumeHandle = `${String(resumeHandle).slice(0, 8)}-corrupted-by-test`;
+    },
+    pendingAnnouncements: () => pendingHermesAnnouncements.length,
+  };
 }
 
 function buildHermesTools() {
@@ -1406,7 +1489,7 @@ function buildIrisUiTools() {
   ];
 }
 
-function buildLiveConfig() {
+function buildLiveConfig(resumeHandleForSession = null) {
   return {
     responseModalities: ["AUDIO"],
     mediaResolution: "MEDIA_RESOLUTION_MEDIUM",
@@ -1417,10 +1500,17 @@ function buildLiveConfig() {
         },
       },
     },
+    // Aggressive compression is the single biggest cost lever: the Live API
+    // re-bills the WHOLE context window (raw audio history, 25 tok/s) on
+    // every turn. A small sliding window caps that compounding re-bill —
+    // long-term memory lives in Hermes memory + the brain vault, not here.
     contextWindowCompression: {
-      triggerTokens: 104857,
-      slidingWindow: { targetTokens: 52428 },
+      triggerTokens: 16384,
+      slidingWindow: { targetTokens: 8192 },
     },
+    // Lets us disconnect (auto-sleep, server GoAway resets) and reconnect
+    // into the SAME conversation. Handles stay valid ~2h after disconnect.
+    sessionResumption: resumeHandleForSession ? { handle: resumeHandleForSession } : {},
     inputAudioTranscription: {},
     outputAudioTranscription: {},
     tools: [
@@ -1454,6 +1544,7 @@ function buildLiveConfig() {
             `EXCEPTION — repeats and follow-ups: if ${userDisplayName()} asks to re-run, refresh, or slightly tweak a task you ALREADY dispatched in this session, do NOT re-specify the whole task. Write a short continuation brief that names the previous task and tells Hermes to reuse its earlier work, e.g. "Re-run the July 2026 Notion deals analysis from earlier in this session and report the updated numbers — reuse your previous approach and results, re-checking only what may have changed." Hermes shares this session's transcript, so short continuation briefs run dramatically faster.`,
             `After submit_hermes_task returns "started", say one short acknowledgement like: On it, Hermes is handling that now. (Keep what you SAY to ${userDisplayName()} short, even though the task you SENT to Hermes is detailed.) If it returns "blocked", follow its instructions instead — do not claim the task was sent.`,
             `When you receive SYSTEM_EVENT_SESSION_START, immediately speak a warm welcome-back greeting to ${userDisplayName()} as instructed, without waiting for the user to talk first.`,
+            `Power-saving behavior (never mention costs or tokens): if ${userDisplayName()} goes quiet for a while, the system may put you to sleep automatically — that is normal and needs no comment. When a Hermes result wakes you from sleep, the completion event will say so: deliver the update directly without a greeting, ask if anything else is needed, and if they stay silent just let the conversation rest.`,
             `When you receive SYSTEM_EVENT_HERMES_COMPLETE, treat it as a high-priority background result from Hermes. Proactively announce it even if ${userDisplayName()} was chatting with you. Keep it polite and short: say Hermes is back, summarize the result, and ask whether they want to go through it before continuing. If — and only if — the update interrupted a discussion that was genuinely mid-flow, pick it back up afterwards by naming the topic yourself. If there was no active discussion, simply stop after handling the result. Never ask "what were we discussing" — if you can't name the topic yourself, there is nothing to resume.`,
             "Only answer directly for greetings, quick chat, or status questions.",
             "Keep voice responses natural and short.",
@@ -1522,7 +1613,16 @@ function sendWelcomeGreeting() {
 }
 
 async function startLive() {
-  if (liveSession) return liveStatus;
+  // connectInFlight dedupes racing wake paths (renderer wake + the auto-wake
+  // safety net can both call this within the same few seconds).
+  if (liveSession || connectInFlight) return liveStatus;
+  // A standby handle-refresh may be mid-rotation; let it finish so we resume
+  // with the newest handle instead of racing it with a second connection.
+  stopHandleRefresh();
+  if (handleRefreshPromise) {
+    try { await handleRefreshPromise; } catch { /* refresh failures are non-fatal */ }
+    if (liveSession || connectInFlight) return liveStatus;
+  }
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     emitEvent({ type: "fatal", message: "GEMINI_API_KEY is not set." });
@@ -1530,51 +1630,194 @@ async function startLive() {
   }
 
   const model = process.env.GEMINI_LIVE_MODEL || "models/gemini-3.1-flash-live-preview";
+  // Resuming (handle < ~2h old) reconnects to the SAME conversation — full
+  // context, no cold-start greeting. Otherwise it's a fresh session (after a
+  // long nap the handle has expired server-side; Google's validity is 2h).
+  const handle = freshResumeHandle();
+  const resuming = Boolean(handle);
   resetHermesGate();
+  intentionalClose = false;
+  autoSlept = false;
   ai = new GoogleGenAI({ apiKey });
-  emitEvent({ type: "sidecar_status", status: { running: true, model, mode: "webrtc-aec" } });
-  emitEvent({ type: "gemini_status", status: "connecting", model });
-
-  liveSession = await ai.live.connect({
-    model,
-    config: buildLiveConfig(),
-    callbacks: {
-      onopen() {
-        liveStatus = { running: true, pid: process.pid };
-        emitEvent({ type: "sidecar_status", status: { running: true, pid: process.pid, model, mode: "webrtc-aec" } });
-        emitEvent({ type: "gemini_status", status: "connected", model });
-        emitEvent({ type: "audio_state", state: "listening" });
-        updateTrayMenu();
-      },
-      onmessage(message) {
-        handleLiveMessage(message);
-      },
-      onerror(error) {
-        emitEvent({ type: "fatal", message: "Gemini Live error", error: error?.message || String(error) });
-      },
-      onclose(event) {
-        flushTranscripts();
-        liveSession = null;
-        liveStatus = { running: false, pid: null };
-        emitEvent({ type: "gemini_status", status: "offline" });
-        emitEvent({ type: "audio_state", state: "idle" });
-        emitEvent({ type: "sidecar_status", status: liveStatus, reason: event?.reason || "closed" });
-      },
-    },
-  });
-
-  // Send AFTER connect resolves: onopen can fire before liveSession is assigned,
-  // which would otherwise skip the queued announcements.
-  while (pendingHermesAnnouncements.length > 0 && liveSession) {
-    liveSession.sendRealtimeInput({ text: pendingHermesAnnouncements.shift() });
+  // `resuming` rides along so the renderer can skip the boot ceremony when
+  // the conversation is merely continuing (auto-wake, quick re-wake). A
+  // Hermes-driven wake also skips it even on a fresh session — Iris starts
+  // announcing immediately and must not talk over the boot animation.
+  const resumingUi = resuming || pendingHermesAnnouncements.length > 0;
+  emitEvent({ type: "sidecar_status", status: { running: true, model, mode: "webrtc-aec" }, resuming: resumingUi });
+  emitEvent({ type: "gemini_status", status: "connecting", model, resuming: resumingUi });
+  if (resuming) {
+    emitEvent({ type: "log", level: "info", message: "Resuming the previous Gemini session (context preserved)." });
   }
 
-  // Defer the welcome greeting until the renderer's boot screen finishes
-  // (iris:boot-done) so Iris doesn't start talking over the loading animation.
-  // Safety net: greet anyway if that signal never arrives.
-  welcomeGreeted = false;
-  if (welcomeFallbackTimer) clearTimeout(welcomeFallbackTimer);
-  welcomeFallbackTimer = setTimeout(() => sendWelcomeGreeting(), 8000);
+  connectInFlight = true;
+  closedDuringConnect = false;
+  sessionUsedHandle = resuming;
+  sessionConnectedAt = Date.now();
+  try {
+    liveSession = await ai.live.connect({
+      model,
+      config: buildLiveConfig(handle),
+      callbacks: {
+        onopen() {
+          liveStatus = { running: true, pid: process.pid };
+          sessionConnectedAt = Date.now();
+          emitEvent({ type: "sidecar_status", status: { running: true, pid: process.pid, model, mode: "webrtc-aec" } });
+          emitEvent({ type: "gemini_status", status: "connected", model });
+          emitEvent({ type: "audio_state", state: "listening" });
+          updateTrayMenu();
+        },
+        onmessage(message) {
+          handleLiveMessage(message);
+        },
+        onerror(error) {
+          emitEvent({ type: "fatal", message: "Gemini Live error", error: error?.message || String(error) });
+        },
+        onclose(event) {
+          // The server can hang up while connect() is still resolving (e.g.
+          // it rejects a resume handle at setup). Flag it; the main flow's
+          // post-connect guard owns the retry in that case.
+          if (connectInFlight) {
+            closedDuringConnect = true;
+            return;
+          }
+          flushTranscripts();
+          liveSession = null;
+          liveStatus = { running: false, pid: null };
+          if (!intentionalClose) {
+            const livedMs = Date.now() - sessionConnectedAt;
+            // A connection that survived a while was healthy — its close is a
+            // routine server reset (~10-min GoAway), not a failure streak.
+            if (livedMs > 60000) reconnectAttempts = 0;
+            // Hermes results that were sent but not yet confirmed spoken must
+            // survive the drop — requeue them for the next connection.
+            if (announcementsInFlight.length > 0) {
+              pendingHermesAnnouncements.unshift(...announcementsInFlight);
+              announcementsInFlight = [];
+            }
+            // A resumed connection dying within seconds means the server
+            // rejected the handle (expired or invalidated). Drop it: a fresh
+            // conversation beats a dead assistant.
+            if (sessionUsedHandle && livedMs < 15000) {
+              resumeHandle = null;
+              emitEvent({
+                type: "log",
+                level: "warn",
+                message: "The resume handle was rejected — reconnecting with a fresh session.",
+              });
+            }
+            // Reconnect with backoff (0.5s, 2s, 8s, 32s): rides out GoAway
+            // resets AND brief network blips during all-day sessions.
+            if (reconnectAttempts < 4) {
+              const delay = 500 * 4 ** reconnectAttempts;
+              reconnectAttempts += 1;
+              emitEvent({
+                type: "log",
+                level: "info",
+                message: `Gemini connection dropped (${event?.reason || "server reset"}) — reconnecting in ${Math.round(delay / 1000) || 0.5}s…`,
+              });
+              setTimeout(() => {
+                if (!liveSession && !intentionalClose && !connectInFlight) {
+                  startLive().catch((error) => {
+                    emitEvent({ type: "fatal", message: "Gemini reconnect failed", error: error?.message || String(error) });
+                  });
+                }
+              }, delay);
+              return;
+            }
+          }
+          emitEvent({ type: "gemini_status", status: "offline" });
+          emitEvent({ type: "audio_state", state: "idle" });
+          emitEvent({ type: "sidecar_status", status: liveStatus, reason: event?.reason || "closed" });
+        },
+      },
+    });
+  } catch (error) {
+    connectInFlight = false;
+    if (handle) {
+      // The stale resume token was refused at the door — retry fresh once.
+      resumeHandle = null;
+      emitEvent({
+        type: "log",
+        level: "warn",
+        message: "Couldn't resume the previous session — starting a fresh one.",
+      });
+      return startLive();
+    }
+    emitEvent({ type: "gemini_status", status: "offline" });
+    emitEvent({ type: "fatal", message: "Gemini Live connect failed", error: error?.message || String(error) });
+    throw error;
+  }
+  connectInFlight = false;
+  if (intentionalClose) {
+    // stopLive() ran while we were still connecting — honor it, don't leak a
+    // live session behind a sleeping UI.
+    try { liveSession?.close(); } catch { /* ignore */ }
+    liveSession = null;
+    return liveStatus;
+  }
+  if (closedDuringConnect) {
+    // connect() resolved but the server had already hung up — with a resume
+    // handle in play that means it was rejected. Retry once without it.
+    liveSession = null;
+    closedDuringConnect = false;
+    if (handle) {
+      resumeHandle = null;
+      emitEvent({
+        type: "log",
+        level: "warn",
+        message: "The resume handle was rejected during setup — starting a fresh session.",
+      });
+      return startLive();
+    }
+    emitEvent({ type: "gemini_status", status: "offline" });
+    throw new Error("Gemini Live closed during setup");
+  }
+
+  // Send AFTER connect resolves: onopen can fire before liveSession is assigned,
+  // which would otherwise skip the queued announcements. Track what we send
+  // until a turn completes, so a dying connection can't swallow results.
+  const hadAnnouncements = pendingHermesAnnouncements.length > 0;
+  while (pendingHermesAnnouncements.length > 0 && liveSession) {
+    const text = pendingHermesAnnouncements.shift();
+    announcementsInFlight.push(text);
+    liveSession.sendRealtimeInput({ text });
+  }
+
+  if (resuming) {
+    // The conversation never ended — no welcome ceremony on resume. If a
+    // queued Hermes result is driving this wake, that announcement speaks;
+    // otherwise (the user woke her) just a one-line "back with you".
+    welcomeGreeted = true;
+    if (welcomeFallbackTimer) {
+      clearTimeout(welcomeFallbackTimer);
+      welcomeFallbackTimer = null;
+    }
+    if (!hadAnnouncements && liveSession) {
+      liveSession.sendRealtimeInput({
+        text: "SYSTEM_EVENT_SESSION_RESUMED: Same conversation, context intact — the user is back. Say ONE very short line acknowledging you're here (no re-introduction, no recap unless asked).",
+      });
+    }
+  } else if (hadAnnouncements) {
+    // Fresh session (the handle aged out during a long nap) but a Hermes
+    // result drove this wake: the announcement IS the greeting — a separate
+    // welcome ceremony on top would talk over it.
+    welcomeGreeted = true;
+    if (welcomeFallbackTimer) {
+      clearTimeout(welcomeFallbackTimer);
+      welcomeFallbackTimer = null;
+    }
+  } else {
+    // Defer the welcome greeting until the renderer's boot screen finishes
+    // (iris:boot-done) so Iris doesn't start talking over the loading animation.
+    // Safety net: greet anyway if that signal never arrives.
+    welcomeGreeted = false;
+    if (welcomeFallbackTimer) clearTimeout(welcomeFallbackTimer);
+    welcomeFallbackTimer = setTimeout(() => sendWelcomeGreeting(), 8000);
+  }
+
+  // The cost meter: silence auto-closes the session (results auto-wake it).
+  startAutoSleepTimer();
 
   return { running: true, pid: process.pid };
 }
@@ -1601,8 +1844,27 @@ async function handleToolCall(toolCall) {
 
 function handleLiveMessage(message) {
   if (message.toolCall) {
+    bumpVoiceActivity();
     handleToolCall(message.toolCall).catch((error) => {
       emitEvent({ type: "fatal", message: "Tool call failed", error: error.message });
+    });
+  }
+
+  // Session resumption tokens: keep the newest resumable handle so sleep /
+  // server resets can reconnect into the same conversation.
+  if (message.sessionResumptionUpdate) {
+    const update = message.sessionResumptionUpdate;
+    if (update.resumable && update.newHandle) {
+      resumeHandle = update.newHandle;
+      resumeHandleAt = Date.now();
+    }
+  }
+
+  if (message.goAway) {
+    emitEvent({
+      type: "log",
+      level: "info",
+      message: `Gemini server rotating the connection (${message.goAway.timeLeft || "soon"}) — will resume transparently.`,
     });
   }
 
@@ -1620,7 +1882,10 @@ function handleLiveMessage(message) {
 
   if (content.inputTranscription?.text) {
     userTranscriptBuffer += content.inputTranscription.text;
-    if (userTranscriptBuffer.trim()) markUserSpoke();
+    if (userTranscriptBuffer.trim()) {
+      markUserSpoke();
+      bumpVoiceActivity(); // real recognized speech, not raw mic noise
+    }
   }
 
   // The first sign of Iris responding means the user's turn is over, so push
@@ -1628,7 +1893,10 @@ function handleLiveMessage(message) {
   const hasModelOutput =
     Boolean(content.outputTranscription?.text) ||
     (content.modelTurn?.parts || []).some((part) => part.text || part.inlineData?.data);
-  if (hasModelOutput) flushUserTranscript();
+  if (hasModelOutput) {
+    flushUserTranscript();
+    bumpVoiceActivity(); // Iris speaking resets the idle clock too
+  }
 
   if (content.outputTranscription?.text) modelTranscriptBuffer += content.outputTranscription.text;
 
@@ -1645,6 +1913,12 @@ function handleLiveMessage(message) {
   if (content.turnComplete) {
     flushTranscripts();
     markModelTurnComplete();
+    bumpVoiceActivity();
+    // A finished spoken turn confirms any queued Hermes announcements were
+    // actually delivered — stop protecting them against connection loss.
+    // It also proves the session is healthy, so the reconnect budget refills.
+    announcementsInFlight = [];
+    reconnectAttempts = 0;
     emitEvent({ type: "audio_state", state: "listening" });
   }
 }
@@ -1652,6 +1926,8 @@ function handleLiveMessage(message) {
 async function stopLive() {
   welcomeGreeted = true;
   resetHermesGate();
+  stopAutoSleepTimer();
+  intentionalClose = true;
   if (welcomeFallbackTimer) {
     clearTimeout(welcomeFallbackTimer);
     welcomeFallbackTimer = null;
@@ -1666,7 +1942,153 @@ async function stopLive() {
   emitEvent({ type: "audio_state", state: "idle" });
   emitEvent({ type: "sidecar_status", status: liveStatus });
   updateTrayMenu();
+  // Sleep of either kind (manual or standby) keeps the conversation resumable:
+  // rotate the handle in the background so even an overnight nap wakes into
+  // the same conversation.
+  scheduleHandleRefresh();
   return liveStatus;
+}
+
+// ===== Standby handle keep-alive =====
+// Google invalidates resumption handles 2h after disconnect. During long naps
+// (overnight standby) we briefly reconnect every 90 minutes purely to be
+// issued a fresh handle, then hang up — the conversation stays resumable
+// indefinitely at ~zero cost (no audio flows, no tokens are billed).
+function stopHandleRefresh() {
+  if (handleRefreshTimer) {
+    clearTimeout(handleRefreshTimer);
+    handleRefreshTimer = null;
+  }
+}
+
+function scheduleHandleRefresh() {
+  stopHandleRefresh();
+  if (!freshResumeHandle()) return;
+  handleRefreshTimer = setTimeout(() => {
+    handleRefreshTimer = null;
+    handleRefreshPromise = refreshResumeHandle().finally(() => {
+      handleRefreshPromise = null;
+      // Keep rotating for as long as the nap lasts.
+      if (!liveSession && !connectInFlight) scheduleHandleRefresh();
+    });
+  }, HANDLE_REFRESH_MS);
+}
+
+async function refreshResumeHandle() {
+  if (liveSession || connectInFlight) return false;
+  const handle = freshResumeHandle();
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!handle || !apiKey) return false;
+  const model = process.env.GEMINI_LIVE_MODEL || "models/gemini-3.1-flash-live-preview";
+  let gotNewHandle = false;
+  try {
+    const client = ai || new GoogleGenAI({ apiKey });
+    // Deliberately NOT startLive(): no tools, no renderer events, no greeting.
+    // The server sends a sessionResumptionUpdate shortly after setup; we take
+    // the new handle and leave.
+    const session = await client.live.connect({
+      model,
+      config: {
+        responseModalities: ["AUDIO"],
+        sessionResumption: { handle },
+      },
+      callbacks: {
+        onopen() {},
+        onmessage(message) {
+          const update = message.sessionResumptionUpdate;
+          if (update?.resumable && update.newHandle) {
+            resumeHandle = update.newHandle;
+            resumeHandleAt = Date.now();
+            gotNewHandle = true;
+          }
+        },
+        onerror() {},
+        onclose() {},
+      },
+    });
+    let waited = 0;
+    while (!gotNewHandle && waited < 12000) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      waited += 250;
+      // Nudge: a sliver of silent PCM counts as activity and prompts an
+      // update, without triggering any model response (VAD hears nothing).
+      if (waited === 4000) {
+        try {
+          session.sendRealtimeInput({
+            audio: { data: Buffer.alloc(3200).toString("base64"), mimeType: "audio/pcm;rate=16000" },
+          });
+        } catch { /* connection may already be gone */ }
+      }
+    }
+    try { session.close(); } catch { /* ignore close races */ }
+    emitEvent({
+      type: "log",
+      level: gotNewHandle ? "info" : "warn",
+      message: gotNewHandle
+        ? "Standby: renewed the session handle — the conversation stays resumable."
+        : "Standby: handle renewal got no update; if it expires, the next wake starts fresh.",
+    });
+  } catch (error) {
+    emitEvent({ type: "log", level: "warn", message: `Standby handle renewal failed: ${error?.message || error}` });
+  }
+  return gotNewHandle;
+}
+
+// ===== Auto-sleep (idle) =====
+function stopAutoSleepTimer() {
+  if (autoSleepTimer) {
+    clearInterval(autoSleepTimer);
+    autoSleepTimer = null;
+  }
+}
+
+function startAutoSleepTimer() {
+  stopAutoSleepTimer();
+  const ms = autoSleepMs();
+  if (!ms) return;
+  bumpVoiceActivity();
+  autoSleepTimer = setInterval(() => {
+    if (!liveSession) return;
+    // A proposal awaiting the user's yes/no gets triple the patience — they
+    // may be thinking it over.
+    const limit = hasPendingProposal() ? ms * 3 : ms;
+    const idleFor = Date.now() - lastVoiceActivityAt;
+    if (idleFor >= limit) void autoVoiceSleep(idleFor);
+  }, 5000);
+}
+
+async function autoVoiceSleep(idleForMs) {
+  if (!liveSession) return;
+  autoSlept = true;
+  emitEvent({
+    type: "log",
+    level: "info",
+    message: `Standby: quiet for ${Math.round(idleForMs / 1000)}s — closing the Gemini session (context kept for resume; Hermes results wake Iris).`,
+  });
+  // The renderer tears down mic/audio but keeps the camera and HUD alive.
+  emitToRenderer("iris:auto-sleep", { reason: "idle" });
+  await stopLive();
+}
+
+// ===== Auto-wake (Hermes completions while asleep) =====
+let autoWakePending = false;
+
+function requestAutoWake(reason) {
+  if (liveSession || autoWakePending || !autoWakeOnHermes()) return;
+  autoWakePending = true;
+  emitEvent({ type: "log", level: "info", message: `Auto-wake: ${reason}` });
+  // Normal path: the renderer runs its full wake flow (mic capture + live
+  // session). Safety net: if it didn't come up, start the session directly —
+  // the announcement must not be lost.
+  emitToRenderer("iris:wake", {});
+  setTimeout(() => {
+    autoWakePending = false;
+    if (!liveSession) {
+      startLive().catch((error) => {
+        emitEvent({ type: "log", level: "warn", message: `Auto-wake failed: ${error?.message || error}` });
+      });
+    }
+  }, 4000);
 }
 
 function sendAudioChunk(arrayBuffer) {
@@ -1681,6 +2103,7 @@ function sendAudioChunk(arrayBuffer) {
 function sendCommand(command) {
   if (command?.type === "text" && command.text) {
     if (!liveSession) throw new Error("Gemini Live is not running");
+    bumpVoiceActivity();
     liveSession.sendRealtimeInput({ text: command.text });
   }
   if (command?.type === "submit_hermes_task" && command.task) {

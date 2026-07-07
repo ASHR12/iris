@@ -55,6 +55,8 @@ type IrisConfig = {
   wakeWord: boolean;
   wakeSensitivity: string;
   sounds: boolean;
+  autoSleepSeconds: string;
+  autoWakeOnHermes: boolean;
   configured: boolean;
   voices: string[];
   models: string[];
@@ -186,6 +188,7 @@ type IrisApi = {
   onHudMode: (callback: (payload: { mode: "deck" | "hud" }) => void) => () => void;
   onWakeRequest: (callback: () => void) => () => void;
   onSleepRequest: (callback: () => void) => () => void;
+  onAutoSleep: (callback: () => void) => () => void;
   sendCommand: (command: Record<string, unknown>) => Promise<void>;
   sendUiContext: (context: Record<string, unknown>) => void;
   sendAudioChunk: (chunk: ArrayBuffer) => void;

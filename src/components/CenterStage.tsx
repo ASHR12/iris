@@ -82,6 +82,8 @@ export default function CenterStage({
   onToggleMute,
   onSleep,
   wakeWordEnabled,
+  autoSlept,
+  hermesWorking,
 }: {
   reactorState: ReactorState;
   inputLevelRef: { current: number };
@@ -103,11 +105,13 @@ export default function CenterStage({
   onToggleMute: () => void;
   onSleep: () => void;
   wakeWordEnabled: boolean;
+  autoSlept: boolean;
+  hermesWorking: boolean;
 }) {
   return (
     <div className="deck-center">
       <div
-        className="orb-stage"
+        className={`orb-stage ${autoSlept && !awake ? "napping" : ""}`}
         ref={orbStageRef}
         style={{ "--orb-accent": ORB_ACCENT[reactorState] } as CSSProperties}
       >
@@ -121,6 +125,13 @@ export default function CenterStage({
           wakeKey={wakeKey}
           rippleKey={rippleKey}
         />
+        {autoSlept && !awake ? (
+          <span className="nap-zzz" aria-hidden="true">
+            <i>z</i>
+            <i>z</i>
+            <i>z</i>
+          </span>
+        ) : null}
         {orbFlash ? (
           <span key={orbFlash.id} className={`orb-flash ${orbFlash.tone}`} onAnimationEnd={onOrbFlashEnd} />
         ) : null}
@@ -153,7 +164,15 @@ export default function CenterStage({
         </>
       ) : (
         <div className="wake-prompt">
-          {wakeWordEnabled ? (
+          {autoSlept ? (
+            <div className="wake-say">
+              {hermesWorking
+                ? "On standby — Hermes is working; I'll wake when it's done"
+                : wakeWordEnabled
+                  ? "On standby, saving tokens — say “Hey Iris”"
+                  : "On standby, saving tokens"}
+            </div>
+          ) : wakeWordEnabled ? (
             <div className="wake-say">
               <Mic size={15} />
               Say <b>“Hey Iris”</b>

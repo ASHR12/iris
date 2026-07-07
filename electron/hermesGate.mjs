@@ -32,6 +32,12 @@ export function resetHermesGate() {
   proposal = null;
 }
 
+/** A proposal is staged and still waiting for the user's yes/no. */
+export function hasPendingProposal(now = Date.now()) {
+  if (proposal && now - proposal.proposedAt > PROPOSAL_TTL_MS) proposal = null;
+  return Boolean(proposal);
+}
+
 /**
  * Try to consume the staged proposal for an actual submit.
  * Returns { ok: true, proposal } and clears the stage on success, or

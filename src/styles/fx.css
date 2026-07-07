@@ -260,6 +260,86 @@
   box-shadow: 0 0 12px rgba(var(--violet-rgb), 0.95);
 }
 
+/* ===== Napping (token-saving auto-sleep) ===== */
+/* The reactor becomes a sleeping creature: a slow ~5.5s breath with little
+   z's drifting up and away. Deliberately MOONLIT VIOLET — a warm night tint,
+   clearly different from the gray "switched off" look of a manual sleep, so
+   you can tell "she dozed off on purpose" from "I turned her off". */
+.orb-stage.napping {
+  animation: nap-breathe 5.5s ease-in-out infinite;
+}
+
+@keyframes nap-breathe {
+  0%, 100% {
+    transform: scale(0.985);
+    filter: sepia(0.85) hue-rotate(205deg) saturate(1.7) brightness(0.52);
+  }
+  50% {
+    transform: scale(1.02);
+    filter: sepia(0.7) hue-rotate(205deg) saturate(1.8) brightness(0.78);
+  }
+}
+
+.nap-zzz {
+  position: absolute;
+  top: 16%;
+  right: 12%;
+  pointer-events: none;
+}
+
+.nap-zzz i {
+  position: absolute;
+  font-family: var(--font-display, var(--font-mono));
+  font-style: normal;
+  font-weight: 700;
+  color: rgba(var(--violet-rgb), 0.95);
+  text-shadow: 0 0 14px rgba(var(--violet-rgb), 0.65);
+  opacity: 0;
+  animation: nap-z 4.8s ease-out infinite;
+}
+
+.nap-zzz i:nth-child(1) {
+  font-size: 13px;
+  animation-delay: 0s;
+}
+
+.nap-zzz i:nth-child(2) {
+  font-size: 17px;
+  animation-delay: 1.6s;
+}
+
+.nap-zzz i:nth-child(3) {
+  font-size: 21px;
+  animation-delay: 3.2s;
+}
+
+@keyframes nap-z {
+  0% {
+    opacity: 0;
+    transform: translate(0, 0) scale(0.6) rotate(-10deg);
+  }
+  12% {
+    opacity: 0.9;
+  }
+  60% {
+    opacity: 0.45;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(30px, -64px) scale(1.2) rotate(12deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .orb-stage.napping {
+    animation: none;
+    filter: sepia(0.75) hue-rotate(205deg) saturate(1.7) brightness(0.6);
+  }
+  .nap-zzz {
+    display: none;
+  }
+}
+
 /* Pinch — loud ORANGE (grab: drag a node or the canvas). Deliberately
    unmistakable: orange ring + dot + a PINCH tag under the cursor, so you
    always know the instant the system thinks you are grabbing. */

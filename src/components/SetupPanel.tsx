@@ -32,6 +32,8 @@ type Draft = {
   IRIS_WAKE_WORD: string;
   IRIS_WAKE_SENSITIVITY: string;
   IRIS_SOUNDS: string;
+  IRIS_AUTO_SLEEP_SECONDS: string;
+  IRIS_AUTO_WAKE_ON_HERMES: string;
 };
 
 const WIZARD_STEPS = ["welcome", "gemini", "hermes", "you", "permissions", "finish"] as const;
@@ -67,6 +69,8 @@ export default function SetupPanel({
     IRIS_WAKE_WORD: config.wakeWord ? "true" : "false",
     IRIS_WAKE_SENSITIVITY: config.wakeSensitivity || "balanced",
     IRIS_SOUNDS: config.sounds ? "true" : "false",
+    IRIS_AUTO_SLEEP_SECONDS: config.autoSleepSeconds || "30",
+    IRIS_AUTO_WAKE_ON_HERMES: config.autoWakeOnHermes ? "true" : "false",
   });
   const [step, setStep] = useState(0);
   const [gemini, setGemini] = useState<TestState>({ status: "idle" });
@@ -466,6 +470,42 @@ export default function SetupPanel({
           If Iris misses your voice, choose Relaxed; if she still wakes too easily, choose Strict. Every level wakes
           instantly on a clear phrase and automatically demands a stronger score while the room has been noisy (TV,
           music, chatter) — the bar drops back within seconds of quiet.
+        </small>
+      </label>
+      <label className="setup-field">
+        <span>Auto-standby when quiet</span>
+        <ThemedSelect
+          ariaLabel="Auto-standby when quiet"
+          value={draft.IRIS_AUTO_SLEEP_SECONDS}
+          options={[
+            { value: "0", label: "Off — stay connected (costs tokens while idle)" },
+            { value: "30", label: "After 30 seconds of silence (recommended)" },
+            { value: "60", label: "After 1 minute" },
+            { value: "120", label: "After 2 minutes" },
+            { value: "300", label: "After 5 minutes" },
+          ]}
+          onChange={(value) => set("IRIS_AUTO_SLEEP_SECONDS", value)}
+        />
+        <small className="setup-note">
+          An idle Gemini Live session streams silence at ~25 tokens/sec and re-bills accumulated audio on every turn.
+          Standby closes the session when nobody's talking and resumes the same conversation when you return — Iris
+          quietly renews the resume token in the background, so even an overnight nap wakes into the same chat.
+        </small>
+      </label>
+      <label className="setup-field">
+        <span>Auto-wake for Hermes results</span>
+        <ThemedSelect
+          ariaLabel="Auto-wake for Hermes results"
+          value={draft.IRIS_AUTO_WAKE_ON_HERMES}
+          options={[
+            { value: "true", label: "On — announce results even while asleep (recommended)" },
+            { value: "false", label: "Off — results wait until I wake Iris" },
+          ]}
+          onChange={(value) => set("IRIS_AUTO_WAKE_ON_HERMES", value)}
+        />
+        <small className="setup-note">
+          Hand a task to Hermes, go quiet, let Iris drop to standby — when the result lands she wakes, announces it,
+          and returns to standby if you have nothing else.
         </small>
       </label>
       <label className="setup-field">

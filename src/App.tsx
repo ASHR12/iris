@@ -56,6 +56,8 @@ export default function App() {
   const [setup, setSetup] = useState<{ mode: "onboarding" | "settings" } | null>(null);
   const [wakeWordEnabled, setWakeWordEnabled] = useState(false);
   const [wakeSensitivity, setWakeSensitivity] = useState("balanced");
+  // True when the idle timer (not the user) put Iris to sleep.
+  const [autoSlept, setAutoSlept] = useState(false);
   const [hermesSession, setHermesSession] = useState<string | null>(null);
   const [uiMode, setUiMode] = useState<"deck" | "hud">("deck");
   // Neural Map (the brain graph) — HUD-only overlay.
@@ -67,6 +69,8 @@ export default function App() {
   const [bootActive, setBootActive] = useState(false);
   const [bootClosing, setBootClosing] = useState(false);
   const bootStartRef = useRef(0);
+  // True while the current session is a RESUME of a previous conversation.
+  const resumingRef = useRef(false);
 
   // Orb micro-expressions + sound cues.
   const [orbThinking, setOrbThinking] = useState(false);
@@ -289,10 +293,20 @@ export default function App() {
     const offSleep = window.iris.onSleepRequest(() => {
       if (sidecarRunning) stop();
     });
+    // Idle auto-sleep: main closed the Gemini session; tear down the mic and
+    // playback here but KEEP the camera/hand-control — you may be silently
+    // reading the map or the HUD while Iris naps. She auto-wakes for Hermes.
+    const offAutoSleep = window.iris.onAutoSleep(() => {
+      setAutoSlept(true);
+      sessionStartRef.current = null;
+      void audio.stopCapture();
+      audio.flushPlayback();
+    });
     return () => {
       offMode();
       offWake();
       offSleep();
+      offAutoSleep();
     };
   }, [hasBridge, sidecarRunning]);
 
@@ -426,6 +440,9 @@ export default function App() {
     wasRunningRef.current = sidecarRunning;
     if (!sidecarRunning || wasRunning) return;
     if (geminiStatus === "connected") return; // instant resume — skip the intro
+    // Resumed conversations (auto-wake for Hermes, quick re-wakes) continue
+    // where they left off — the boot ceremony is for cold starts only.
+    if (resumingRef.current) return;
     bootStartRef.current = Date.now();
     setBootClosing(false);
     setBootActive(true);
@@ -463,6 +480,9 @@ export default function App() {
 
   function handleSidecarEvent(event: SidecarEvent) {
     if (event.type === "sidecar_status") {
+      // Main flags resumed sessions (context intact) so the boot ceremony
+      // only plays for genuine cold starts. Read BEFORE flipping running.
+      if ("resuming" in event) resumingRef.current = Boolean((event as { resuming?: unknown }).resuming);
       const status = readStatusObject(event.status);
       setSidecarRunning(Boolean(status.running));
       setSidecarPid(typeof status.pid === "number" ? status.pid : null);
@@ -606,6 +626,7 @@ export default function App() {
       pushLog("error", "Electron bridge unavailable. Launch with `npm run dev`.");
       return;
     }
+    setAutoSlept(false);
     const status = await window.iris.startSidecar({ mode: "none" });
     setSidecarRunning(status.running);
     setSidecarPid(status.pid);
@@ -616,6 +637,7 @@ export default function App() {
 
   async function stop() {
     if (!hasBridge) return;
+    setAutoSlept(false);
     await audio.stopCapture();
     audio.flushPlayback();
     await window.iris.stopSidecar();
@@ -928,7 +950,17 @@ export default function App() {
   const caption = useMemo(() => {
     if (!sidecarRunning)
       return {
-        text: wakeWordEnabled ? "Say “Hey Iris” or press ⌥W to wake" : "Press ⌥W to wake Iris",
+        // Mention Hermes waking her ONLY when a task is actually running —
+        // otherwise it's just a quiet nap.
+        text: autoSlept
+          ? working
+            ? "On standby — Hermes is working; I'll wake when it's done"
+            : wakeWordEnabled
+              ? "On standby, saving tokens — say “Hey Iris”"
+              : "On standby, saving tokens — press ⌥W to wake"
+          : wakeWordEnabled
+            ? "Say “Hey Iris” or press ⌥W to wake"
+            : "Press ⌥W to wake Iris",
         dim: true,
         compact: true,
       };
@@ -939,7 +971,7 @@ export default function App() {
     if (last) return { text: last.text, dim: false, compact: false };
     if (geminiStatus === "connected") return { text: "How can I help?", dim: true, compact: true };
     return { text: "Connecting…", dim: true, compact: true };
-  }, [sidecarRunning, audioState, working, transcript, geminiStatus, wakeWordEnabled]);
+  }, [sidecarRunning, audioState, working, transcript, geminiStatus, wakeWordEnabled, autoSlept]);
 
   function openTask(task: TaskCard) {
     if (!(task.output || task.error)) return;
@@ -1013,7 +1045,6 @@ export default function App() {
           caption={caption.text}
           captionDim={caption.dim}
           captionCompact={caption.compact}
-          wakeWordEnabled={wakeWordEnabled}
           muted={audio.muted}
           onToggleMute={audio.toggleMute}
           onWake={start}
@@ -1037,6 +1068,7 @@ export default function App() {
           brainAvailable={Boolean(fullConfig?.brainPath)}
           brainOpen={brainOpen}
           onOpenBrain={() => setBrainOpen((current) => !current)}
+          autoSlept={autoSlept}
         />
       ) : (
       <div
@@ -1099,6 +1131,8 @@ export default function App() {
             onToggleMute={audio.toggleMute}
             onSleep={stop}
             wakeWordEnabled={wakeWordEnabled}
+            autoSlept={autoSlept}
+            hermesWorking={working}
           />
 
           {/* RIGHT — Work */}
