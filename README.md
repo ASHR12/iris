@@ -195,7 +195,7 @@ The packaged app reads config from `~/.iris/.env` (`%USERPROFILE%\.iris\.env` on
 
 | Input             | Action                                                                             |
 | ----------------- | ---------------------------------------------------------------------------------- |
-| **⌥W** / **⌥S**   | Wake / sleep (modifier required — plain typing can never toggle Iris)              |
+| **⌥W** / **⌥S**   | Wake / sleep (global — works from any app, even with the HUD over your work)       |
 | **⌥H**            | Toggle Glass HUD (global — works from any app; configurable via `IRIS_HUD_HOTKEY`) |
 | **"Hey Iris"**    | Wake by voice (opt-in, on-device)                                                  |
 | Top-right buttons | HUD toggle · Settings · hand-tracking toggle · link status                         |

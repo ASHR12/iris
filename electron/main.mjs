@@ -2423,6 +2423,18 @@ app.whenReady().then(() => {
   if (!registered) {
     emitEvent({ type: "log", level: "error", message: `Could not register HUD hotkey ${hudHotkey()}.` });
   }
+  // Wake/sleep must work from ANY app — critical in HUD mode, where another
+  // window has keyboard focus and the renderer's own keydown handler (its
+  // fallback when registration fails) never fires.
+  const wakeRegistered = globalShortcut.register("Alt+W", () => emitToRenderer("iris:wake", {}));
+  const sleepRegistered = globalShortcut.register("Alt+S", () => emitToRenderer("iris:sleep", {}));
+  if (!wakeRegistered || !sleepRegistered) {
+    emitEvent({
+      type: "log",
+      level: "error",
+      message: `Could not register the ${[!wakeRegistered && "⌥W wake", !sleepRegistered && "⌥S sleep"].filter(Boolean).join(" and ")} hotkey — another app may own it.`,
+    });
+  }
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
