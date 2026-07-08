@@ -8,7 +8,11 @@ import { base64ToBytes, downsampleTo16k, parsePcmRate } from "../lib/audio";
  * - passive RMS meters (mic in vs Gemini out, separately) for the orb's
  *   voice signatures and the "thinking" detector
  */
-export function useAudioPipeline(hasBridge: boolean, onLog: (level: string, message: string) => void) {
+export function useAudioPipeline(
+  hasBridge: boolean,
+  onLog: (level: string, message: string) => void,
+  micDeviceId = "",
+) {
   const [muted, setMuted] = useState(false);
 
   const inputContextRef = useRef<AudioContext | null>(null);
@@ -60,18 +64,28 @@ export function useAudioPipeline(hasBridge: boolean, onLog: (level: string, mess
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  async function startCapture() {
+  // "exact" first so the chosen mic genuinely wins (soft "ideal" hints let the
+  // browser keep whatever it prefers); explicit fallback to the system default
+  // if that device is unplugged so the wake never fails.
+  async function openMicStream(deviceId: string) {
+    const base = { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 };
+    if (deviceId) {
+      try {
+        return await navigator.mediaDevices.getUserMedia({
+          audio: { ...base, deviceId: { exact: deviceId } },
+          video: false,
+        });
+      } catch {
+        onLog("warn", "Selected microphone unavailable — using the system default.");
+      }
+    }
+    return navigator.mediaDevices.getUserMedia({ audio: base, video: false });
+  }
+
+  async function startCapture(deviceOverride?: string) {
     if (!hasBridge || inputContextRef.current) return;
 
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-        channelCount: 1,
-      },
-      video: false,
-    });
+    const stream = await openMicStream(deviceOverride ?? micDeviceId);
 
     const context = new AudioContext();
     const source = context.createMediaStreamSource(stream);

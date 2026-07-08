@@ -528,7 +528,10 @@ export default function SetupPanel({
   );
 
   const permissionsSection = (
-    <Section title="Permissions" hint="Iris needs your mic to hear you. Camera is optional (hand gestures).">
+    <Section
+      title="Permissions"
+      hint="Iris needs your mic to hear you. Camera is optional (hand gestures). Pick devices from the main screen — the carets next to the mic button and on the camera panel."
+    >
       <div className="setup-perms">
         <PermRow
           icon={<Mic size={16} />}

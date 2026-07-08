@@ -1,6 +1,7 @@
 import { useEffect, useState, type CSSProperties, type RefObject } from "react";
 import { Mic, MicOff, Power } from "lucide-react";
 import ReactorCore from "./ReactorCore";
+import DevicePicker from "./DevicePicker";
 import type { HandoffTone, ReactorState } from "../types";
 
 // Arc-reactor accent color per state (matches ReactorCore palettes) — drives the
@@ -84,6 +85,8 @@ export default function CenterStage({
   wakeWordEnabled,
   autoSlept,
   hermesWorking,
+  micDevice,
+  onPickMicDevice,
 }: {
   reactorState: ReactorState;
   inputLevelRef: { current: number };
@@ -107,6 +110,8 @@ export default function CenterStage({
   wakeWordEnabled: boolean;
   autoSlept: boolean;
   hermesWorking: boolean;
+  micDevice: string;
+  onPickMicDevice: (id: string) => void;
 }) {
   return (
     <div className="deck-center">
@@ -150,13 +155,22 @@ export default function CenterStage({
             <span className="caption-caret" />
           </div>
           <div className="transport">
-            <button
-              className={`t-btn small ${muted ? "muted" : ""}`}
-              onClick={onToggleMute}
-              title={muted ? "Unmute microphone" : "Mute microphone"}
-            >
-              {muted ? <MicOff size={18} /> : <Mic size={18} />}
-            </button>
+            {/* Zoom-style split control: mute toggles, the caret picks the mic. */}
+            <span className="t-split">
+              <button
+                className={`t-btn small ${muted ? "muted" : ""}`}
+                onClick={onToggleMute}
+                title={muted ? "Unmute microphone" : "Mute microphone"}
+              >
+                {muted ? <MicOff size={18} /> : <Mic size={18} />}
+              </button>
+              <DevicePicker
+                kind="audioinput"
+                value={micDevice}
+                onSelect={onPickMicDevice}
+                title="Select a microphone"
+              />
+            </span>
             <button className="t-btn small danger" onClick={onSleep} title="Sleep (S)">
               <Power size={18} />
             </button>

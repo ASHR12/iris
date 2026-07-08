@@ -101,7 +101,7 @@ const EXTENDED_TIP_SPAN_HOLD = 0.95;
  * heuristics. Supported classes include Closed_Fist, Open_Palm, Pointing_Up,
  * Thumb_Up, Thumb_Down, Victory, ILoveYou, and None.
  */
-export function useHandControl(enabled: boolean) {
+export function useHandControl(enabled: boolean, cameraDeviceId = "") {
   const [state, setState] = useState<HandState>(EMPTY_STATE);
   const [error, setError] = useState<string | null>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -147,9 +147,23 @@ export function useHandControl(enabled: boolean) {
           },
         });
 
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: 640, height: 480, facingMode: "user" },
-        });
+        // "exact" so the chosen camera genuinely wins (a soft "ideal" hint let
+        // the browser keep its favorite); if it's unplugged (monitor webcam,
+        // closed lid), fall back to any available camera instead of failing.
+        if (cameraDeviceId) {
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({
+              video: { width: 640, height: 480, deviceId: { exact: cameraDeviceId } },
+            });
+          } catch {
+            console.warn("[gesture] selected camera unavailable — falling back to default");
+          }
+        }
+        if (!stream) {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { width: 640, height: 480, facingMode: "user" },
+          });
+        }
         video.srcObject = stream;
         await video.play();
 
@@ -349,7 +363,7 @@ export function useHandControl(enabled: boolean) {
       video.srcObject = null;
       setStream(null);
     };
-  }, [enabled]);
+  }, [enabled, cameraDeviceId]);
 
   return { state, error, stream };
 }

@@ -74,6 +74,7 @@ export function useWakeWord(
   onWake: () => void,
   onError?: (message: string) => void,
   threshold: number = DEFAULT_THRESHOLD,
+  micDeviceId = "",
 ) {
   const onWakeRef = useRef(onWake);
   const onErrorRef = useRef(onError);
@@ -191,10 +192,22 @@ export function useWakeWord(
         if (cancelled) return;
         console.log("[wakeword] models ready, requesting microphone…");
 
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-          video: false,
-        });
+        const audioBase = { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+        if (micDeviceId) {
+          // Chosen mic wins when present ("exact"); unplugged falls through
+          // to the system default so wake listening never silently dies.
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({
+              audio: { ...audioBase, deviceId: { exact: micDeviceId } },
+              video: false,
+            });
+          } catch {
+            console.warn("[wakeword] selected mic unavailable — using system default");
+          }
+        }
+        if (!stream) {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: audioBase, video: false });
+        }
         if (cancelled) {
           stream.getTracks().forEach((track) => track.stop());
           return;
@@ -249,5 +262,5 @@ export function useWakeWord(
       // NOTE: ONNX sessions are cached module-level and intentionally NOT released
       // here, so re-arming after sleep is instant.
     };
-  }, [enabled, threshold]);
+  }, [enabled, threshold, micDeviceId]);
 }

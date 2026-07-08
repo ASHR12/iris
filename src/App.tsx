@@ -94,7 +94,7 @@ export default function App() {
     );
   }
 
-  const audio = useAudioPipeline(hasBridge, pushLog);
+  const audio = useAudioPipeline(hasBridge, pushLog, fullConfig?.micDevice || "");
   const { pulses, removePulse, orbFlash, clearOrbFlash, acceptedIds } = useHandoffFx(
     tasks,
     orbStageRef,
@@ -369,6 +369,7 @@ export default function App() {
     },
     (message) => pushLog("error", `Wake word: ${message}`),
     wakeThreshold,
+    fullConfig?.micDevice || "",
   );
 
   async function openSettings() {
@@ -376,6 +377,20 @@ export default function App() {
     const config = await window.iris.getConfig();
     setFullConfig(config);
     setSetup({ mode: "settings" });
+  }
+
+  // Quick device switch (the Zoom-style carets on the main screen). Persists
+  // immediately; the live mic hot-swaps without touching the Gemini session,
+  // and the camera/wake-word listeners restart on their own via hook deps.
+  async function pickDevice(key: "IRIS_MIC_DEVICE" | "IRIS_CAMERA_DEVICE", id: string) {
+    if (!hasBridge) return;
+    const updated = await window.iris.saveConfig({ [key]: id });
+    setFullConfig(updated);
+    if (key === "IRIS_MIC_DEVICE" && sidecarRunning) {
+      await audio.stopCapture();
+      await audio.startCapture(id);
+      pushLog("info", "Microphone switched — live.");
+    }
   }
 
   useEffect(() => {
@@ -660,7 +675,10 @@ export default function App() {
   );
   const dwellRef = useRef<{ el: HTMLElement; startedAt: number; fired: boolean } | null>(null);
 
-  const { state: hand, error: handError, stream: handStream } = useHandControl(handControl);
+  const { state: hand, error: handError, stream: handStream } = useHandControl(
+    handControl,
+    fullConfig?.cameraDevice || "",
+  );
   const liveHandRef = useRef<HandState | null>(hand);
   liveHandRef.current = hand;
 
@@ -1106,6 +1124,8 @@ export default function App() {
               stream={handStream}
               actionLabel={handAction.label}
               actionTone={handAction.tone}
+              cameraDevice={fullConfig?.cameraDevice || ""}
+              onPickCameraDevice={(id) => void pickDevice("IRIS_CAMERA_DEVICE", id)}
             />
           </div>
 
@@ -1133,6 +1153,8 @@ export default function App() {
             wakeWordEnabled={wakeWordEnabled}
             autoSlept={autoSlept}
             hermesWorking={working}
+            micDevice={fullConfig?.micDevice || ""}
+            onPickMicDevice={(id) => void pickDevice("IRIS_MIC_DEVICE", id)}
           />
 
           {/* RIGHT — Work */}

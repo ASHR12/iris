@@ -57,6 +57,8 @@ type IrisConfig = {
   sounds: boolean;
   autoSleepSeconds: string;
   autoWakeOnHermes: boolean;
+  micDevice: string;
+  cameraDevice: string;
   configured: boolean;
   voices: string[];
   models: string[];

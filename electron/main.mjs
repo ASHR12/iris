@@ -275,6 +275,8 @@ const ALLOWED_CONFIG_KEYS = new Set([
   "IRIS_HERMES_AUTOSTART",
   "IRIS_AUTO_SLEEP_SECONDS",
   "IRIS_AUTO_WAKE_ON_HERMES",
+  "IRIS_MIC_DEVICE",
+  "IRIS_CAMERA_DEVICE",
 ]);
 
 function userConfigPath() {
@@ -308,6 +310,8 @@ function getFullConfig() {
     sounds: envFlag("IRIS_SOUNDS", true),
     autoSleepSeconds: String(process.env.IRIS_AUTO_SLEEP_SECONDS ?? "30"),
     autoWakeOnHermes: envFlag("IRIS_AUTO_WAKE_ON_HERMES", true),
+    micDevice: process.env.IRIS_MIC_DEVICE || "",
+    cameraDevice: process.env.IRIS_CAMERA_DEVICE || "",
     configured: Boolean((process.env.GEMINI_API_KEY || "").trim()),
     voices: GEMINI_VOICES,
     models: ensureIncludes(GEMINI_LIVE_MODELS, process.env.GEMINI_LIVE_MODEL),
@@ -1333,6 +1337,9 @@ if (process.env.IRIS_TEST_HOOKS === "1") {
     simulateHermesComplete: (task = "Test task", output = "Test output.") =>
       announceHermesCompletion({ runId: `test-${Date.now()}`, task, status: "completed", output }),
     isLive: () => Boolean(liveSession),
+    // True standby (the idle timer fired) — a transient server drop mid-
+    // reconnect also reads as !isLive, so tests must check THIS for sleep.
+    isAutoSlept: () => autoSlept,
     idleForMs: () => Date.now() - lastVoiceActivityAt,
     hasResumeHandle: () => Boolean(freshResumeHandle()),
     // Simulates the 9-hour nap: the handle exists but its 2h validity is gone,
@@ -1345,6 +1352,13 @@ if (process.env.IRIS_TEST_HOOKS === "1") {
       if (resumeHandle) resumeHandle = `${String(resumeHandle).slice(0, 8)}-corrupted-by-test`;
     },
     pendingAnnouncements: () => pendingHermesAnnouncements.length,
+    // Feeds synthetic voiced PCM through the SAME mic-energy path real audio
+    // takes, so tests can prove that ongoing speech blocks the idle timer.
+    feedVoice: (chunks = 8) => {
+      const pcm = Buffer.alloc(640 * 2);
+      for (let i = 0; i < 640; i++) pcm.writeInt16LE(Math.round(Math.sin(i / 4) * 8000), i * 2);
+      for (let i = 0; i < chunks; i++) trackMicActivity(pcm);
+    },
   };
 }
 
@@ -2106,10 +2120,61 @@ function requestAutoWake(reason) {
   }, 4000);
 }
 
+// ===== Mic-energy voice tracking =====
+// Transcripts can lag far behind live speech (and dictation-style long
+// prompts may produce none until the turn ends), so relying on them let the
+// idle timer put Iris on standby WHILE the user was mid-sentence. Detect
+// speech from raw mic energy instead: sustained voiced audio resets the idle
+// clock; transient spikes (keyboard clatter, a door) decay away. WebRTC echo
+// cancellation keeps Iris's own speaker output out of this signal.
+//
+// The bar adapts to the room (same idea as the wake word's noise floor):
+// auto-gain happily amplifies a fan or hum to speech-like levels, so a fixed
+// threshold either sleeps on talkers or never sleeps at all. Speech must
+// clear the ambient level by a wide multiple; the slow EMA absorbs constant
+// noise but is clamped at the bar so speech never inflates it.
+const VOICE_ENTRY_CHUNKS = 6; // ≈130ms of sustained energy counts as speech
+const VOICE_FLOOR_MIN = 650; // absolute minimum bar (int16 RMS; speech ≈ 1500-6000)
+const VOICE_OVER_AMBIENT = 2.5; // speech must be this much louder than the room
+const VOICE_AMBIENT_CAP = 1600; // even loud rooms leave the bar reachable (≤4000)
+const VOICE_AMBIENT_ALPHA = 0.01; // ~2s time constant at 21ms chunks
+let voicedStreak = 0;
+let ambientRms = 300;
+
+function trackMicActivity(pcm) {
+  const samples = pcm.byteLength >> 1;
+  if (!samples) return;
+  let sum = 0;
+  let count = 0;
+  for (let i = 0; i < samples; i += 4) {
+    const value = pcm.readInt16LE(i * 2);
+    sum += value * value;
+    count += 1;
+  }
+  const rms = Math.sqrt(sum / count);
+  const bar = Math.max(VOICE_FLOOR_MIN, Math.min(ambientRms, VOICE_AMBIENT_CAP) * VOICE_OVER_AMBIENT);
+  const voiced = rms >= bar;
+  if (voiced) {
+    if (voicedStreak < VOICE_ENTRY_CHUNKS) voicedStreak += 1;
+    if (voicedStreak >= VOICE_ENTRY_CHUNKS) bumpVoiceActivity();
+  } else if (voicedStreak > 0) {
+    voicedStreak -= 1;
+  }
+  // Ambient learns fast from quiet chunks (a talker's natural micro-pauses
+  // keep the bar low → speech stays protected indefinitely) but only creeps
+  // up during voiced ones — so a NEW constant noise source (fan turned on)
+  // gets absorbed within a minute or two instead of pinning Iris awake.
+  const alpha = voiced ? VOICE_AMBIENT_ALPHA / 20 : VOICE_AMBIENT_ALPHA;
+  ambientRms += alpha * (Math.min(rms, VOICE_AMBIENT_CAP) - ambientRms);
+}
+
 function sendAudioChunk(arrayBuffer) {
   if (!liveSession || !arrayBuffer) return;
   const buffer = Buffer.from(new Uint8Array(arrayBuffer));
   if (!buffer.byteLength) return;
+  // Test runs inject speech via feedVoice for determinism — the machine's
+  // REAL mic would otherwise leak room noise into idle-timing assertions.
+  if (process.env.IRIS_TEST_HOOKS !== "1") trackMicActivity(buffer);
   liveSession.sendRealtimeInput({
     audio: { data: buffer.toString("base64"), mimeType: "audio/pcm;rate=16000" },
   });
