@@ -171,6 +171,11 @@ export function useAudioPipeline(
     captureGenerationRef.current += 1;
     const pending = capturePromiseRef.current;
     if (pending) await pending.catch(() => undefined);
+    if (hasBridge && inputContextRef.current) {
+      await window.iris
+        .sendCommand({ type: "audio_stream_end" })
+        .catch(() => undefined);
+    }
     if (inputProcessorRef.current instanceof AudioWorkletNode) {
       inputProcessorRef.current.port.onmessage = null;
     } else if (inputProcessorRef.current) {

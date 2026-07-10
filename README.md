@@ -60,7 +60,7 @@ When Hermes finishes a background task, Iris **proactively speaks up**: *"Quick 
 - **"Hey Iris" wake word** — local, on-device ONNX inference; nothing leaves your machine while asleep
 - **Barge-in** — interrupt Iris mid-sentence and it yields immediately
 - **Voice-driven UI** — "open the latest result", "show the steps", "open the failed one", "close it" — fuzzy-matched against what's on screen
-- **Scoped personal context** — a small stable `USER.md` profile is present in conversation; project/episodic facts are retrieved on demand from Hermes `MEMORY.md` and the brain vault with source and freshness metadata
+- **Shared personal context** — a bounded snapshot of Hermes `USER.md` and `MEMORY.md` keeps ordinary conversation coherent; brain notes and deeper memory details remain available through sourced retrieval tools
 
 
 
@@ -357,6 +357,8 @@ npm run dev      # hot-reload dev loop
 npm run build    # typecheck + bundle
 npm test         # gate, Hermes contract, memory, routing, persistence and security
 npm run verify   # tests + Electron checks + build + Python reference compile
+npm run test:live-search # real Gemini Search must survive aggressive standby
+npm run test:live-sleep  # explicit sleep must resume cleanly into a new turn
 npm run soak     # 8-hour Electron RSS/heap and wake/HUD lifecycle sampler
 ```
 
@@ -367,7 +369,7 @@ Please keep the two golden rules: **voice must never regress because of gestures
 - Your Gemini key and Hermes key live in mode-`0600` `~/.iris/.env`, are never returned to renderer state, and are never committed.
 - Camera frames and wake-word audio are processed **entirely on-device** and never uploaded.
 - Conversation audio goes to Gemini Live while Iris is awake. Wake-word audio stays local while asleep; a brief silent connection may renew the Gemini resumption handle during long standby.
-- The stable `USER.md` profile is sent to Gemini at session setup. `MEMORY.md` and brain-note content are sent only when you ask for relevant recall; semantic indexing/querying also uses Gemini embeddings when enabled.
+- A bounded snapshot of Hermes `USER.md` and `MEMORY.md` is sent to Gemini at session setup. Brain-note content is retrieved only when relevant; semantic indexing/querying also uses Gemini embeddings when enabled.
 - `API_SERVER_KEY` must be a strong secret (Hermes enforces 16+ chars and refuses weak keys — the endpoint dispatches terminal-capable agent work). Generate one with `openssl rand -hex 32` and use the same value on both sides.
 
 

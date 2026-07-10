@@ -183,7 +183,9 @@
   position: fixed;
   top: 0;
   left: 0;
-  z-index: 60;
+  /* The gesture cursor must remain visible over every interactive surface,
+     including Hermes prompts (72) and device menus (400). */
+  z-index: 1000;
   width: 0;
   height: 0;
   pointer-events: none;

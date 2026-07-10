@@ -221,7 +221,9 @@ type IrisApi = {
   onWakeRequest: (callback: () => void) => () => void;
   onSleepRequest: (callback: () => void) => () => void;
   onAutoSleep: (callback: () => void) => () => void;
-  sendCommand: (command: Record<string, unknown>) => Promise<void>;
+  sendCommand: (
+    command: Record<string, unknown>,
+  ) => Promise<{ ok: boolean; reason?: string }>;
   sendUiContext: (context: Record<string, unknown>) => void;
   sendAudioChunk: (chunk: ArrayBuffer) => void;
   notifyBootDone: () => void;

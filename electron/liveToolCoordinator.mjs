@@ -9,33 +9,56 @@ export function normalizeToolResult(value) {
 export class LiveToolCoordinator {
   constructor() {
     this.chain = Promise.resolve();
+    this.cancelledIds = new Set();
   }
 
-  enqueue(toolCall, { execute, onCall, send }) {
+  cancel(ids = []) {
+    for (const id of ids) {
+      if (id) this.cancelledIds.add(String(id));
+    }
+    while (this.cancelledIds.size > 1000) {
+      this.cancelledIds.delete(this.cancelledIds.values().next().value);
+    }
+  }
+
+  enqueue(toolCall, { execute, onCall, send, isCancelled }) {
     const operation = this.chain.then(async () => {
+      const calls = toolCall?.functionCalls || [];
       const functionResponses = [];
-      for (const call of toolCall?.functionCalls || []) {
-        const name = String(call?.name || "");
-        const args = call?.args && typeof call.args === "object" ? call.args : {};
-        onCall?.({ name, args });
-        let result;
-        try {
-          result = normalizeToolResult(await execute(name, args));
-        } catch (error) {
-          result = {
-            ok: false,
-            status: "error",
-            error: error?.message || String(error),
-          };
+      try {
+        for (const call of calls) {
+          const id = call?.id ? String(call.id) : "";
+          const cancelled = () =>
+            Boolean(id) &&
+            (this.cancelledIds.has(id) || isCancelled?.(id));
+          if (cancelled()) continue;
+          const name = String(call?.name || "");
+          const args = call?.args && typeof call.args === "object" ? call.args : {};
+          onCall?.({ id, name, args });
+          let result;
+          try {
+            result = normalizeToolResult(await execute(name, args));
+          } catch (error) {
+            result = {
+              ok: false,
+              status: "error",
+              error: error?.message || String(error),
+            };
+          }
+          if (cancelled()) continue;
+          functionResponses.push({
+            ...(id ? { id } : {}),
+            name,
+            response: { result },
+          });
         }
-        functionResponses.push({
-          ...(call?.id ? { id: call.id } : {}),
-          name,
-          response: { result },
-        });
+        if (functionResponses.length) await send(functionResponses);
+        return functionResponses;
+      } finally {
+        for (const call of calls) {
+          if (call?.id) this.cancelledIds.delete(String(call.id));
+        }
       }
-      if (functionResponses.length) await send(functionResponses);
-      return functionResponses;
     });
     this.chain = operation.catch(() => undefined);
     return operation;

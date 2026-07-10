@@ -3,6 +3,7 @@
   { "utterance": "thank you", "route": "direct" },
   { "utterance": "what is the latest Gemini news?", "route": "web" },
   { "utterance": "what is the weather today?", "route": "web" },
+  { "utterance": "search the internet for the FIFA game tonight", "route": "web" },
   { "utterance": "what do we know about Project Aurora?", "route": "memory" },
   { "utterance": "what did I decide last time?", "route": "memory" },
   { "utterance": "open the latest Hermes result", "route": "ui" },

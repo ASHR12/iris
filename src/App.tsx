@@ -43,6 +43,7 @@ export default function App() {
   const [geminiStatus, setGeminiStatus] = useState("offline");
   const [hermesStatus, setHermesStatus] = useState("offline");
   const [audioState, setAudioState] = useState("idle");
+  const [webSearching, setWebSearching] = useState(false);
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
   const [, setLogs] = useState<LogLine[]>([]);
   const [tasks, setTasks] = useState<TaskCard[]>([]);
@@ -534,11 +535,12 @@ export default function App() {
   const reactorState: ReactorState = useMemo(() => {
     if (!sidecarRunning) return "idle";
     if (audioState === "speaking") return "speaking";
+    if (webSearching) return "working";
     if (audioState === "listening") return "listening";
     if (working) return "working";
     if (geminiStatus === "connected") return "online";
     return "idle";
-  }, [audioState, geminiStatus, sidecarRunning, working]);
+  }, [audioState, geminiStatus, sidecarRunning, webSearching, working]);
 
   function handleSidecarEvent(event: SidecarEvent) {
     if (event.type === "sidecar_status") {
@@ -548,6 +550,7 @@ export default function App() {
       const status = readStatusObject(event.status);
       setSidecarRunning(Boolean(status.running));
       setSidecarPid(typeof status.pid === "number" ? status.pid : null);
+      if (!status.running) setWebSearching(false);
       return;
     }
 
@@ -569,6 +572,11 @@ export default function App() {
 
     if (event.type === "audio_state") {
       setAudioState(readString(event.state, "idle"));
+      return;
+    }
+
+    if (event.type === "google_search") {
+      setWebSearching(readString(event.state) === "searching");
       return;
     }
 
@@ -1266,6 +1274,7 @@ export default function App() {
         dim: true,
         compact: true,
       };
+    if (webSearching) return { text: "Searching Google…", dim: false, compact: true };
     if (audioState === "speaking") return { text: "Speaking…", dim: false, compact: true };
     if (audioState === "listening") return { text: "Listening…", dim: false, compact: true };
     if (working) return { text: "Working on it…", dim: false, compact: true };
@@ -1273,7 +1282,7 @@ export default function App() {
     if (last) return { text: last.text, dim: false, compact: false };
     if (geminiStatus === "connected") return { text: "How can I help?", dim: true, compact: true };
     return { text: "Connecting…", dim: true, compact: true };
-  }, [sidecarRunning, audioState, working, transcript, geminiStatus, wakeWordEnabled, autoSlept]);
+  }, [sidecarRunning, webSearching, audioState, working, transcript, geminiStatus, wakeWordEnabled, autoSlept]);
 
   function openTask(task: TaskCard) {
     if (!(task.output || task.error)) return;

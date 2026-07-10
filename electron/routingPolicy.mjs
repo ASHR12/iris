@@ -3,7 +3,7 @@ const UI =
 const MEMORY =
   /\b(remember|memory|what do (?:we|you) know|what did i|have i|my (?:preference|client|deal|draft|project)|previously|last time|the usual)\b/i;
 const CURRENT_WEB =
-  /\b(latest|today|current|right now|news|weather|score|price|stock|who is|when is)\b/i;
+  /\b(latest|today|tonight|current|right now|news|weather|score|price|stock|who is|when is|search (?:the )?(?:web|internet|online)|internet search|look (?:it |this )?up online)\b/i;
 const ACTION =
   /\b(build|create|write|edit|fix|research|investigate|compare|check|send|email|book|buy|download|upload|analyze|analyse|summarize|summarise|automate|run|deploy|organize|organise|update|delete|file|code)\b/i;
 const GREETING = /^(hi|hello|hey|good morning|good afternoon|good evening|thanks|thank you)[!. ]*$/i;
@@ -13,8 +13,8 @@ export function classifyRoute(text) {
   if (!value || GREETING.test(value)) return "direct";
   if (UI.test(value)) return "ui";
   if (MEMORY.test(value)) return "memory";
-  if (ACTION.test(value)) return "hermes";
   if (CURRENT_WEB.test(value)) return "web";
+  if (ACTION.test(value)) return "hermes";
   return "direct";
 }
 

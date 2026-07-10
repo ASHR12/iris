@@ -16,8 +16,11 @@ test("classifies only standalone affirmative responses", () => {
   resetHermesGate();
   assert.equal(classifyConfirmation("yes"), "affirm");
   assert.equal(classifyConfirmation("Okay, send it."), "affirm");
+  assert.equal(classifyConfirmation("I already said yes—send it now."), "affirm");
+  assert.equal(classifyConfirmation("I am giving you that yes. Do it now."), "affirm");
   assert.equal(classifyConfirmation("yes but change the date"), "revise");
   assert.equal(classifyConfirmation("no, do not send it"), "reject");
+  assert.equal(classifyConfirmation("I said yes, but do not send it now"), "reject");
   assert.equal(classifyConfirmation("I was thinking about it"), "other");
 });
 
@@ -100,6 +103,32 @@ test("an interrupted readback never unlocks submission", () => {
   assert.equal(
     claimConfirmedProposal({ proposalId: staged.id, sessionId: "s" }).reason,
     "readback_interrupted",
+  );
+});
+
+test("captures a quick yes that arrives just before readback completion", () => {
+  resetHermesGate();
+  const staged = proposeHermesTask("Task", "normal", { sessionId: "s" }).proposal;
+  assert.equal(
+    recordUserResponse("yes", { allowDuringReadback: true }).responseKind,
+    "affirm",
+  );
+  markModelTurnComplete();
+  const claimed = claimConfirmedProposal({
+    proposalId: staged.id,
+    sessionId: "s",
+  });
+  assert.equal(claimed.ok, true);
+});
+
+test("does not mistake a pre-readback transcript tail for confirmation", () => {
+  resetHermesGate();
+  const staged = proposeHermesTask("Task", "normal", { sessionId: "s" }).proposal;
+  assert.equal(recordUserResponse("yes").reason, "readback_in_progress");
+  markModelTurnComplete();
+  assert.equal(
+    claimConfirmedProposal({ proposalId: staged.id, sessionId: "s" }).reason,
+    "not_confirmed",
   );
 });
 

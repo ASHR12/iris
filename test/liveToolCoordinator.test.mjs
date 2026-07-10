@@ -35,3 +35,32 @@ test("serializes overlapping tool batches and normalizes every response", async 
   assert.equal(sent[1][0].response.result.status, "error");
   assert.equal(sent[1][0].response.result.error, "boom");
 });
+
+test("drops responses for tool calls cancelled during execution", async () => {
+  const coordinator = new LiveToolCoordinator();
+  let release;
+  const executing = new Promise((resolve) => {
+    release = resolve;
+  });
+  let started;
+  const didStart = new Promise((resolve) => {
+    started = resolve;
+  });
+  const sent = [];
+  const operation = coordinator.enqueue(
+    { functionCalls: [{ id: "cancel-me", name: "slow", args: {} }] },
+    {
+      execute: async () => {
+        started();
+        await executing;
+        return { status: "done" };
+      },
+      send: async (responses) => sent.push(responses),
+    },
+  );
+  await didStart;
+  coordinator.cancel(["cancel-me"]);
+  release();
+  assert.deepEqual(await operation, []);
+  assert.deepEqual(sent, []);
+});

@@ -22,9 +22,19 @@ const AFFIRMATIVE = new Set([
   "go ahead",
   "please do",
   "do it",
+  "do it now",
+  "just do it",
   "send it",
+  "send it now",
+  "just send it",
+  "submit it",
+  "submit it now",
   "yes please",
+  "yes do it",
+  "yes do it now",
   "yes send it",
+  "yes send it now",
+  "yes submit it",
   "okay send it",
   "ok send it",
 ]);
@@ -71,8 +81,21 @@ export function classifyConfirmation(value) {
   if (REJECTION_PREFIXES.some((prefix) => normalized === prefix || normalized.startsWith(`${prefix} `))) {
     return "reject";
   }
+  if (
+    /\b(?:do not|don't|dont) (?:send|submit|do)\b/.test(normalized) ||
+    /\bnot (?:now|yet)\b/.test(normalized)
+  ) {
+    return "reject";
+  }
   const words = normalized.split(" ");
   if (words.some((word) => REVISION_WORDS.has(word))) return "revise";
+  const repeatsExplicitYes =
+    /\b(?:i (?:already )?said yes|i am saying yes|i am giving you(?: that)? yes)\b/.test(
+      normalized,
+    );
+  const givesDispatchCommand =
+    /\b(?:(?:send|submit) it|do it)(?: now)?\b/.test(normalized);
+  if (repeatsExplicitYes && givesDispatchCommand) return "affirm";
   return AFFIRMATIVE.has(normalized) ? "affirm" : "other";
 }
 
@@ -105,7 +128,14 @@ export function proposeHermesTask(task, urgency = "normal", options = {}) {
 
 /** Advance only after the model completed the read-back turn. */
 export function markModelTurnComplete() {
-  if (proposal?.stage === "awaiting_readback") replaceProposal({ stage: "awaiting_user" });
+  if (proposal?.stage !== "awaiting_readback") return;
+  const stage =
+    proposal.responseKind === "reject"
+      ? "rejected"
+      : proposal.responseKind === "revise"
+        ? "needs_revision"
+        : "awaiting_user";
+  replaceProposal({ stage });
 }
 
 /**
@@ -117,24 +147,31 @@ export function markModelTurnInterrupted() {
 }
 
 /** Record the complete transcript accumulated for the latest user response. */
-export function recordUserResponse(text) {
-  if (proposal?.stage !== "awaiting_user") return { ok: false, reason: "not_awaiting_user" };
+export function recordUserResponse(text, options = {}) {
+  if (!proposal || !["awaiting_readback", "awaiting_user"].includes(proposal.stage)) {
+    return { ok: false, reason: "not_awaiting_user" };
+  }
+  if (proposal.stage === "awaiting_readback" && !options.allowDuringReadback) {
+    return { ok: false, reason: "readback_in_progress" };
+  }
   const userResponse = String(text || "").trim();
   const responseKind = classifyConfirmation(userResponse);
   const stage =
-    responseKind === "reject"
-      ? "rejected"
-      : responseKind === "revise"
-        ? "needs_revision"
-        : "awaiting_user";
+    proposal.stage === "awaiting_readback"
+      ? "awaiting_readback"
+      : responseKind === "reject"
+        ? "rejected"
+        : responseKind === "revise"
+          ? "needs_revision"
+          : "awaiting_user";
   replaceProposal({ userResponse, responseKind, stage });
   return { ok: true, responseKind, stage };
 }
 
 // Backward-compatible name for callers; unlike the old implementation it
 // requires the transcript and never treats arbitrary speech as confirmation.
-export function markUserSpoke(text) {
-  return recordUserResponse(text);
+export function markUserSpoke(text, options = {}) {
+  return recordUserResponse(text, options);
 }
 
 export function resetHermesGate() {

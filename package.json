@@ -21,6 +21,8 @@
     "test": "node --test test/*.test.mjs",
     "check:electron": "node scripts/check-electron.mjs",
     "verify": "npm run test && npm run check:electron && npm run build && npm run check:python",
+    "test:live-search": "npm run build && node scripts/test-live-search.mjs",
+    "test:live-sleep": "npm run build && node scripts/test-live-sleep-resume.mjs",
     "soak": "node scripts/soak-runtime.mjs",
     "preview": "vite preview",
     "start": "npm run build && node scripts/run-electron.mjs --prod",

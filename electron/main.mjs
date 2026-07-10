@@ -8,6 +8,7 @@ import {
   markUserSpoke,
   resetHermesGate,
   hasPendingProposal,
+  getHermesProposal,
 } from "./hermesGate.mjs";
 import {
   readVaultRecords,
@@ -46,7 +47,9 @@ import {
 import { RendererBridge } from "./rendererBridge.mjs";
 import {
   AnnouncementLedger,
+  LiveTurnState,
   ResumeHandleStore,
+  autoSleepDecision,
 } from "./liveSessionState.mjs";
 import { HermesGatewayClient } from "./hermesGatewayClient.mjs";
 import { HermesInteractiveTransport } from "./hermesInteractiveTransport.mjs";
@@ -59,7 +62,6 @@ import {
   writeEnvUpdates,
 } from "./configStore.mjs";
 import {
-  loadStableUserProfile,
   readHermesMemory,
   searchHermesMemory,
 } from "./memoryService.mjs";
@@ -99,6 +101,10 @@ let ai = null;
 let liveStatus = { running: false, pid: null };
 let userTranscriptBuffer = "";
 let modelTranscriptBuffer = "";
+let userTranscriptTimer = null;
+let modelTranscriptTimer = null;
+let modelTranscriptSettled = false;
+const MIN_AUDIBLE_READBACK_CHARS = 48;
 let lastUserRoute = "direct";
 const hermesRuns = new Map();
 const runRegistry = new RunRegistry();
@@ -106,11 +112,17 @@ const pendingHermesApprovals = new Map();
 const approvalResolutionCooldown = new Map();
 const pendingHermesInteractions = new Map();
 const liveToolCoordinator = new LiveToolCoordinator();
+const activeLiveToolBatches = new Set();
 const announcementLedger = new AnnouncementLedger();
 let welcomeGreeted = false;
 let welcomeFallbackTimer = null;
+let userInputSeenSinceStart = false;
+let googleSearchActive = false;
 let hermesClientCache = null;
 let sleepRequestTimer = null;
+let sleepFinalizeTimer = null;
+let pendingSleepRequest = null;
+let resumeGreetingWaiter = null;
 let reconnectTimer = null;
 let autoWakeTimer = null;
 let hudTransitionTimer = null;
@@ -125,6 +137,7 @@ let interactiveHermes = null;
 // Hermes task completes.
 let lastVoiceActivityAt = Date.now();
 let autoSleepTimer = null;
+const liveTurnState = new LiveTurnState();
 let autoSlept = false; // last sleep was the idle timer, not the user
 let intentionalClose = false; // distinguishes stopLive() from server drops
 let reconnectAttempts = 0;
@@ -132,6 +145,7 @@ let connectInFlight = false; // dedupe racing startLive() calls (wake + safety n
 let closedDuringConnect = false; // server hung up while connect() was resolving
 let sessionConnectedAt = 0; // when the current connection opened
 let sessionUsedHandle = false; // current connection tried to resume
+let liveConnectionId = 0; // rejects late callbacks from a closed/replaced socket
 // Google expires resumption handles 2h (120 min) after disconnect — far too
 // short for all-day standby. While napping, a silent micro-reconnect rotates
 // the handle when it turns 110 minutes old (no audio, no turns, ~zero cost,
@@ -159,17 +173,91 @@ function bumpVoiceActivity() {
   lastVoiceActivityAt = Date.now();
 }
 
-function scheduleSleepRequest(reason = "farewell", delayMs = 3000) {
-  if (sleepRequestTimer) return;
+function beginResponseWait({ restart = false, source = "input" } = {}) {
+  if (restart || !liveTurnState.busy) liveTurnState.beginInput(source);
+}
+
+function noteModelTurnActivity() {
+  liveTurnState.modelActivity();
+}
+
+function endResponseWait() {
+  liveTurnState.reset();
+}
+
+function sendLiveText(text) {
+  if (!liveSession) throw new Error("Gemini Live is not running");
+  beginResponseWait({ restart: true, source: "text" });
+  bumpVoiceActivity();
+  liveSession.sendRealtimeInput({ text });
+}
+
+function emitSleepRequest() {
+  if (sleepRequestTimer) clearTimeout(sleepRequestTimer);
+  if (sleepFinalizeTimer) clearTimeout(sleepFinalizeTimer);
+  sleepRequestTimer = null;
+  sleepFinalizeTimer = null;
+  pendingSleepRequest = null;
+  emitToRenderer("iris:sleep", {});
+}
+
+function scheduleSleepRequest(
+  reason = "farewell",
+  { farewellStarted = false } = {},
+) {
+  if (pendingSleepRequest) {
+    if (farewellStarted) pendingSleepRequest.farewellStarted = true;
+    return;
+  }
+  pendingSleepRequest = {
+    reason,
+    requestedAt: Date.now(),
+    farewellStarted,
+    turnComplete: false,
+  };
   emitEvent({
     type: "log",
     level: "info",
-    message: `Sleep requested (${reason}); waiting for the farewell audio.`,
+    message: `Sleep requested (${reason}); waiting for the farewell turn to finish.`,
   });
+  // Safety net for API failures. The normal path completes on turnComplete.
   sleepRequestTimer = setTimeout(() => {
-    sleepRequestTimer = null;
-    emitToRenderer("iris:sleep", {});
-  }, delayMs);
+    emitSleepRequest();
+  }, 10000);
+}
+
+function finalizeSleepAfterTurn() {
+  const request = pendingSleepRequest;
+  if (!request?.farewellStarted) return;
+  request.turnComplete = true;
+  if (resumeHandles.updatedAt >= request.requestedAt) {
+    emitSleepRequest();
+    return;
+  }
+  if (sleepFinalizeTimer) clearTimeout(sleepFinalizeTimer);
+  // SessionResumptionUpdate is independent of serverContent ordering. Give it
+  // a short opportunity to commit the completed farewell before disconnecting.
+  sleepFinalizeTimer = setTimeout(() => emitSleepRequest(), 750);
+}
+
+function waitForResumeGreeting(timeoutMs = 8000) {
+  if (resumeGreetingWaiter) resumeGreetingWaiter.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      if (resumeGreetingWaiter?.resolve === settle) resumeGreetingWaiter = null;
+      resolve();
+    }, timeoutMs);
+    const settle = () => {
+      clearTimeout(timer);
+      if (resumeGreetingWaiter?.resolve === settle) resumeGreetingWaiter = null;
+      resolve();
+    };
+    resumeGreetingWaiter = { resolve: settle };
+  });
+}
+
+function settleResumeGreeting() {
+  resumeGreetingWaiter?.resolve();
 }
 
 function freshResumeHandle() {
@@ -191,21 +279,65 @@ function emitEvent(event) {
   emitToRenderer("sidecar:event", { timestamp: Date.now() / 1000, ...event });
 }
 
+function setGoogleSearchActive(active, query = "") {
+  const next = Boolean(active);
+  if (googleSearchActive === next) return;
+  googleSearchActive = next;
+  emitEvent({
+    type: "google_search",
+    state: next ? "searching" : "idle",
+    ...(next && query ? { query: String(query).slice(0, 300) } : {}),
+  });
+}
+
 // Emit the user's line on its own. Called as soon as Iris starts responding so
 // "You: …" shows up immediately, instead of waiting for the whole turn to end.
 function flushUserTranscript() {
+  if (userTranscriptTimer) {
+    clearTimeout(userTranscriptTimer);
+    userTranscriptTimer = null;
+  }
   if (userTranscriptBuffer.trim()) {
     emitEvent({ type: "transcript", speaker: "you", text: userTranscriptBuffer.trim() });
   }
   userTranscriptBuffer = "";
 }
 
-function flushTranscripts() {
-  flushUserTranscript();
+function flushModelTranscript() {
+  if (modelTranscriptTimer) {
+    clearTimeout(modelTranscriptTimer);
+    modelTranscriptTimer = null;
+  }
   if (modelTranscriptBuffer.trim()) {
     emitEvent({ type: "transcript", speaker: "gemini", text: modelTranscriptBuffer.trim() });
   }
   modelTranscriptBuffer = "";
+  modelTranscriptSettled = false;
+}
+
+function flushTranscripts() {
+  flushUserTranscript();
+  flushModelTranscript();
+}
+
+function clearTranscriptBuffers() {
+  if (userTranscriptTimer) clearTimeout(userTranscriptTimer);
+  if (modelTranscriptTimer) clearTimeout(modelTranscriptTimer);
+  userTranscriptTimer = null;
+  modelTranscriptTimer = null;
+  userTranscriptBuffer = "";
+  modelTranscriptBuffer = "";
+  modelTranscriptSettled = false;
+}
+
+function scheduleUserTranscriptFlush(delayMs = 1200) {
+  if (userTranscriptTimer) clearTimeout(userTranscriptTimer);
+  userTranscriptTimer = setTimeout(() => flushUserTranscript(), delayMs);
+}
+
+function scheduleModelTranscriptFlush(delayMs = 400) {
+  if (modelTranscriptTimer) clearTimeout(modelTranscriptTimer);
+  modelTranscriptTimer = setTimeout(() => flushModelTranscript(), delayMs);
 }
 
 function hermesBaseUrl() {
@@ -240,14 +372,39 @@ function resolveContextPath(value) {
   return resolveConfigPath(value, repoRoot);
 }
 
-// Keep only the stable USER profile in every Live session. Episodic MEMORY.md
-// and brain notes are retrieved on demand through search_memory, which keeps
-// stale/project-specific context out of unrelated turns.
+// Keep Gemini aligned with the same personal context Hermes uses. This was the
+// known-good pre-hardening behavior: USER.md provides stable profile facts and
+// MEMORY.md preserves recent decisions/projects across ordinary conversation.
 function loadUserContext() {
+  const maxChars = 12000;
   const hermesHome = process.env.HERMES_HOME
     ? resolveContextPath(process.env.HERMES_HOME)
-    : "";
-  return loadStableUserProfile({ hermesHome, maxChars: 4000 });
+    : path.join(os.homedir(), ".hermes");
+  const candidates = [
+    path.join(hermesHome, "memories", "USER.md"),
+    path.join(hermesHome, "memories", "MEMORY.md"),
+  ];
+  const seen = new Set();
+  const blocks = [];
+  const files = [];
+  for (const file of candidates) {
+    try {
+      if (!fs.existsSync(file)) continue;
+      const realPath = fs.realpathSync(file);
+      if (seen.has(realPath)) continue;
+      seen.add(realPath);
+      const text = fs.readFileSync(file, "utf8").trim();
+      if (!text) continue;
+      const label = path.join(path.basename(path.dirname(file)), path.basename(file));
+      blocks.push(`# ${label}\n${text}`);
+      files.push(label);
+    } catch {
+      // Personal context is best-effort; one unreadable file must not block Live.
+    }
+  }
+  let text = blocks.join("\n\n");
+  if (text.length > maxChars) text = `${text.slice(0, maxChars)}\n…(user context truncated)`;
+  return { text, files };
 }
 
 function appConfig() {
@@ -615,7 +772,7 @@ function announceHermesInteraction(runId, task, interaction) {
     "- Then call respond_hermes_interaction with the exact run_id and interaction_id. The app sends the user's recorded answer, not a model-authored replacement.",
   ].join("\n");
   if (liveSession) {
-    announcementLedger.sendNow(eventText, (text) => liveSession.sendRealtimeInput({ text }));
+    announcementLedger.sendNow(eventText, sendLiveText);
   } else {
     announcementLedger.enqueue(eventText);
     requestAutoWake(`Hermes needs input for "${String(task || "").slice(0, 80)}".`);
@@ -1750,33 +1907,56 @@ function getIrisUiContext() {
   return irisUiContext;
 }
 
+const IRIS_UI_ACTIONS = Object.freeze([
+  "open_latest_hermes_result",
+  "open_current_hermes_result",
+  "open_task",
+  "open_task_by_query",
+  "open_hermes_history",
+  "close_reader",
+  "close_history",
+  "close_all_overlays",
+  "show_task_steps",
+  "hide_task_steps",
+  "open_brain_graph",
+  "close_brain_graph",
+  "focus_brain_node",
+  "filter_brain_graph",
+  "open_brain_note",
+  "close_brain_note",
+  "show_full_brain_graph",
+  "enter_hud_mode",
+  "exit_hud_mode",
+]);
+const IRIS_UI_ACTION_SET = new Set(IRIS_UI_ACTIONS);
+
 function controlIrisUi({ action, target_id = undefined, query = undefined }) {
-  const allowed = new Set([
-    "open_latest_hermes_result",
-    "open_current_hermes_result",
-    "open_task",
-    "open_task_by_query",
-    "open_hermes_history",
-    "close_reader",
-    "close_history",
-    "close_all_overlays",
-    "show_task_steps",
-    "hide_task_steps",
-    "open_brain_graph",
-    "close_brain_graph",
-    "focus_brain_node",
-    "filter_brain_graph",
-    "open_brain_note",
-    "close_brain_note",
-    "show_full_brain_graph",
-    "enter_hud_mode",
-    "exit_hud_mode",
-  ]);
-  if (!allowed.has(action)) {
+  if (!IRIS_UI_ACTION_SET.has(action)) {
     return { status: "error", error: `Unknown UI action: ${action}` };
   }
   emitToRenderer("iris:ui-action", { action, target_id, query });
   return { status: "sent", action, target_id, query };
+}
+
+async function waitForConfirmationTranscript(proposalId, sessionId, timeoutMs = 1600) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const proposal = getHermesProposal();
+    if (
+      !proposal ||
+      proposal.id !== proposalId ||
+      (proposal.sessionId && proposal.sessionId !== sessionId)
+    ) {
+      return;
+    }
+    if (
+      proposal.responseKind !== "other" ||
+      !["awaiting_readback", "awaiting_user"].includes(proposal.stage)
+    ) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  }
 }
 
 async function executeTool(name, args = {}) {
@@ -1793,11 +1973,16 @@ async function executeTool(name, args = {}) {
       }
       return proposeHermesTask(args);
     case "submit_hermes_task": {
+      await waitForConfirmationTranscript(
+        args.proposal_id,
+        hermesSessionId(),
+      );
       const claim = claimConfirmedProposal({
         proposalId: args.proposal_id,
         sessionId: hermesSessionId(),
       });
       if (!claim.ok) {
+        const activeProposal = getHermesProposal();
         const reasons = {
           no_proposal:
             "REJECTED: no active proposal. Stage and read back a complete brief first.",
@@ -1816,10 +2001,15 @@ async function executeTool(name, args = {}) {
         return {
           status: "blocked",
           error: reasons[claim.reason] || "REJECTED: proposal confirmation is invalid.",
+          active_proposal_id: activeProposal?.id || null,
           instructions:
             claim.reason === "needs_revision" || claim.reason === "readback_interrupted"
               ? "Call propose_hermes_task with the corrected brief."
-              : "Do not claim the task was sent.",
+              : claim.reason === "not_confirmed"
+                ? "Keep the same proposal staged. Do not call propose_hermes_task again; ask for one standalone confirmation, then retry submit_hermes_task with the same proposal_id."
+                : claim.reason === "proposal_mismatch" && activeProposal
+                  ? "Do not restage or repeat the readback. Retry submit_hermes_task using active_proposal_id if this is the proposal the user just confirmed."
+                  : "Do not claim the task was sent.",
         };
       }
       return submitHermesTask({
@@ -1844,13 +2034,19 @@ async function executeTool(name, args = {}) {
     case "read_memory_note":
       return readMemoryNote(args.path);
     case "go_to_sleep":
-      // Give the goodbye a moment to play before the renderer tears down
-      // audio (its stop() flushes playback immediately).
+      if (resumeGreetingWaiter) {
+        return {
+          status: "ignored",
+          instructions:
+            "This is a resume greeting. The old farewell is complete; do not sleep again.",
+        };
+      }
+      // The actual stop is tied to the farewell's turnComplete below.
       scheduleSleepRequest("Gemini go_to_sleep tool");
       return {
         status: "sleeping",
         instructions:
-          "Say a one-line goodbye right now (nothing else, no new topics). Iris goes to sleep in about 3 seconds.",
+          "Say one short goodbye right now and nothing else. Iris will sleep after this farewell turn completes.",
       };
     case "control_iris_ui":
       return controlIrisUi(args);
@@ -1919,7 +2115,7 @@ function announceHermesApproval(runId, task, approval) {
     "- Only then call approve_hermes_action with the matching run_id and choice.",
   ].join("\n");
   if (liveSession) {
-    announcementLedger.sendNow(eventText, (text) => liveSession.sendRealtimeInput({ text }));
+    announcementLedger.sendNow(eventText, sendLiveText);
   } else {
     announcementLedger.enqueue(eventText);
     requestAutoWake(`Hermes needs approval for "${String(task || "").slice(0, 80)}".`);
@@ -2154,7 +2350,7 @@ function announceHermesCompletion({ runId, task, status, output }) {
   if (liveSession) {
     // Tracked until a turn completes: if the connection dies before Iris
     // speaks this result, the reconnect path re-sends it.
-    announcementLedger.sendNow(eventText, (text) => liveSession.sendRealtimeInput({ text }));
+    announcementLedger.sendNow(eventText, sendLiveText);
   } else {
     announcementLedger.enqueue(eventText);
     requestAutoWake(`Hermes finished "${String(task).slice(0, 80)}" while Iris was asleep.`);
@@ -2201,13 +2397,6 @@ if (process.env.IRIS_TEST_HOOKS === "1") {
       resumeHandles.corruptForTest();
     },
     pendingAnnouncements: () => announcementLedger.pendingCount,
-    // Feeds synthetic voiced PCM through the SAME mic-energy path real audio
-    // takes, so tests can prove that ongoing speech blocks the idle timer.
-    feedVoice: (chunks = 8) => {
-      const pcm = Buffer.alloc(640 * 2);
-      for (let i = 0; i < 640; i++) pcm.writeInt16LE(Math.round(Math.sin(i / 4) * 8000), i * 2);
-      for (let i = 0; i < chunks; i++) trackMicActivity(pcm);
-    },
   };
 }
 
@@ -2217,13 +2406,14 @@ function buildHermesTools() {
       functionDeclarations: [
         {
           name: "check_hermes_status",
-          description: "Check if Hermes local API is reachable. Use this for questions about Hermes status.",
+          description:
+            "Check whether Hermes is reachable and ready. Call immediately when the user asks about Hermes connectivity; this is read-only and needs no confirmation.",
           parameters: { type: "object", properties: {} },
         },
         {
           name: "propose_hermes_task",
           description:
-            "STEP 1 of dispatching real work to Hermes. Stage a structured, self-contained brief WITHOUT sending it. Include user-supplied paths, tools, names, numbers, dates, and constraints exactly; omit only operational details you inferred yourself. After this call, read the brief back, ask for confirmation, and end your turn. Follow-ups may use a short continuation goal that names the earlier task.",
+            "STEP 1 of dispatching work to Hermes. Use ONLY when the user explicitly asks Iris to use, ask, send, or delegate work to Hermes. This stages a complete brief but does not send it. Never use it for ordinary conversation, Google Search, memory/brain retrieval, status checks, or Iris UI controls. After this call, briefly read back the goal, ask whether to send it, and end the turn.",
           parameters: {
             type: "object",
             properties: {
@@ -2263,7 +2453,7 @@ function buildHermesTools() {
         {
           name: "submit_hermes_task",
           description:
-            "STEP 2: send the exact immutable proposal. Call only after the user gave a standalone explicit yes in their own turn. The proposal ID, selected Hermes thread, and exact brief are enforced by the app.",
+            "Send the exact staged Hermes proposal. This is the ONLY initial tool action that requires a separate explicit user confirmation. Call after the user confirms the readback in their own turn; never restage an unchanged confirmed proposal.",
           parameters: {
             type: "object",
             properties: {
@@ -2279,7 +2469,7 @@ function buildHermesTools() {
         {
           name: "get_hermes_task_status",
           description:
-            "Fetch the REAL status of a Hermes run. You MUST call this before saying anything about how a run is going — never guess or answer from memory. If it returns a non-terminal status, the result does not exist yet.",
+            "Read the current status or final output of a Hermes run. Call immediately when asked how a run is going; no confirmation is needed. Report only returned status/output and never invent progress.",
           parameters: {
             type: "object",
             properties: { run_id: { type: "string" } },
@@ -2288,7 +2478,8 @@ function buildHermesTools() {
         },
         {
           name: "stop_hermes_task",
-          description: "Stop an active Hermes run.",
+          description:
+            "Stop an active Hermes run when the user clearly asks to stop or cancel it. Execute directly without an additional confirmation.",
           parameters: {
             type: "object",
             properties: { run_id: { type: "string" } },
@@ -2342,19 +2533,19 @@ function buildIrisUiTools() {
         {
           name: "get_iris_ui_context",
           description:
-            "Get the current Iris UI context: visible Hermes tasks, latest result task, focused task, expanded task, and whether history is open. Use before UI-only voice commands like 'open that', 'show latest result', 'close it', or 'show history'.",
+            "Read current visible tasks, focused/expanded items, overlays, task matches, and Neural Map state. Use only when a reference such as 'that', 'it', or 'the second one' is ambiguous; skip this lookup when the requested UI action is already clear.",
           parameters: { type: "object", properties: {} },
         },
         {
           name: "go_to_sleep",
           description:
-            "Put Iris to sleep (end this voice session). Call it whenever the user says ANY parting phrase — 'go to sleep', 'sleep now', 'bye', 'bye bye', 'goodbye', 'good bye', 'take care', 'see you', 'see you later', 'that's all', 'that's all for now', 'goodnight', 'catch you later' — these ALWAYS mean sleep, never small talk. Say a very short TIME-NEUTRAL farewell BEFORE calling this ('Take care, bye!' / 'Bye, I'm here when you need me.') — NEVER 'goodnight' or 'good morning': you don't know the user's actual local time. The session ends about 3 seconds later. The wake word keeps working, so they can wake Iris again by voice.",
+            "End the Iris voice session when the user clearly ends the conversation or explicitly asks Iris to sleep. Call this tool BEFORE speaking the farewell; its response tells you to say one short goodbye, after which Iris closes on turnComplete. Do not call when a farewell is merely quoted or discussed.",
           parameters: { type: "object", properties: {} },
         },
         {
           name: "search_memory",
           description:
-            "Search Iris's durable personal memory across Hermes USER/MEMORY and the optional brain vault. Use for user-specific people, preferences, prior decisions, projects, drafts, deals, or 'what do we know' questions. Results are snippets with source, path, confidence, freshness, and staleness. For a detailed answer, read the selected source with read_memory_note.",
+            "Search Iris's durable personal memory across Hermes USER/MEMORY and the brain vault. Call directly, without confirmation, when the answer depends on the user's people, preferences, prior decisions, projects, drafts, deals, or earlier context. Results are snippets; read the best source before giving detailed or consequential facts.",
           parameters: {
             type: "object",
             properties: {
@@ -2367,7 +2558,7 @@ function buildIrisUiTools() {
         {
           name: "read_memory_note",
           description:
-            "Read one bounded durable-memory source returned by search_memory. Never invent or construct a path; pass the exact result path (brain:<relative-note> or hermes:USER.md / hermes:MEMORY.md).",
+            "Read one bounded source returned by search_memory. Call directly when a snippet needs verification or more detail. Pass the exact returned path; never invent one.",
           parameters: {
             type: "object",
             properties: {
@@ -2379,7 +2570,7 @@ function buildIrisUiTools() {
         {
           name: "search_brain",
           description:
-            "Search only the configured brain vault. Prefer search_memory for conversational recall; use this narrower tool for Neural Map/vault-specific requests.",
+            "Search the shared memory vault by meaning and keywords. Returns matching notes with title, folder, snippet, and confidence. Use directly for accumulated knowledge about clients, deals, drafts, decisions, people, projects, or style; not for current public information, which belongs to Google Search. Weak results are leads, not facts. Use search_memory when Hermes USER/MEMORY should be searched too.",
           parameters: {
             type: "object",
             properties: {
@@ -2398,14 +2589,15 @@ function buildIrisUiTools() {
         {
           name: "control_iris_ui",
           description:
-            "Control the Iris UI directly for UI-only requests. Use this instead of Hermes when the user asks to open/show/close the current result, latest Hermes result, task history, or overlays.",
+            "Execute an Iris interface action immediately. UI controls never require confirmation and must not be delegated to Hermes. Use get_iris_ui_context first only when the target is genuinely ambiguous.",
           parameters: {
             type: "object",
             properties: {
               action: {
                 type: "string",
+                enum: IRIS_UI_ACTIONS,
                 description:
-                  "One of: open_latest_hermes_result, open_current_hermes_result, open_task, open_task_by_query, open_hermes_history, close_reader, close_history, close_all_overlays, show_task_steps, hide_task_steps, open_brain_graph, close_brain_graph, focus_brain_node, open_brain_note, close_brain_note. Use show_task_steps/hide_task_steps to expand or collapse the tool-step timeline for a Hermes task; when the user names a specific card, pass its words in `query` (or its exact id in `target_id`). With no target, steps default to the card the user is currently viewing (open reader / focused), then the running task. open_brain_graph shows the Neural Map — a visual graph of the shared memory vault (Iris enters HUD mode automatically); close_brain_graph dismisses it. enter_hud_mode switches Iris into the Glass HUD (transparent overlay floating over the desktop); exit_hud_mode returns to the normal deck window. focus_brain_node flies the map camera to the ONE note best matching `query`, highlights it, and shows just that note plus its direct connections (its local graph); filter_brain_graph instead keeps EVERY note matching `query` visible (title matches plus content matches — like typing in Obsidian's graph filter box) and hides the rest; show_full_brain_graph removes either filter and shows the whole constellation again (idempotent — ALWAYS call it when the user asks for the full map, even if you think no filter is active); open_brain_note opens the note card (pass `query` to name one, or omit it to open the focused node); close_brain_note closes the note card and returns to the map.",
+                  "Choose the exact UI operation. For named tasks/notes use query; for an exact task use target_id. focus_brain_node shows one note and its neighbors, filter_brain_graph shows all matches, and show_full_brain_graph clears either view.",
               },
               target_id: {
                 type: "string",
@@ -2437,14 +2629,6 @@ function buildLiveConfig(resumeHandleForSession = null) {
         },
       },
     },
-    // Aggressive compression is the single biggest cost lever: the Live API
-    // re-bills the WHOLE context window (raw audio history, 25 tok/s) on
-    // every turn. A small sliding window caps that compounding re-bill —
-    // long-term memory lives in Hermes memory + the brain vault, not here.
-    contextWindowCompression: {
-      triggerTokens: 16384,
-      slidingWindow: { targetTokens: 8192 },
-    },
     // Lets us disconnect (auto-sleep, server GoAway resets) and reconnect
     // into the SAME conversation. Handles stay valid ~2h after disconnect.
     sessionResumption: resumeHandleForSession ? { handle: resumeHandleForSession } : {},
@@ -2460,31 +2644,28 @@ function buildLiveConfig(resumeHandleForSession = null) {
         {
           text: [
             `You are Iris, the realtime voice front-end for ${userDisplayName()}.`,
-            "Hermes is your worker brain for tools, terminal, files, web, deals, coding, research, and automations.",
+            "Hermes is your worker brain for tools, terminal, files, deals, coding, deep research, and automations.",
             "You also have built-in Google Search. Use Google Search directly for quick current facts, simple web lookups, and lightweight questions that do not need Hermes to do work.",
-            `CRITICAL Hermes dispatch flow — two steps, enforced by the system: (1) call propose_hermes_task with a structured brief, then read it back to ${userDisplayName()} in one or two sentences, ask "Should I send this to Hermes?", and END your turn. (2) Only after ${userDisplayName()} gives a standalone explicit yes in their OWN turn, call submit_hermes_task with the exact proposal_id returned in step 1. The brief is immutable: never pass edits at submit time. If they decline, say "wait", add a condition, or change any detail, do not submit; call propose_hermes_task again with the replacement brief and re-confirm.`,
-            "CRITICAL truthfulness rule — you have NO knowledge of what Hermes is doing or has found. NEVER invent, guess, predict, or summarize a Hermes result from your own imagination. Facts about a run come ONLY from: a SYSTEM_EVENT_HERMES_COMPLETE message, or the exact `output` field of a get_hermes_task_status response with a terminal status. Until one of those exists, the ONLY honest answer is that Hermes is still working.",
-            "When asked how a task is going or what Hermes found: FIRST call get_hermes_task_status (or check_hermes_status for connectivity), THEN speak strictly from its response. If the status is not terminal, say it is still in progress and stop — do not speculate about partial findings, likely outcomes, or timing.",
-            "After submitting a task, your only statement is a short acknowledgement that Hermes has started. Never phrase it as if any result exists yet.",
-            "Routing rule: quick answer, fact lookup, or general chat -> answer directly or use Google Search; dispatch to Hermes ONLY when explicitly requested as described above.",
-            "UI control rule: If the user says things like 'open it', 'open that result', 'show latest Hermes result', 'show history', 'close it', 'go back', or 'open the current task', use get_iris_ui_context and control_iris_ui. Do not send those UI-only commands to Hermes.",
-            `Sleep rule: ANY parting phrase from ${userDisplayName()} means sleep — 'go to sleep', 'sleep now', 'bye', 'bye bye', 'goodbye', 'good bye', 'take care', 'see you', 'see you later', 'catch you later', 'that's all', 'that's all for now', 'goodnight'. Treat these as a command, not chit-chat: say ONE short warm farewell and IMMEDIATELY call go_to_sleep — never reply to a goodbye without calling it, and never call it without being asked. Your farewell must be TIME-NEUTRAL ('Take care, bye!' / 'Bye for now!') — NEVER say 'goodnight', 'good morning', or anything time-of-day based, because you do not know ${userDisplayName()}'s actual local time.`,
-            `HUD rule: when ${userDisplayName()} asks for the overlay mode — 'enter HUD mode', 'HUD mode', 'glass mode', 'float over my screen', 'overlay mode' — call control_iris_ui with action enter_hud_mode. 'exit HUD', 'back to the deck', 'normal window' -> exit_hud_mode. UI-only; never send to Hermes.`,
-            `Neural Map rule: when ${userDisplayName()} says 'load the brain', 'show your brain', 'open the neural map', or 'show the knowledge graph', call control_iris_ui with action open_brain_graph — it renders the shared memory vault as a living graph over the screen. 'close the brain' / 'hide the map' -> close_brain_graph. These are UI-only commands; never send them to Hermes.`,
-            `Neural Map traversal rule: when ${userDisplayName()} asks to find, point to, focus, or zoom to ONE note ('where is X', 'focus on the EvoMap draft'), call control_iris_ui with action focus_brain_node and their words in query — the camera flies to the single best match and shows its local graph (the note + its direct connections). When they ask to FILTER or SEARCH the map — 'filter the map to hash', 'show all Kimi notes', 'show everything about deals from June' — call filter_brain_graph with the query instead: EVERY matching note stays visible (like Obsidian's graph filter), the rest hide, and the pill shows the match count. STRICT show-all rule: when they ask to see the whole map ('show everything', 'show all notes', 'show the full map', 'remove the filter', 'unfilter', 'zoom out to the full map'), ALWAYS call control_iris_ui with action show_full_brain_graph IMMEDIATELY — never skip it because you believe the map is already full or no filter is active; your belief may be stale, the action is idempotent and harmless, and Iris confirms with an on-screen toast either way. Never reply 'it is already showing everything' INSTEAD of calling the action. Then 'open it' / 'read it' -> open_brain_note with no query; 'open X' -> open_brain_note with X in query. 'close the note' / 'go back to the map' -> close_brain_note. While the map is open, get_iris_ui_context includes brainNodes (all note titles), brainFocusedNote, brainOpenNote, brainIsolatedNote + brainIsolationNeighbors (local-graph view), and brainFilterQuery + brainFilterMatches (query-filter view) — use these lists to answer 'what is it connected to?', 'what matched?', or resolve 'open the second one'. If Iris shows a "No note matched" toast, say so and suggest close titles from brainNodes. These are UI-only commands; never send them to Hermes.`,
-            `Memory rule: for anything user-specific or accumulated — people, preferences, clients, deals, drafts, prior decisions, recurring projects, or "what do we know" — call search_memory before answering. Snippets are leads, not complete evidence: call read_memory_note on the best exact path before giving detailed or consequential facts. Cite the returned source title, mention when a brain index is stale, and say honestly when nothing confident matches. Use Google Search for public current facts and Hermes only when live data or real work is requested.`,
-            "Also handle these UI-only commands with control_iris_ui (never Hermes): 'show the steps' / 'what is it doing' / 'show what tools it used' -> show_task_steps; 'hide the steps' -> hide_task_steps. If they name a specific card ('steps for the deals one', 'steps for the second card'), pass those words in query. With no target named, steps apply to the card they are viewing (open reader first), else the running task.",
-            "If the user refers to a task by partial words from the task header, like 'open the failed one', 'open Hermes API', 'open package Iris', or 'open two hand design', call control_iris_ui with action open_task_by_query and put those words in query. Do not require an exact title match.",
-            "If Iris shows a task chooser because multiple cards matched, the user can click a choice or say first/second/third; use get_iris_ui_context to inspect pendingTaskMatches before opening a specific task.",
-            "When a UI command is ambiguous, prefer the expanded task first, then the focused task, then the latest Hermes result. Keep the spoken acknowledgement short.",
-            `When you call propose_hermes_task, fill goal, context, constraints, acceptance_criteria, and output_format from what ${userDisplayName()} actually said. Hermes cannot hear this conversation, so preserve user-supplied names, numbers, dates, budgets, tools, URLs, and file paths exactly. Do not invent workflow mechanics from memory or tell Hermes which internal skill/script/database to use unless ${userDisplayName()} explicitly required it. The distinction is provenance: user-provided implementation constraints are requirements; your inferred implementation guesses are not.`,
-            `EXCEPTION — repeats and follow-ups: if ${userDisplayName()} asks to re-run, refresh, or slightly tweak a task you ALREADY dispatched in this session, do NOT re-specify the whole task. Write a short continuation brief that names the previous task and tells Hermes to reuse its earlier work, e.g. "Re-run the July 2026 Notion deals analysis from earlier in this session and report the updated numbers — reuse your previous approach and results, re-checking only what may have changed." Hermes shares this session's transcript, so short continuation briefs run dramatically faster.`,
-            `After submit_hermes_task returns "started", say one short acknowledgement like: On it, Hermes is handling that now. Keep what you SAY short even though the staged brief is detailed. If it returns "blocked", follow its instructions and never claim the task was sent.`,
-            `When you receive SYSTEM_EVENT_SESSION_START, immediately speak a warm welcome-back greeting to ${userDisplayName()} as instructed, without waiting for the user to talk first.`,
-            `Power-saving behavior (never mention costs or tokens): if ${userDisplayName()} goes quiet for a while, the system may put you to sleep automatically — that is normal and needs no comment. When a Hermes result wakes you from sleep, the completion event will say so: deliver the update directly without a greeting, ask if anything else is needed, and if they stay silent just let the conversation rest.`,
-            `When you receive SYSTEM_EVENT_HERMES_COMPLETE, treat it as a high-priority background result from Hermes. Proactively announce it even if ${userDisplayName()} was chatting with you. Keep it polite and short: say Hermes is back, summarize the result, and ask whether they want to go through it before continuing. If — and only if — the update interrupted a discussion that was genuinely mid-flow, pick it back up afterwards by naming the topic yourself. If there was no active discussion, simply stop after handling the result. Never ask "what were we discussing" — if you can't name the topic yourself, there is nothing to resume.`,
-            `When you receive SYSTEM_EVENT_HERMES_INTERACTION_REQUIRED, Hermes is paused. Ask the supplied question/options, END your turn, and after ${userDisplayName()} answers call respond_hermes_interaction with the exact identifiers. Never paraphrase their answer into a different choice; the app binds the recorded user turn. Passwords, sudo prompts, and secrets are UI-only and must never be requested, repeated, or handled by voice.`,
-            "Only answer directly for greetings, quick chat, or status questions.",
+            "When the user explicitly asks you to search and already gives the subject, start the lookup immediately rather than asking what to search. When the Live API permits, acknowledge briefly that you are checking before delivering the grounded answer.",
+            `CRITICAL Hermes dispatch flow — two steps, enforced by the system: (1) only when ${userDisplayName()} explicitly asks you to use or delegate work to Hermes, call propose_hermes_task with the complete brief, read it back in one or two sentences, ask "Should I send this to Hermes?", and END your turn. (2) Only after ${userDisplayName()} explicitly confirms in their OWN turn, call submit_hermes_task with the exact proposal_id. Never dispatch to Hermes on your own initiative. If they decline, drop it. If they change details, stage the updated brief once and re-confirm.`,
+            "CRITICAL truthfulness rule — you have no knowledge of what Hermes is doing or has found. Facts about a run come only from SYSTEM_EVENT_HERMES_COMPLETE or the exact output of get_hermes_task_status with a terminal status. Until then, say only that Hermes is still working.",
+            "When asked how a Hermes task is going, call get_hermes_task_status (or check_hermes_status for connectivity) and speak strictly from its response. Never guess progress, results, or timing.",
+            "After submitting a task, give one short acknowledgement that Hermes has started. Never phrase it as if a result already exists.",
+            "Routing rule: quick answers and general conversation -> answer directly; quick public/current facts -> use Google Search; personal or accumulated knowledge -> use brain/memory; Iris interface requests -> use UI tools; dispatch to Hermes ONLY when the user explicitly asks you to use Hermes.",
+            "All tools except a new Hermes dispatch and a pending Hermes approval/interaction are normal model-decided tools: call them directly when useful without asking permission and without merely saying you could use them.",
+            "UI control rule: for requests such as open/close a result, show history or steps, switch HUD mode, or operate the Neural Map, call control_iris_ui. Use get_iris_ui_context first only when words like 'it', 'that', or 'the second one' need resolution. Never send UI-only commands to Hermes.",
+            `Sleep rule: when ${userDisplayName()} clearly ends the conversation or asks Iris to sleep, call go_to_sleep FIRST without speaking, then follow its response and say one short time-neutral farewell. Do not trigger sleep when a farewell is merely quoted or discussed.`,
+            `HUD rule: 'enter HUD mode', 'glass mode', 'float over my screen', or 'overlay mode' -> control_iris_ui with enter_hud_mode. 'Exit HUD', 'back to the deck', or 'normal window' -> exit_hud_mode.`,
+            `Neural Map rule: 'load/show your brain', 'open the neural map', or 'show the knowledge graph' -> open_brain_graph. 'Close/hide the brain/map' -> close_brain_graph. To focus one note use focus_brain_node with query; to show every matching note use filter_brain_graph; to clear either filter use show_full_brain_graph; to read a note use open_brain_note; to return to the map use close_brain_note.`,
+            `Brain and memory rule: for accumulated personal knowledge — clients, deals, drafts, people, preferences, decisions, style, recurring projects, or "what do we know" — use the injected USER/MEMORY context and call search_brain or search_memory when retrieval would improve confidence. For detailed or consequential memory facts, read the selected source with read_memory_note. Prefer these over Google for personal facts and over Hermes for simple recall. Say honestly when nothing strong matches.`,
+            "For task cards and history: show/hide steps -> show_task_steps/hide_task_steps; partial task names -> open_task_by_query with query; latest result -> open_latest_hermes_result; history -> open_hermes_history. If several cards match, use get_iris_ui_context to resolve the user's first/second/third choice.",
+            `When proposing a Hermes task, preserve the goal and every concrete detail ${userDisplayName()} explicitly supplied — names, numbers, dates, budgets, URLs, file paths, named tools, constraints, and output format. Hermes cannot hear this conversation, so the brief must stand alone. Do not add workflow mechanics, scripts, databases, pages, or implementation constraints that you merely inferred from memory.`,
+            `For a repeat or small follow-up to a task already dispatched in this Hermes session, write a short continuation brief naming the earlier task and tell Hermes to reuse its previous work instead of rebuilding the entire brief.`,
+            `If submit_hermes_task returns "blocked", follow its instructions exactly. Keep the same proposal when it says confirmation is still settling or the proposal ID should be retried; do not repeatedly restage or reread an unchanged brief.`,
+            `When SYSTEM_EVENT_HERMES_INTERACTION_REQUIRED arrives, ask the supplied question/options and END your turn. After ${userDisplayName()} answers, call respond_hermes_interaction with the exact identifiers. Passwords, sudo values, and secrets are secure-UI only and must never be requested, repeated, or handled by voice.`,
+            `When SYSTEM_EVENT_SESSION_START arrives, greet ${userDisplayName()} once as instructed. On session resume, acknowledge briefly without reintroducing yourself.`,
+            "Automatic idle sleep needs no comment. When a Hermes result wakes Iris, deliver the result directly without another greeting.",
+            `When SYSTEM_EVENT_HERMES_COMPLETE arrives, briefly announce the real result and ask whether ${userDisplayName()} wants to discuss it. Resume an interrupted topic only if you can name it from conversation context.`,
             "Keep voice responses natural and short.",
           ].join("\n"),
         },
@@ -2507,14 +2688,14 @@ function userContextParts() {
   return [
     {
       text: [
-        `STABLE USER PROFILE provided by ${userDisplayName()}.`,
-        "Treat it as authoritative only for stable identity and preferences. Project history and episodic facts must be retrieved with search_memory.",
-        "Use it to speak naturally and resolve harmless shorthand.",
-        "When drafting Hermes briefs, preserve requirements the user explicitly supplied. Do not copy inferred workflow mechanics from this profile.",
+        `USER CONTEXT — personal profile and memory provided by ${userDisplayName()}.`,
+        "Treat it as authoritative about who they are, their preferences, locations, budgets, tools, recurring projects, and prior decisions.",
+        "Use it to resolve vague or shorthand requests and to speak naturally without making the user repeat established context.",
+        "When drafting Hermes briefs, preserve details the user explicitly supplied in this conversation. Use this memory to understand intent, but do not copy inferred scripts, database structure, page names, or workflow mechanics into the brief.",
         "Never read this context aloud verbatim; just use it to act correctly.",
-        "----- BEGIN STABLE USER PROFILE -----",
+        "----- BEGIN USER CONTEXT -----",
         text,
-        "----- END STABLE USER PROFILE -----",
+        "----- END USER CONTEXT -----",
       ].join("\n"),
     },
   ];
@@ -2527,39 +2708,44 @@ function sendWelcomeGreeting() {
     clearTimeout(welcomeFallbackTimer);
     welcomeFallbackTimer = null;
   }
-  (async () => {
-    let reachable = false;
-    try {
-      const status = await checkHermesStatus();
-      reachable = Boolean(status.reachable);
-    } catch {
-      reachable = false;
-    }
-    if (!liveSession) return;
-
-    const hermesLine = reachable
-      ? "Hermes is online and all channels are connected, so we're good to go."
-      : "I'm still bringing Hermes online, channels are connecting now.";
-
-    const greeting =
-      `SYSTEM_EVENT_SESSION_START: The session just started. Proactively greet ${userDisplayName()} out loud right now in a warm, concise way (1-2 sentences). ` +
-      `Say something like: Hi ${userDisplayName()}, welcome back. ${hermesLine} Then ask what they have in mind. ` +
-      "Speak this greeting immediately without waiting for the user to talk first.";
-
-    liveSession.sendRealtimeInput({ text: greeting });
-  })();
+  if (
+    process.env.IRIS_TEST_HOOKS === "1" &&
+    process.env.IRIS_TEST_SKIP_WELCOME === "1"
+  ) {
+    return;
+  }
+  // Never inject a stale startup instruction after the user has begun a real
+  // turn. Hermes health is reflected by the status UI and must not delay this.
+  if (userInputSeenSinceStart) return;
+  sendLiveText(
+    `SYSTEM_EVENT_SESSION_START: Greet ${userDisplayName()} once in one short sentence, ` +
+      "then ask what they have in mind. Do not report service status unless asked.",
+  );
 }
 
-async function startLive() {
+async function startLive({ preserveLogicalStart = false } = {}) {
   // connectInFlight dedupes racing wake paths (renderer wake + the auto-wake
   // safety net can both call this within the same few seconds).
   if (liveSession) return liveStatus;
   if (connectInFlight) return { running: true, pid: process.pid, connecting: true };
   if (shuttingDown) return liveStatus;
+  if (!preserveLogicalStart) {
+    activeLiveToolBatches.clear();
+    endResponseWait();
+    setGoogleSearchActive(false);
+    clearTranscriptBuffers();
+    welcomeGreeted = false;
+    userInputSeenSinceStart = false;
+  }
   if (sleepRequestTimer) {
     clearTimeout(sleepRequestTimer);
     sleepRequestTimer = null;
   }
+  if (sleepFinalizeTimer) {
+    clearTimeout(sleepFinalizeTimer);
+    sleepFinalizeTimer = null;
+  }
+  pendingSleepRequest = null;
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
@@ -2602,6 +2788,7 @@ async function startLive() {
   closedDuringConnect = false;
   sessionUsedHandle = resuming;
   sessionConnectedAt = Date.now();
+  const connectionId = ++liveConnectionId;
   try {
     liveSession = await connectLiveWithTimeout(ai.live.connect({
       model,
@@ -2616,12 +2803,15 @@ async function startLive() {
           updateTrayMenu();
         },
         onmessage(message) {
-          handleLiveMessage(message);
+          if (connectionId === liveConnectionId) handleLiveMessage(message);
         },
         onerror(error) {
+          if (connectionId !== liveConnectionId) return;
           emitEvent({ type: "fatal", message: "Gemini Live error", error: error?.message || String(error) });
         },
         onclose(event) {
+          if (connectionId !== liveConnectionId) return;
+          settleResumeGreeting();
           // The server can hang up while connect() is still resolving (e.g.
           // it rejects a resume handle at setup). Flag it; the main flow's
           // post-connect guard owns the retry in that case.
@@ -2664,7 +2854,7 @@ async function startLive() {
               reconnectTimer = setTimeout(() => {
                 reconnectTimer = null;
                 if (!liveSession && !intentionalClose && !connectInFlight) {
-                  startLive().catch((error) => {
+                  startLive({ preserveLogicalStart: true }).catch((error) => {
                     emitEvent({ type: "fatal", message: "Gemini reconnect failed", error: error?.message || String(error) });
                   });
                 }
@@ -2672,6 +2862,7 @@ async function startLive() {
               return;
             }
           }
+          endResponseWait();
           emitEvent({ type: "gemini_status", status: "offline" });
           emitEvent({ type: "audio_state", state: "idle" });
           emitEvent({ type: "sidecar_status", status: liveStatus, reason: event?.reason || "closed" });
@@ -2688,9 +2879,10 @@ async function startLive() {
         level: "warn",
         message: "Couldn't resume the previous session — starting a fresh one.",
       });
-      return startLive();
+      return startLive({ preserveLogicalStart: true });
     }
     emitEvent({ type: "gemini_status", status: "offline" });
+    endResponseWait();
     liveSession = null;
     liveStatus = { running: false, pid: null };
     emitEvent({ type: "sidecar_status", status: liveStatus });
@@ -2717,9 +2909,10 @@ async function startLive() {
         level: "warn",
         message: "The resume handle was rejected during setup — starting a fresh session.",
       });
-      return startLive();
+      return startLive({ preserveLogicalStart: true });
     }
     emitEvent({ type: "gemini_status", status: "offline" });
+    endResponseWait();
     throw new Error("Gemini Live closed during setup");
   }
 
@@ -2728,22 +2921,23 @@ async function startLive() {
   // until a turn completes, so a dying connection can't swallow results.
   const hadAnnouncements = announcementLedger.pendingCount > 0;
   if (liveSession) {
-    announcementLedger.drain((text) => liveSession.sendRealtimeInput({ text }));
+    announcementLedger.drain(sendLiveText);
   }
 
   if (resuming) {
-    // The conversation never ended — no welcome ceremony on resume. If a
-    // queued Hermes result is driving this wake, that announcement speaks;
-    // otherwise (the user woke her) just a one-line "back with you".
+    // The conversation never ended. Complete a short resume turn before
+    // startLive resolves, so renderer mic capture cannot race old context.
     welcomeGreeted = true;
     if (welcomeFallbackTimer) {
       clearTimeout(welcomeFallbackTimer);
       welcomeFallbackTimer = null;
     }
-    if (!hadAnnouncements && liveSession) {
-      liveSession.sendRealtimeInput({
-        text: "SYSTEM_EVENT_SESSION_RESUMED: Same conversation, context intact — the user is back. Say ONE very short line acknowledging you're here (no re-introduction, no recap unless asked).",
-      });
+    if (!hadAnnouncements && !preserveLogicalStart && liveSession) {
+      const greetingComplete = waitForResumeGreeting();
+      sendLiveText(
+        `SYSTEM_EVENT_SESSION_RESUMED: The previous farewell is historical and already completed. Do not repeat it and do not call go_to_sleep. Say exactly one short welcome such as "I'm back, ${userDisplayName()}—what's next?" Then end your turn.`,
+      );
+      await greetingComplete;
     }
   } else if (hadAnnouncements) {
     // Fresh session (the handle aged out during a long nap) but a Hermes
@@ -2758,9 +2952,10 @@ async function startLive() {
     // Defer the welcome greeting until the renderer's boot screen finishes
     // (iris:boot-done) so Iris doesn't start talking over the loading animation.
     // Safety net: greet anyway if that signal never arrives.
-    welcomeGreeted = false;
-    if (welcomeFallbackTimer) clearTimeout(welcomeFallbackTimer);
-    welcomeFallbackTimer = setTimeout(() => sendWelcomeGreeting(), 8000);
+    if (!welcomeGreeted) {
+      if (welcomeFallbackTimer) clearTimeout(welcomeFallbackTimer);
+      welcomeFallbackTimer = setTimeout(() => sendWelcomeGreeting(), 8000);
+    }
   }
 
   // The cost meter: silence auto-closes the session (results auto-wake it).
@@ -2770,22 +2965,51 @@ async function startLive() {
 }
 
 async function handleToolCall(toolCall) {
-  return liveToolCoordinator.enqueue(toolCall, {
-    execute: executeTool,
-    onCall: ({ name, args }) => emitEvent({ type: "tool_call", name, args }),
-    send: async (functionResponses) => {
-      if (!liveSession) throw new Error("Gemini Live closed before the tool response was ready.");
-      liveSession.sendToolResponse({ functionResponses });
-    },
-  });
+  const token = Symbol("live-tool-batch");
+  const sessionForCall = liveSession;
+  activeLiveToolBatches.add(token);
+  try {
+    return await liveToolCoordinator.enqueue(toolCall, {
+      execute: executeTool,
+      onCall: ({ name, args }) => emitEvent({ type: "tool_call", name, args }),
+      isCancelled: (id) => liveTurnState.isToolCancelled(id),
+      send: async (functionResponses) => {
+        if (!liveSession || liveSession !== sessionForCall) {
+          throw new Error("Gemini Live changed before the tool response was ready.");
+        }
+        bumpVoiceActivity();
+        liveSession.sendToolResponse({ functionResponses });
+        liveTurnState.toolResponse(functionResponses.map((response) => response.id));
+      },
+    });
+  } finally {
+    activeLiveToolBatches.delete(token);
+  }
 }
 
 function handleLiveMessage(message) {
+  if (message.toolCallCancellation) {
+    const ids = message.toolCallCancellation.ids || [];
+    liveTurnState.cancelTools(ids);
+    liveToolCoordinator.cancel(ids);
+    emitEvent({ type: "log", level: "info", message: `Gemini cancelled ${ids.length} interrupted tool call${ids.length === 1 ? "" : "s"}.` });
+  }
+
   if (message.toolCall) {
+    liveTurnState.toolCalls(message.toolCall.functionCalls || []);
     bumpVoiceActivity();
-    handleToolCall(message.toolCall).catch((error) => {
-      emitEvent({ type: "fatal", message: "Tool call failed", error: error.message });
-    });
+    const dispatchToolCall = () => {
+      handleToolCall(message.toolCall).catch((error) => {
+        emitEvent({ type: "fatal", message: "Tool call failed", error: error.message });
+      });
+    };
+    const containsHermesSubmit = (message.toolCall.functionCalls || []).some(
+      (call) => call?.name === "submit_hermes_task",
+    );
+    // Only Hermes confirmation needs the transcript-settlement tick. Every
+    // unrelated tool keeps the original immediate dispatch path.
+    if (containsHermesSubmit) setTimeout(dispatchToolCall, 0);
+    else dispatchToolCall();
   }
 
   // Session resumption tokens: keep the newest resumable handle so sleep /
@@ -2794,6 +3018,12 @@ function handleLiveMessage(message) {
     const update = message.sessionResumptionUpdate;
     if (update.resumable && update.newHandle) {
       resumeHandles.update(update.newHandle);
+      if (
+        pendingSleepRequest?.turnComplete &&
+        resumeHandles.updatedAt >= pendingSleepRequest.requestedAt
+      ) {
+        emitSleepRequest();
+      }
     }
   }
 
@@ -2808,30 +3038,26 @@ function handleLiveMessage(message) {
   const content = message.serverContent;
   if (!content) return;
 
-  if (content.interrupted) {
-    flushTranscripts();
-    // A barge-in may have cut off the brief; never treat it as a completed
-    // confirmation read-back.
-    markModelTurnInterrupted();
-    for (const [runId, interaction] of pendingHermesInteractions) {
-      if (!interaction.secret && interaction.stage === "awaiting_model") {
-        pendingHermesInteractions.set(runId, {
-          ...interaction,
-          stage: "awaiting_user",
-          userResponse: "",
-        });
+  if (content.inputTranscription?.text) {
+    userInputSeenSinceStart = true;
+    if (!welcomeGreeted) {
+      welcomeGreeted = true;
+      if (welcomeFallbackTimer) {
+        clearTimeout(welcomeFallbackTimer);
+        welcomeFallbackTimer = null;
       }
     }
-    emitToRenderer("live:interrupt", {});
-    emitEvent({ type: "audio_state", state: "listening" });
-    return;
-  }
-
-  if (content.inputTranscription?.text) {
     userTranscriptBuffer += content.inputTranscription.text;
+    scheduleUserTranscriptFlush();
     if (userTranscriptBuffer.trim()) {
       lastUserRoute = classifyRoute(userTranscriptBuffer);
-      markUserSpoke(userTranscriptBuffer);
+      if (lastUserRoute === "web") {
+        setGoogleSearchActive(true, userTranscriptBuffer);
+      }
+      markUserSpoke(userTranscriptBuffer, {
+        allowDuringReadback:
+          modelTranscriptBuffer.trim().length >= MIN_AUDIBLE_READBACK_CHARS,
+      });
       for (const [runId, approval] of pendingHermesApprovals) {
         if (approval.stage === "awaiting_user") {
           pendingHermesApprovals.set(runId, {
@@ -2852,23 +3078,80 @@ function handleLiveMessage(message) {
     }
   }
 
+  if (content.interrupted) {
+    setGoogleSearchActive(false);
+    settleResumeGreeting();
+    userInputSeenSinceStart = true;
+    bumpVoiceActivity();
+    // A barge-in starts a new user turn even though the previous model turn
+    // was cut short; protect that replacement turn from standby.
+    liveTurnState.interrupted();
+    const audibleReadbackChars = modelTranscriptBuffer.trim().length;
+    flushTranscripts();
+    modelTranscriptSettled = true;
+    scheduleModelTranscriptFlush();
+    // Natural voice replies often arrive just before Gemini's turnComplete.
+    // Preserve confirmation when a meaningful readback was already audible;
+    // a genuinely early interruption still invalidates it.
+    if (audibleReadbackChars >= MIN_AUDIBLE_READBACK_CHARS) {
+      markModelTurnComplete();
+    } else {
+      markModelTurnInterrupted();
+    }
+    for (const [runId, interaction] of pendingHermesInteractions) {
+      if (!interaction.secret && interaction.stage === "awaiting_model") {
+        pendingHermesInteractions.set(runId, {
+          ...interaction,
+          stage: "awaiting_user",
+          userResponse: "",
+        });
+      }
+    }
+    emitToRenderer("live:interrupt", {});
+    emitEvent({ type: "audio_state", state: "listening" });
+    return;
+  }
+
   // The first sign of Iris responding means the user's turn is over, so push
   // their transcript to Comms right away instead of waiting for turnComplete.
   const hasModelOutput =
     Boolean(content.outputTranscription?.text) ||
     (content.modelTurn?.parts || []).some((part) => part.text || part.inlineData?.data);
   if (hasModelOutput) {
+    noteModelTurnActivity();
+    if (pendingSleepRequest) pendingSleepRequest.farewellStarted = true;
     if (isSleepIntent(userTranscriptBuffer)) {
-      scheduleSleepRequest("deterministic farewell intent");
+      scheduleSleepRequest("deterministic farewell intent", {
+        farewellStarted: true,
+      });
     }
     flushUserTranscript();
     bumpVoiceActivity(); // Iris speaking resets the idle clock too
   }
 
-  if (content.outputTranscription?.text) modelTranscriptBuffer += content.outputTranscription.text;
+  if (content.groundingMetadata) {
+    setGoogleSearchActive(true, userTranscriptBuffer);
+  }
+
+  if (content.generationComplete) {
+    liveTurnState.generationComplete();
+    setGoogleSearchActive(false);
+    bumpVoiceActivity();
+  }
+
+  if (content.outputTranscription?.text) {
+    modelTranscriptBuffer += content.outputTranscription.text;
+    if (modelTranscriptSettled) scheduleModelTranscriptFlush();
+  }
 
   for (const part of content.modelTurn?.parts || []) {
-    if (part.text) modelTranscriptBuffer += part.text;
+    if (part.executableCode || part.codeExecutionResult) {
+      setGoogleSearchActive(true, userTranscriptBuffer);
+    }
+    if (part.text) {
+      modelTranscriptBuffer += part.text;
+      if (modelTranscriptSettled) scheduleModelTranscriptFlush();
+    }
     const inlineData = part.inlineData;
     if (!inlineData?.data) continue;
     const mimeType = inlineData.mimeType || "audio/pcm;rate=24000";
@@ -2878,7 +3161,13 @@ function handleLiveMessage(message) {
   }
 
   if (content.turnComplete) {
-    flushTranscripts();
+    liveTurnState.turnComplete();
+    setGoogleSearchActive(false);
+    // Transcriptions are independent streams and may arrive after
+    // turnComplete, so leave a short grace period before committing bubbles.
+    scheduleUserTranscriptFlush();
+    modelTranscriptSettled = true;
+    scheduleModelTranscriptFlush();
     markModelTurnComplete();
     for (const [runId, approval] of pendingHermesApprovals) {
       if (approval.stage === "awaiting_model") {
@@ -2909,14 +3198,22 @@ function handleLiveMessage(message) {
     }
     reconnectAttempts = 0;
     emitEvent({ type: "audio_state", state: "listening" });
+    settleResumeGreeting();
+    finalizeSleepAfterTurn();
   }
 }
 
 async function stopLive({ preserveProposal = false, forQuit = false } = {}) {
+  settleResumeGreeting();
   welcomeGreeted = true;
   if (!preserveProposal) resetHermesGate();
   stopAutoSleepTimer();
+  activeLiveToolBatches.clear();
+  endResponseWait();
+  setGoogleSearchActive(false);
+  flushTranscripts();
   intentionalClose = true;
+  liveConnectionId += 1;
   if (forQuit) closePreviewSession();
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
@@ -2926,6 +3223,11 @@ async function stopLive({ preserveProposal = false, forQuit = false } = {}) {
     clearTimeout(sleepRequestTimer);
     sleepRequestTimer = null;
   }
+  if (sleepFinalizeTimer) {
+    clearTimeout(sleepFinalizeTimer);
+    sleepFinalizeTimer = null;
+  }
+  pendingSleepRequest = null;
   if (welcomeFallbackTimer) {
     clearTimeout(welcomeFallbackTimer);
     welcomeFallbackTimer = null;
@@ -3060,11 +3362,23 @@ function startAutoSleepTimer() {
   bumpVoiceActivity();
   autoSleepTimer = setInterval(() => {
     if (!liveSession) return;
-    // A proposal awaiting the user's yes/no gets triple the patience — they
-    // may be thinking it over.
-    const limit = hasPendingProposal() ? ms * 3 : ms;
-    const idleFor = Date.now() - lastVoiceActivityAt;
-    if (idleFor >= limit) void autoVoiceSleep(idleFor);
+    const decision = autoSleepDecision({
+      idleMs: ms,
+      lastActivityAt: lastVoiceActivityAt,
+      pendingProposal: hasPendingProposal(),
+      responseInFlight: liveTurnState.busy,
+      responseStartedAt: liveTurnState.startedAt,
+    });
+    if (decision.responseProtected) return;
+    if (decision.responseTimedOut) {
+      emitEvent({
+        type: "log",
+        level: "warn",
+        message: `Gemini response exceeded ${Math.round(decision.maxResponseWait / 1000)}s; allowing standby recovery.`,
+      });
+      endResponseWait();
+    }
+    if (decision.sleep) void autoVoiceSleep(decision.idleFor);
   }, 5000);
 }
 
@@ -3106,61 +3420,10 @@ function requestAutoWake(reason) {
   }, 4000);
 }
 
-// ===== Mic-energy voice tracking =====
-// Transcripts can lag far behind live speech (and dictation-style long
-// prompts may produce none until the turn ends), so relying on them let the
-// idle timer put Iris on standby WHILE the user was mid-sentence. Detect
-// speech from raw mic energy instead: sustained voiced audio resets the idle
-// clock; transient spikes (keyboard clatter, a door) decay away. WebRTC echo
-// cancellation keeps Iris's own speaker output out of this signal.
-//
-// The bar adapts to the room (same idea as the wake word's noise floor):
-// auto-gain happily amplifies a fan or hum to speech-like levels, so a fixed
-// threshold either sleeps on talkers or never sleeps at all. Speech must
-// clear the ambient level by a wide multiple; the slow EMA absorbs constant
-// noise but is clamped at the bar so speech never inflates it.
-const VOICE_ENTRY_CHUNKS = 6; // ≈130ms of sustained energy counts as speech
-const VOICE_FLOOR_MIN = 650; // absolute minimum bar (int16 RMS; speech ≈ 1500-6000)
-const VOICE_OVER_AMBIENT = 2.5; // speech must be this much louder than the room
-const VOICE_AMBIENT_CAP = 1600; // even loud rooms leave the bar reachable (≤4000)
-const VOICE_AMBIENT_ALPHA = 0.01; // ~2s time constant at 21ms chunks
-let voicedStreak = 0;
-let ambientRms = 300;
-
-function trackMicActivity(pcm) {
-  const samples = pcm.byteLength >> 1;
-  if (!samples) return;
-  let sum = 0;
-  let count = 0;
-  for (let i = 0; i < samples; i += 4) {
-    const value = pcm.readInt16LE(i * 2);
-    sum += value * value;
-    count += 1;
-  }
-  const rms = Math.sqrt(sum / count);
-  const bar = Math.max(VOICE_FLOOR_MIN, Math.min(ambientRms, VOICE_AMBIENT_CAP) * VOICE_OVER_AMBIENT);
-  const voiced = rms >= bar;
-  if (voiced) {
-    if (voicedStreak < VOICE_ENTRY_CHUNKS) voicedStreak += 1;
-    if (voicedStreak >= VOICE_ENTRY_CHUNKS) bumpVoiceActivity();
-  } else if (voicedStreak > 0) {
-    voicedStreak -= 1;
-  }
-  // Ambient learns fast from quiet chunks (a talker's natural micro-pauses
-  // keep the bar low → speech stays protected indefinitely) but only creeps
-  // up during voiced ones — so a NEW constant noise source (fan turned on)
-  // gets absorbed within a minute or two instead of pinning Iris awake.
-  const alpha = voiced ? VOICE_AMBIENT_ALPHA / 20 : VOICE_AMBIENT_ALPHA;
-  ambientRms += alpha * (Math.min(rms, VOICE_AMBIENT_CAP) - ambientRms);
-}
-
 function sendAudioChunk(arrayBuffer) {
   if (!liveSession || !arrayBuffer) return;
   const buffer = Buffer.from(new Uint8Array(arrayBuffer));
   if (!buffer.byteLength) return;
-  // Test runs inject speech via feedVoice for determinism — the machine's
-  // REAL mic would otherwise leak room noise into idle-timing assertions.
-  if (process.env.IRIS_TEST_HOOKS !== "1") trackMicActivity(buffer);
   try {
     liveSession.sendRealtimeInput({
       audio: { data: buffer.toString("base64"), mimeType: "audio/pcm;rate=16000" },
@@ -3176,10 +3439,20 @@ function sendAudioChunk(arrayBuffer) {
 
 function sendCommand(command) {
   if (command?.type === "text" && command.text) {
-    if (!liveSession) throw new Error("Gemini Live is not running");
-    bumpVoiceActivity();
-    liveSession.sendRealtimeInput({ text: command.text });
+    userInputSeenSinceStart = true;
+    if (welcomeFallbackTimer) {
+      clearTimeout(welcomeFallbackTimer);
+      welcomeFallbackTimer = null;
+    }
+    sendLiveText(command.text);
+    return { ok: true };
   }
+  if (command?.type === "audio_stream_end") {
+    if (!liveSession) return { ok: false, reason: "offline" };
+    liveSession.sendRealtimeInput({ audioStreamEnd: true });
+    return { ok: true };
+  }
+  return { ok: false, reason: "unsupported_command" };
 }
 
 function createWindow() {
