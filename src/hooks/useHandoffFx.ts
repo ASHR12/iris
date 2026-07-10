@@ -23,6 +23,23 @@ export function useHandoffFx(
   const [acceptedIds, setAcceptedIds] = useState<Record<string, number>>({});
   const taskStatusRef = useRef<Map<string, string>>(new Map());
   const lastDelegationRef = useRef<Map<string, number>>(new Map());
+  const timersRef = useRef<Set<number>>(new Set());
+
+  function later(callback: () => void, delay: number) {
+    const timer = window.setTimeout(() => {
+      timersRef.current.delete(timer);
+      callback();
+    }, delay);
+    timersRef.current.add(timer);
+  }
+
+  useEffect(
+    () => () => {
+      timersRef.current.forEach((timer) => window.clearTimeout(timer));
+      timersRef.current.clear();
+    },
+    [],
+  );
 
   function centerOf(el: HTMLElement | null): { x: number; y: number } | null {
     if (!el) return null;
@@ -74,9 +91,9 @@ export function useHandoffFx(
     // ("starting:…") card for the real run_id card right after submit, so an
     // id-keyed flag would land on a card that no longer exists.
     const key = acceptedKey(task.task);
-    window.setTimeout(() => {
+    later(() => {
       setAcceptedIds((current) => ({ ...current, [key]: Date.now() }));
-      window.setTimeout(() => {
+      later(() => {
         setAcceptedIds((current) => {
           const next = { ...current };
           delete next[key];
@@ -96,7 +113,7 @@ export function useHandoffFx(
       : "success";
     spawnPulse(workStreamPoint(task.id), centerOf(orbStageRef.current), "in", tone);
     callbacks?.onComplete?.(tone);
-    window.setTimeout(() => flashOrb(tone), 680);
+    later(() => flashOrb(tone), 680);
   }
 
   // Handoff detector: diff the tasks array to know when Gemini delegated a new
@@ -131,6 +148,10 @@ export function useHandoffFx(
     const next = new Map<string, string>();
     for (const task of tasks) next.set(task.id, task.status.toLowerCase());
     taskStatusRef.current = next;
+    const cutoff = Date.now() - 10 * 60 * 1000;
+    for (const [key, at] of lastDelegationRef.current) {
+      if (at < cutoff) lastDelegationRef.current.delete(key);
+    }
   }, [tasks]);
 
   function removePulse(id: string) {

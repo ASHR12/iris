@@ -45,6 +45,7 @@ export default function CameraDock({
   handControl,
   hand,
   stream,
+  error,
   actionLabel,
   actionTone,
   cameraDevice,
@@ -53,6 +54,7 @@ export default function CameraDock({
   handControl: boolean;
   hand: HandState;
   stream: MediaStream | null;
+  error?: string | null;
   actionLabel: string;
   actionTone: string;
   cameraDevice: string;
@@ -85,6 +87,7 @@ export default function CameraDock({
           <video ref={videoRef} autoPlay playsInline muted />
           <div className="cam-scan" />
           <HandSkeleton hands={hand.hands} />
+          {error ? <span className="cam-error">{error}</span> : null}
           <span className="cam-status">
             <i />
             {hand.present ? "tracking" : "no hand"}

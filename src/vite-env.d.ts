@@ -40,10 +40,12 @@ type IrisUiAction = {
 
 type IrisConfig = {
   geminiApiKey: string;
+  geminiApiKeyConfigured: boolean;
   geminiModel: string;
   geminiVoice: string;
   hermesUrl: string;
   hermesKey: string;
+  hermesKeyConfigured: boolean;
   hermesBin: string;
   hermesHome: string;
   hermesSession: string;
@@ -71,6 +73,7 @@ type IrisTestResult = { ok: boolean; error?: string; health?: Record<string, unk
 
 type HermesHistoryTask = {
   id: string;
+  sessionId?: string;
   task: string;
   status: string;
   output?: string;
@@ -82,6 +85,22 @@ type HermesHistoryTask = {
     status: "running" | "done" | "error";
     ts: number;
   }>;
+  approval?: {
+    command?: string;
+    reason?: string;
+    choices: Array<"once" | "session" | "always" | "deny">;
+    requestedAt: number;
+  } | null;
+  interaction?: {
+    id: string;
+    type: "clarify" | "approval" | "sudo" | "secret";
+    question: string;
+    choices: string[];
+    command?: string;
+    envVar?: string;
+    allowCustom: boolean;
+    secret: boolean;
+  } | null;
 };
 
 type HermesHistoryResult = {
@@ -129,6 +148,7 @@ type BrainNoteResult = {
 type BrainIndexSyncResult = {
   ok: boolean;
   total?: number;
+  chunks?: number;
   embedded?: number;
   reused?: number;
   pruned?: number;
@@ -177,6 +197,17 @@ type IrisApi = {
   getHermesHistory: () => Promise<HermesHistoryResult>;
   listHermesSessions: () => Promise<HermesSessionsResult>;
   createHermesSession: () => Promise<{ ok: boolean; id?: string; error?: string }>;
+  approveHermesAction: (
+    runId: string,
+    choice: "once" | "session" | "always" | "deny",
+  ) => Promise<{ status: string; error?: string }>;
+  respondHermesInteraction: (payload: {
+    run_id: string;
+    interaction_id: string;
+    interaction_type: "clarify" | "approval" | "sudo" | "secret";
+    value?: string;
+    choice?: "once" | "session" | "always" | "deny";
+  }) => Promise<{ status: string; error?: string }>;
   loadBrain: () => Promise<BrainGraphResult>;
   readBrainNote: (relPath: string) => Promise<BrainNoteResult>;
   searchBrain: (query: string, topK?: number) => Promise<BrainSearchResult>;

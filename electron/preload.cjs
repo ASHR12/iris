@@ -13,6 +13,10 @@ contextBridge.exposeInMainWorld("iris", {
   getHermesHistory: () => ipcRenderer.invoke("hermes:history"),
   listHermesSessions: () => ipcRenderer.invoke("hermes:sessions"),
   createHermesSession: () => ipcRenderer.invoke("hermes:create-session"),
+  approveHermesAction: (runId, choice) =>
+    ipcRenderer.invoke("hermes:approve", { run_id: runId, choice }),
+  respondHermesInteraction: (payload) =>
+    ipcRenderer.invoke("hermes:interaction-response", payload),
   loadBrain: () => ipcRenderer.invoke("brain:load"),
   readBrainNote: (relPath) => ipcRenderer.invoke("brain:read", relPath),
   searchBrain: (query, topK) => ipcRenderer.invoke("brain:search", query, topK),

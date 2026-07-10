@@ -1,0 +1,14 @@
+[
+  { "utterance": "hello", "route": "direct" },
+  { "utterance": "thank you", "route": "direct" },
+  { "utterance": "what is the latest Gemini news?", "route": "web" },
+  { "utterance": "what is the weather today?", "route": "web" },
+  { "utterance": "what do we know about Project Aurora?", "route": "memory" },
+  { "utterance": "what did I decide last time?", "route": "memory" },
+  { "utterance": "open the latest Hermes result", "route": "ui" },
+  { "utterance": "show the steps for the failed task", "route": "ui" },
+  { "utterance": "enter HUD mode", "route": "ui" },
+  { "utterance": "research three vendors and compare pricing", "route": "hermes" },
+  { "utterance": "edit the report at /tmp/report.md", "route": "hermes" },
+  { "utterance": "send the client a concise email", "route": "hermes" }
+]

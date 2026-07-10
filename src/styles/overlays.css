@@ -20,6 +20,321 @@
 .match-backdrop { z-index: 38; }
 .setup-backdrop { z-index: 50; }
 
+/* Hermes approvals are intentionally not hidden inside the task timeline.
+   This compact alert remains reachable in deck and click-through HUD modes. */
+.approval-prompt {
+  position: fixed;
+  top: 56px;
+  left: 50%;
+  z-index: 70;
+  width: min(520px, calc(100vw - 32px));
+  padding: 14px;
+  transform: translateX(-50%);
+  border-radius: var(--r-card);
+  color: var(--text-soft);
+  background: var(--panel-strong);
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--amber-rgb), 0.4),
+    var(--shadow-panel);
+  backdrop-filter: blur(20px) saturate(1.15);
+  animation: approval-prompt-in 0.24s ease both;
+}
+
+.approval-prompt header {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: var(--amber);
+}
+
+.approval-prompt header div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.approval-prompt header strong {
+  font-family: var(--font-display);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.approval-prompt header span {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.approval-prompt > code,
+.approval-prompt > p {
+  display: block;
+  margin: 10px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.approval-prompt > code {
+  max-height: 90px;
+  overflow: auto;
+  padding: 9px;
+  border-radius: var(--r-sm);
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.approval-prompt .approval-missing {
+  color: var(--amber);
+}
+
+.approval-prompt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.approval-prompt-actions button {
+  padding: 7px 10px;
+  border-radius: 7px;
+  color: var(--text-soft);
+  background: rgba(var(--cyan-rgb), 0.09);
+  box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb), 0.2);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+}
+
+.approval-prompt-actions button:hover:not(:disabled) {
+  color: var(--cyan-bright);
+  background: rgba(var(--cyan-rgb), 0.16);
+}
+
+.approval-prompt-actions .always {
+  color: var(--amber);
+}
+
+.approval-prompt-actions .deny {
+  margin-left: auto;
+  color: var(--coral);
+  background: rgba(var(--coral-rgb), 0.08);
+  box-shadow: inset 0 0 0 1px rgba(var(--coral-rgb), 0.22);
+}
+
+.approval-prompt-actions button:disabled {
+  opacity: 0.5;
+}
+
+.approval-prompt small {
+  display: block;
+  margin-top: 8px;
+  color: var(--coral);
+  font-size: 10px;
+}
+
+@keyframes approval-prompt-in {
+  from { opacity: 0; transform: translate(-50%, -8px) scale(0.98); }
+  to { opacity: 1; transform: translate(-50%, 0) scale(1); }
+}
+
+.hermes-interaction-prompt {
+  position: fixed;
+  top: 52px;
+  left: 50%;
+  z-index: 72;
+  width: min(620px, calc(100vw - 32px));
+  max-height: calc(100vh - 104px);
+  overflow: auto;
+  padding: 16px;
+  transform: translateX(-50%);
+  border-radius: var(--r-card);
+  color: var(--text-soft);
+  background: var(--panel-strong);
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--violet-rgb), 0.4),
+    var(--shadow-float);
+  backdrop-filter: blur(22px) saturate(1.15);
+  animation: approval-prompt-in 0.24s ease both;
+}
+
+.hermes-interaction-prompt.secure {
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--amber-rgb), 0.45),
+    var(--shadow-float);
+}
+
+.hermes-interaction-prompt header {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: var(--violet-soft);
+}
+
+.hermes-interaction-prompt.secure header {
+  color: var(--amber);
+}
+
+.hermes-interaction-prompt header div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.hermes-interaction-prompt header strong {
+  font-family: var(--font-display);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.hermes-interaction-prompt header span {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.interaction-question {
+  margin: 14px 0 0;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.55;
+}
+
+.hermes-interaction-prompt > code {
+  display: block;
+  max-height: 90px;
+  margin-top: 10px;
+  overflow: auto;
+  padding: 9px;
+  border-radius: var(--r-sm);
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.24);
+  overflow-wrap: anywhere;
+  font-size: 10px;
+}
+
+.interaction-choices {
+  display: grid;
+  gap: 7px;
+  margin-top: 13px;
+}
+
+.interaction-choices button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border-radius: 8px;
+  color: var(--text-soft);
+  text-align: left;
+  background: rgba(255, 255, 255, 0.025);
+  box-shadow: inset 0 0 0 1px rgba(148, 196, 255, 0.1);
+}
+
+.interaction-choices button:hover:not(:disabled),
+.interaction-choices button.selected {
+  color: var(--text);
+  background: rgba(var(--violet-rgb), 0.14);
+  box-shadow: inset 0 0 0 1px rgba(var(--violet-rgb), 0.42);
+}
+
+.interaction-choices button.deny {
+  color: var(--coral);
+}
+
+.interaction-choices kbd {
+  display: grid;
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 5px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.05);
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+
+.hermes-interaction-prompt label {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.hermes-interaction-prompt label > span {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.hermes-interaction-prompt textarea,
+.hermes-interaction-prompt input {
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 8px;
+  outline: none;
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.26);
+  box-shadow: inset 0 0 0 1px var(--hairline-strong);
+  font: 12px/1.5 var(--font-ui);
+  resize: vertical;
+}
+
+.hermes-interaction-prompt textarea:focus,
+.hermes-interaction-prompt input:focus {
+  box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb), 0.5);
+}
+
+.hermes-interaction-prompt footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.hermes-interaction-prompt footer button {
+  padding: 7px 12px;
+  border-radius: 7px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+
+.hermes-interaction-prompt footer .skip {
+  color: var(--muted);
+  background: transparent;
+}
+
+.hermes-interaction-prompt footer .continue {
+  color: var(--bg-0);
+  background: var(--cyan);
+}
+
+.hermes-interaction-prompt footer button:disabled {
+  opacity: 0.45;
+}
+
+.hermes-interaction-prompt small {
+  display: block;
+  margin-top: 9px;
+  color: var(--amber);
+  font-size: 9px;
+}
+
+.hermes-interaction-prompt small.error {
+  color: var(--coral);
+}
+
 @keyframes overlay-fade {
   from { opacity: 0; }
   to { opacity: 1; }

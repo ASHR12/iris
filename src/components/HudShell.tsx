@@ -20,11 +20,13 @@ function HudCamera({
   hand,
   actionLabel,
   actionTone,
+  error,
 }: {
   stream: MediaStream | null;
   hand: HandState;
   actionLabel: string;
   actionTone: string;
+  error?: string | null;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
@@ -38,6 +40,7 @@ function HudCamera({
         <video ref={videoRef} autoPlay playsInline muted />
         <div className="cam-scan" />
         <HandSkeleton hands={hand.hands} />
+        {error ? <span className="cam-error">{error}</span> : null}
         <span className="cam-status">
           <i />
           {hand.present ? "tracking" : "no hand"}
@@ -83,12 +86,14 @@ export default function HudShell({
   onToggleSteps,
   onFocusTask,
   onOpenTask,
+  onApproveTask,
   transcript,
   commsScrollRef,
   handControl,
   onToggleHand,
   hand,
   handStream,
+  handError,
   handActionLabel,
   handActionTone,
   brainAvailable,
@@ -121,12 +126,17 @@ export default function HudShell({
   onToggleSteps: (id: string) => void;
   onFocusTask: (id: string) => void;
   onOpenTask: (task: TaskCard) => void;
+  onApproveTask: (
+    task: TaskCard,
+    choice: "once" | "session" | "always" | "deny",
+  ) => void;
   transcript: TranscriptLine[];
   commsScrollRef: RefObject<HTMLDivElement | null>;
   handControl: boolean;
   onToggleHand: () => void;
   hand: HandState;
   handStream: MediaStream | null;
+  handError?: string | null;
   handActionLabel: string;
   handActionTone: string;
   brainAvailable: boolean;
@@ -199,6 +209,7 @@ export default function HudShell({
                   onToggleSteps={() => onToggleSteps(task.id)}
                   onFocus={() => onFocusTask(task.id)}
                   onOpen={() => onOpenTask(task)}
+                  onApprove={(choice) => onApproveTask(task, choice)}
                 />
               ))}
             </div>
@@ -242,6 +253,7 @@ export default function HudShell({
             hand={hand}
             actionLabel={handActionLabel}
             actionTone={handActionTone}
+            error={handError}
           />
         ) : null}
       </div>

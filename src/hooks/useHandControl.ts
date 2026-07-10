@@ -110,8 +110,10 @@ export function useHandControl(enabled: boolean, cameraDeviceId = "") {
     if (!enabled) {
       setState(EMPTY_STATE);
       setStream(null);
+      setError(null);
       return;
     }
+    setError(null);
 
     let cancelled = false;
     let raf = 0;
@@ -132,9 +134,20 @@ export function useHandControl(enabled: boolean, cameraDeviceId = "") {
     const pinchReleaseById = new Map<string, number>();
     const pinchSmoothById = new Map<string, HandPoint>();
 
+    const releaseResources = () => {
+      cancelAnimationFrame(raf);
+      recognizer?.close();
+      recognizer = null;
+      stream?.getTracks().forEach((track) => track.stop());
+      stream = null;
+      video.pause();
+      video.srcObject = null;
+    };
+
     async function setup() {
       try {
         const fileset = await FilesetResolver.forVisionTasks(WASM_URL);
+        if (cancelled) return;
         recognizer = await GestureRecognizer.createFromOptions(fileset, {
           baseOptions: { modelAssetPath: MODEL_URL, delegate: "GPU" },
           runningMode: "VIDEO",
@@ -146,6 +159,10 @@ export function useHandControl(enabled: boolean, cameraDeviceId = "") {
             scoreThreshold: 0.55,
           },
         });
+        if (cancelled) {
+          releaseResources();
+          return;
+        }
 
         // "exact" so the chosen camera genuinely wins (a soft "ideal" hint let
         // the browser keep its favorite); if it's unplugged (monitor webcam,
@@ -164,14 +181,22 @@ export function useHandControl(enabled: boolean, cameraDeviceId = "") {
             video: { width: 640, height: 480, facingMode: "user" },
           });
         }
+        if (cancelled) {
+          releaseResources();
+          return;
+        }
         video.srcObject = stream;
         await video.play();
 
-        if (cancelled) return;
+        if (cancelled) {
+          releaseResources();
+          return;
+        }
         setStream(stream);
         setState({ ...EMPTY_STATE, active: true });
         loop();
       } catch (err) {
+        releaseResources();
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
       }
     }
@@ -357,10 +382,7 @@ export function useHandControl(enabled: boolean, cameraDeviceId = "") {
 
     return () => {
       cancelled = true;
-      cancelAnimationFrame(raf);
-      recognizer?.close();
-      stream?.getTracks().forEach((track) => track.stop());
-      video.srcObject = null;
+      releaseResources();
       setStream(null);
     };
   }, [enabled, cameraDeviceId]);

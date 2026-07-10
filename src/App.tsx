@@ -6,6 +6,7 @@ import {
   findTaskMatches,
   readString,
   readStatusObject,
+  tasksForSession,
   taskKeyFor,
 } from "./lib/tasks";
 import { makeUiTestData } from "./lib/uiTestData";
@@ -28,8 +29,11 @@ import BootSequence from "./components/BootSequence";
 import SetupPanel from "./components/SetupPanel";
 import HudShell from "./components/HudShell";
 import BrainGraph, { type BrainGraphState, type BrainVoiceCommand } from "./components/BrainGraph";
+import ApprovalPrompt from "./components/ApprovalPrompt";
+import HermesInteractionPrompt from "./components/HermesInteractionPrompt";
 
 const MAX_LOGS = 80;
+const MAX_TASKS_TOTAL = 100;
 // Point-and-hold duration before the finger pointer "clicks" what it's over.
 const DWELL_MS = 300;
 
@@ -56,12 +60,24 @@ export default function App() {
   const [setup, setSetup] = useState<{ mode: "onboarding" | "settings" } | null>(null);
   const [wakeWordEnabled, setWakeWordEnabled] = useState(false);
   const [wakeSensitivity, setWakeSensitivity] = useState("balanced");
+  const [wakeStarting, setWakeStarting] = useState(false);
+  const startPromiseRef = useRef<Promise<void> | null>(null);
   // True when the idle timer (not the user) put Iris to sleep.
   const [autoSlept, setAutoSlept] = useState(false);
   const [hermesSession, setHermesSession] = useState<string | null>(null);
+  const hermesSessionRef = useRef<string | null>(null);
+  hermesSessionRef.current = hermesSession;
+  const sessionTasks = useMemo(
+    () => tasksForSession(tasks, hermesSession, testDataEnabled),
+    [hermesSession, tasks, testDataEnabled],
+  );
   const [uiMode, setUiMode] = useState<"deck" | "hud">("deck");
+  const uiModeRef = useRef<"deck" | "hud">("deck");
+  uiModeRef.current = uiMode;
   // Neural Map (the brain graph) — HUD-only overlay.
   const [brainOpen, setBrainOpen] = useState(false);
+  const brainOpenRef = useRef(false);
+  brainOpenRef.current = brainOpen;
   const prevBrainOpenRef = useRef(false);
   const [brainCommand, setBrainCommand] = useState<BrainVoiceCommand | null>(null);
   const brainSeqRef = useRef(0);
@@ -69,8 +85,17 @@ export default function App() {
   const [bootActive, setBootActive] = useState(false);
   const [bootClosing, setBootClosing] = useState(false);
   const bootStartRef = useRef(0);
+  const demoTimersRef = useRef<Set<number>>(new Set());
   // True while the current session is a RESUME of a previous conversation.
   const resumingRef = useRef(false);
+
+  useEffect(
+    () => () => {
+      demoTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+      demoTimersRef.current.clear();
+    },
+    [],
+  );
 
   // Orb micro-expressions + sound cues.
   const [orbThinking, setOrbThinking] = useState(false);
@@ -96,7 +121,7 @@ export default function App() {
 
   const audio = useAudioPipeline(hasBridge, pushLog, fullConfig?.micDevice || "");
   const { pulses, removePulse, orbFlash, clearOrbFlash, acceptedIds } = useHandoffFx(
-    tasks,
+    sessionTasks,
     orbStageRef,
     workScrollRef,
     {
@@ -215,6 +240,11 @@ export default function App() {
     const config = await window.iris.saveConfig({ IRIS_HERMES_SESSION: clean });
     setFullConfig(config);
     setHermesSession(config.hermesSession);
+    setExpandedTaskId(null);
+    setReaderStepsOpen(false);
+    setFocusedTaskId(null);
+    setTaskChooser(null);
+    setShowHistory(false);
     setTasks((current) => current.filter((task) => !task.id.startsWith("history:")));
     pushLog("info", `Hermes chat session: ${config.hermesSession}`);
     await restoreHermesHistory();
@@ -238,12 +268,20 @@ export default function App() {
     try {
       const history = await window.iris.getHermesHistory();
       if (!history.ok || !history.tasks?.length) return;
-      const restoredTasks = history.tasks;
+      const targetSession = history.sessions?.[0] || hermesSessionRef.current || undefined;
+      const restoredTasks = history.tasks.map((task) => ({
+        ...task,
+        sessionId: task.sessionId || targetSession,
+      }));
       setTasks((current) => {
-        const seen = new Set(current.map((task) => task.task.toLowerCase().trim()));
+        const seen = new Set(
+          current
+            .filter((task) => task.sessionId === targetSession)
+            .map((task) => task.task.toLowerCase().trim()),
+        );
         const restored = restoredTasks.filter((task) => !seen.has(task.task.toLowerCase().trim()));
         if (!restored.length) return current;
-        return [...current, ...restored].slice(0, 20);
+        return [...current, ...restored].slice(0, MAX_TASKS_TOTAL);
       });
       pushLog("info", `Restored ${restoredTasks.length} past Hermes runs from this session.`);
     } catch {
@@ -301,8 +339,15 @@ export default function App() {
       sessionStartRef.current = null;
       void audio.stopCapture();
       audio.flushPlayback();
+      // In the normal deck, release the GPU/camera during standby. HUD and an
+      // open Neural Map intentionally retain gesture control.
+      if (uiModeRef.current === "deck" && !brainOpenRef.current) setHandControl(false);
     });
     return () => {
+      if (modeTimerRef.current) {
+        window.clearTimeout(modeTimerRef.current);
+        modeTimerRef.current = null;
+      }
       offMode();
       offWake();
       offSleep();
@@ -363,7 +408,7 @@ export default function App() {
   // the hook handles noisy rooms automatically at every level.
   const wakeThreshold = wakeSensitivity === "relaxed" ? 0.08 : wakeSensitivity === "strict" ? 0.2 : 0.12;
   useWakeWord(
-    hasBridge && wakeWordEnabled && !sidecarRunning,
+    hasBridge && wakeWordEnabled && !sidecarRunning && !wakeStarting,
     () => {
       if (!sidecarRunning) start();
     },
@@ -438,8 +483,10 @@ export default function App() {
   }, [transcript]);
 
   const working = useMemo(
-    () => tasks.some((task) => !TERMINAL.has(task.status.toLowerCase())) && tasks.length > 0,
-    [tasks],
+    () =>
+      sessionTasks.some((task) => !TERMINAL.has(task.status.toLowerCase())) &&
+      sessionTasks.length > 0,
+    [sessionTasks],
   );
 
   const booting = sidecarRunning && geminiStatus !== "connected";
@@ -551,6 +598,11 @@ export default function App() {
         const placeholderId = taskKeyFor(task);
         const next: TaskCard = {
           id: runId,
+          sessionId:
+            readString(event.session_id) ||
+            existing?.sessionId ||
+            hermesSessionRef.current ||
+            undefined,
           task,
           status,
           output: output || existing?.output,
@@ -558,11 +610,13 @@ export default function App() {
           updatedAt: eventTime(event),
           steps: existing?.steps,
           notes: existing?.notes,
+          approval: existing?.approval,
+          interaction: existing?.interaction,
         };
         return [
           next,
           ...current.filter((item) => item.id !== runId && item.id !== placeholderId),
-        ].slice(0, 20);
+        ].slice(0, MAX_TASKS_TOTAL);
       });
       return;
     }
@@ -571,7 +625,10 @@ export default function App() {
       const runId = readString(event.run_id);
       if (!runId) return;
       const kind = readString(event.event);
-      if ((kind === "approval.requested" || kind === "approval.required") && soundsRef.current) {
+      const approvalRequested =
+        kind === "approval.request" || kind === "approval.requested" || kind === "approval.required";
+      const approvalResolved = kind === "approval.responded" || kind === "approval.resolved";
+      if (approvalRequested && soundsRef.current) {
         uiSounds.approval();
       }
       const tool = readString(event.tool);
@@ -589,7 +646,22 @@ export default function App() {
         let steps = task.steps ? [...task.steps] : [];
         let notes = task.notes ?? "";
 
-        if (kind === "tool.started" && tool) {
+        let approval = task.approval;
+        if (approvalRequested) {
+          const rawChoices = Array.isArray(event.choices) ? event.choices : [];
+          const choices = rawChoices.filter(
+            (choice): choice is "once" | "session" | "always" | "deny" =>
+              choice === "once" || choice === "session" || choice === "always" || choice === "deny",
+          );
+          approval = {
+            command: readString(event.command) || tool || undefined,
+            reason: readString(event.reason) || preview || undefined,
+            choices: choices.length ? choices : ["once", "session", "always", "deny"],
+            requestedAt: ts,
+          };
+        } else if (approvalResolved) {
+          approval = null;
+        } else if (kind === "tool.started" && tool) {
           steps = [
             ...steps,
             { id: crypto.randomUUID(), tool, preview: preview || undefined, status: "running" as const, ts },
@@ -605,12 +677,12 @@ export default function App() {
           notes = (notes + delta).slice(-600);
         } else if (kind === "reasoning.available" && text) {
           notes = text.slice(-600);
-        } else {
+        } else if (!approvalRequested && !approvalResolved) {
           return current;
         }
 
         const next = [...current];
-        next[index] = { ...task, steps, notes };
+        next[index] = { ...task, steps, notes, approval };
         return next;
       });
       return;
@@ -618,6 +690,79 @@ export default function App() {
 
     if (event.type === "hermes_completion") {
       pushLog("info", `Hermes returned: ${readString(event.task, "task complete")}`, eventTime(event));
+      return;
+    }
+
+    if (event.type === "hermes_interaction") {
+      const runId = readString(event.run_id);
+      if (!runId) return;
+      const action = readString(event.action);
+      if (action === "request") {
+        const raw =
+          event.interaction && typeof event.interaction === "object"
+            ? (event.interaction as Record<string, unknown>)
+            : {};
+        const type = readString(raw.type);
+        if (type !== "clarify" && type !== "approval" && type !== "sudo" && type !== "secret") {
+          return;
+        }
+        const interaction = {
+          id: readString(raw.id),
+          type,
+          question: readString(raw.question, "Hermes needs your input."),
+          choices: Array.isArray(raw.choices) ? raw.choices.map(String).slice(0, 8) : [],
+          command: readString(raw.command) || undefined,
+          envVar: readString(raw.envVar) || undefined,
+          allowCustom: raw.allowCustom !== false,
+          secret: raw.secret === true,
+        } as const;
+        if (soundsRef.current) uiSounds.approval();
+        setTasks((current) =>
+          current.map((task) =>
+            task.id === runId ? { ...task, status: type === "approval" ? "waiting_for_approval" : "waiting_for_input", interaction } : task,
+          ),
+        );
+      } else if (action === "resolved") {
+        setTasks((current) =>
+          current.map((task) =>
+            task.id === runId ? { ...task, interaction: null, status: "running" } : task,
+          ),
+        );
+      } else if (action === "voice_preview") {
+        const value = readString(event.value);
+        setTasks((current) =>
+          current.map((task) =>
+            task.id === runId && task.interaction
+              ? {
+                  ...task,
+                  interaction: {
+                    ...task.interaction,
+                    voiceValue: value,
+                    voiceSubmitting: true,
+                    resolving: true,
+                    error: undefined,
+                  },
+                }
+              : task,
+          ),
+        );
+      } else if (action === "response_error") {
+        setTasks((current) =>
+          current.map((task) =>
+            task.id === runId && task.interaction
+              ? {
+                  ...task,
+                  interaction: {
+                    ...task.interaction,
+                    voiceSubmitting: false,
+                    resolving: false,
+                    error: readString(event.error, "Could not send the voice response."),
+                  },
+                }
+              : task,
+          ),
+        );
+      }
       return;
     }
 
@@ -637,17 +782,38 @@ export default function App() {
   }
 
   async function start() {
-    if (!hasBridge) {
-      pushLog("error", "Electron bridge unavailable. Launch with `npm run dev`.");
-      return;
+    if (startPromiseRef.current) return startPromiseRef.current;
+    const operation = (async () => {
+      if (!hasBridge) {
+        pushLog("error", "Electron bridge unavailable. Launch with `npm run dev`.");
+        return;
+      }
+      setWakeStarting(true);
+      setAutoSlept(false);
+      try {
+        const status = await window.iris.startSidecar({ mode: "none" });
+        if (!status.running) throw new Error("Gemini Live did not start.");
+        setSidecarRunning(true);
+        setSidecarPid(status.pid);
+        sessionStartRef.current = Date.now();
+        await audio.startCapture();
+        setHandControl(true);
+      } catch (error) {
+        await audio.stopCapture();
+        setSidecarRunning(false);
+        setSidecarPid(null);
+        sessionStartRef.current = null;
+        pushLog("error", `Wake failed: ${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+        setWakeStarting(false);
+      }
+    })();
+    startPromiseRef.current = operation;
+    try {
+      await operation;
+    } finally {
+      if (startPromiseRef.current === operation) startPromiseRef.current = null;
     }
-    setAutoSlept(false);
-    const status = await window.iris.startSidecar({ mode: "none" });
-    setSidecarRunning(status.running);
-    setSidecarPid(status.pid);
-    sessionStartRef.current = Date.now();
-    await audio.startCapture();
-    setHandControl(true);
   }
 
   async function stop() {
@@ -663,6 +829,96 @@ export default function App() {
     sessionStartRef.current = null;
   }
 
+  async function resolveTaskApproval(
+    task: TaskCard,
+    choice: "once" | "session" | "always" | "deny",
+  ) {
+    if (!hasBridge || !task.approval || task.approval.resolving) return;
+    setTasks((current) =>
+      current.map((item) =>
+        item.id === task.id && item.approval
+          ? { ...item, approval: { ...item.approval, resolving: true, error: undefined } }
+          : item,
+      ),
+    );
+    try {
+      const result = await window.iris.approveHermesAction(task.id, choice);
+      if (result.status === "resolved") {
+        setTasks((current) =>
+          current.map((item) => (item.id === task.id ? { ...item, approval: null } : item)),
+        );
+      } else {
+        throw new Error(result.error || "Hermes did not accept the approval response.");
+      }
+    } catch (error) {
+      setTasks((current) =>
+        current.map((item) =>
+          item.id === task.id && item.approval
+            ? {
+                ...item,
+                approval: {
+                  ...item.approval,
+                  resolving: false,
+                  error: error instanceof Error ? error.message : String(error),
+                },
+              }
+            : item,
+        ),
+      );
+    }
+  }
+
+  async function resolveHermesInteraction(
+    task: TaskCard,
+    value: string,
+    choice?: "once" | "session" | "always" | "deny",
+  ) {
+    const interaction = task.interaction;
+    if (!hasBridge || !interaction || interaction.resolving) return;
+    setTasks((current) =>
+      current.map((item) =>
+        item.id === task.id && item.interaction
+          ? {
+              ...item,
+              interaction: { ...item.interaction, resolving: true, error: undefined },
+            }
+          : item,
+      ),
+    );
+    try {
+      const result = await window.iris.respondHermesInteraction({
+        run_id: task.id,
+        interaction_id: interaction.id,
+        interaction_type: interaction.type,
+        value,
+        choice,
+      });
+      if (result.status !== "resolved") {
+        throw new Error(result.error || "Hermes did not accept the response.");
+      }
+      setTasks((current) =>
+        current.map((item) =>
+          item.id === task.id ? { ...item, interaction: null, status: "running" } : item,
+        ),
+      );
+    } catch (error) {
+      setTasks((current) =>
+        current.map((item) =>
+          item.id === task.id && item.interaction
+            ? {
+                ...item,
+                interaction: {
+                  ...item.interaction,
+                  resolving: false,
+                  error: error instanceof Error ? error.message : String(error),
+                },
+              }
+            : item,
+        ),
+      );
+    }
+  }
+
   function dotState(value: string, goodValues: string[]) {
     if (!sidecarRunning) return "off";
     if (value === "error") return "err";
@@ -670,8 +926,8 @@ export default function App() {
   }
 
   const expandedTask = useMemo(
-    () => tasks.find((task) => task.id === expandedTaskId) ?? null,
-    [tasks, expandedTaskId],
+    () => sessionTasks.find((task) => task.id === expandedTaskId) ?? null,
+    [sessionTasks, expandedTaskId],
   );
   const dwellRef = useRef<{ el: HTMLElement; startedAt: number; fired: boolean } | null>(null);
 
@@ -703,7 +959,9 @@ export default function App() {
     const stepsArea = el?.closest<HTMLElement>(".activity, .reader-steps");
     const actionable = stepsArea
       ? stepsArea.querySelector<HTMLElement>(".activity-toggle")
-      : el?.closest<HTMLElement>('button, a, [data-task-id], [role="button"]') ?? null;
+      : el?.closest<HTMLElement>(
+          'button, a, input, textarea, [data-task-id], [role="button"]',
+        ) ?? null;
     if (!actionable) {
       dwellRef.current = null;
       return;
@@ -722,7 +980,7 @@ export default function App() {
       dwellRef.current.fired = true;
       actionable.click();
     }
-  }, [handControl, hand.present, hand.point?.x, hand.point?.y, hand.pointing, tasks]);
+  }, [handControl, hand.present, hand.point?.x, hand.point?.y, hand.pointing, sessionTasks]);
 
   // Open-palm hold-to-scroll: scrolls whichever scrollable region is under the
   // hand — an expanded steps timeline inside a card, the Comms/Work columns
@@ -732,7 +990,7 @@ export default function App() {
   useEffect(() => {
     let raf = 0;
     const SCROLLABLES =
-      ".activity-timeline, .hud-comms, .comms-scroll, .work-scroll, .hud-work, .history-grid, .brain-note-body, .brain-links-list";
+      ".activity-timeline, .hud-comms, .comms-scroll, .work-scroll, .hud-work, .history-grid, .brain-note-body, .brain-links-list, .hermes-interaction-prompt";
     const loop = () => {
       const h = liveHandRef.current;
       if (handControl && h?.openPalm && h.point && !expandedTaskId) {
@@ -777,12 +1035,22 @@ export default function App() {
 
   const sortedTasks = useMemo(() => {
     const isActive = (task: TaskCard) => !TERMINAL.has(task.status.toLowerCase());
-    return [...tasks].sort((a, b) => {
+    return [...sessionTasks].sort((a, b) => {
       const activeDelta = Number(isActive(b)) - Number(isActive(a));
       if (activeDelta !== 0) return activeDelta;
       return b.updatedAt - a.updatedAt;
     });
-  }, [tasks]);
+  }, [sessionTasks]);
+
+  const pendingApprovalTask = useMemo(
+    () =>
+      sortedTasks.find((task) => Boolean(task.approval) && !task.interaction) ?? null,
+    [sortedTasks],
+  );
+  const pendingInteractionTask = useMemo(
+    () => sortedTasks.find((task) => Boolean(task.interaction)) ?? null,
+    [sortedTasks],
+  );
 
   const latestResultTask = useMemo(
     () => sortedTasks.find((task) => Boolean(task.output || task.error)) ?? null,
@@ -846,6 +1114,8 @@ export default function App() {
         hasResult: Boolean(task.output || task.error),
         stepCount: task.steps?.length ?? 0,
         stepsOpen: Boolean(stepsOpenIds[task.id]),
+        interactionType: task.interaction?.secret ? "secure_ui" : task.interaction?.type ?? null,
+        waitingForInput: Boolean(task.interaction || task.approval),
         updatedAt: task.updatedAt,
       })),
     });
@@ -854,9 +1124,13 @@ export default function App() {
   useEffect(() => {
     if (!hasBridge) return;
     return window.iris.onUiAction(({ action, target_id, query }) => {
-      const taskById = target_id ? tasks.find((task) => task.id === target_id) : null;
-      const currentTask = expandedTaskId ? tasks.find((task) => task.id === expandedTaskId) : null;
-      const focusedTask = focusedTaskId ? tasks.find((task) => task.id === focusedTaskId) : null;
+      const taskById = target_id ? sessionTasks.find((task) => task.id === target_id) : null;
+      const currentTask = expandedTaskId
+        ? sessionTasks.find((task) => task.id === expandedTaskId)
+        : null;
+      const focusedTask = focusedTaskId
+        ? sessionTasks.find((task) => task.id === focusedTaskId)
+        : null;
       const fallbackTask = currentTask || focusedTask || latestResultTask;
 
       if (action === "open_task") {
@@ -948,7 +1222,9 @@ export default function App() {
         // latest result. The old order preferred the running task over the
         // card being viewed, which targeted the wrong card by voice.
         const byQuery = !taskById && query ? findTaskMatches(sortedTasks, query)[0]?.task ?? null : null;
-        const activeTask = tasks.find((task) => !TERMINAL.has(task.status.toLowerCase()));
+        const activeTask = sessionTasks.find(
+          (task) => !TERMINAL.has(task.status.toLowerCase()),
+        );
         const target = taskById || byQuery || currentTask || focusedTask || activeTask || latestResultTask;
         if (!target) return;
         // Steps for the card being read open INSIDE the reader, not on the
@@ -961,7 +1237,15 @@ export default function App() {
         return;
       }
     });
-  }, [hasBridge, tasks, sortedTasks, expandedTaskId, focusedTaskId, latestResultTask, uiMode]);
+  }, [
+    hasBridge,
+    sessionTasks,
+    sortedTasks,
+    expandedTaskId,
+    focusedTaskId,
+    latestResultTask,
+    uiMode,
+  ]);
 
   // `compact` marks short status pills (Listening…, Speaking…) that render
   // whisper-sized in the HUD; real conversation captions stay full size.
@@ -1010,9 +1294,13 @@ export default function App() {
     const id = `demo-${crypto.randomUUID().slice(0, 8)}`;
     const task = `Research the latest AI agent frameworks (${new Date().toLocaleTimeString()}).`;
     setTasks((current) =>
-      [{ id, task, status: "working", updatedAt: Date.now() }, ...current].slice(0, 20),
+      [{ id, task, status: "working", updatedAt: Date.now() }, ...current].slice(
+        0,
+        MAX_TASKS_TOTAL,
+      ),
     );
-    window.setTimeout(() => {
+    const timer = window.setTimeout(() => {
+      demoTimersRef.current.delete(timer);
       setTasks((current) =>
         current.map((item) =>
           item.id === id
@@ -1027,6 +1315,7 @@ export default function App() {
         ),
       );
     }, 2800);
+    demoTimersRef.current.add(timer);
   }
 
   function loadUiTestData() {
@@ -1075,12 +1364,14 @@ export default function App() {
           onToggleSteps={toggleTaskSteps}
           onFocusTask={setFocusedTaskId}
           onOpenTask={openTask}
+          onApproveTask={(task, choice) => void resolveTaskApproval(task, choice)}
           transcript={transcript}
           commsScrollRef={commsScrollRef}
           handControl={handControl}
           onToggleHand={() => setHandControl((current) => !current)}
           hand={hand}
           handStream={handStream}
+          handError={handError}
           handActionLabel={handAction.label}
           handActionTone={handAction.tone}
           brainAvailable={Boolean(fullConfig?.brainPath)}
@@ -1122,6 +1413,7 @@ export default function App() {
               handControl={handControl}
               hand={hand}
               stream={handStream}
+              error={handError}
               actionLabel={handAction.label}
               actionTone={handAction.tone}
               cameraDevice={fullConfig?.cameraDevice || ""}
@@ -1143,7 +1435,7 @@ export default function App() {
             awake={sidecarRunning}
             geminiStatus={geminiStatus}
             hermesStatus={hermesStatus}
-            runs={tasks.length}
+            runs={sessionTasks.length}
             sessionStartRef={sessionStartRef}
             caption={caption.text}
             captionDim={caption.dim}
@@ -1159,7 +1451,7 @@ export default function App() {
 
           {/* RIGHT — Work */}
           <WorkStream
-            tasks={tasks}
+            tasks={sessionTasks}
             sortedTasks={sortedTasks}
             scrollRef={workScrollRef}
             acceptedIds={acceptedIds}
@@ -1173,6 +1465,7 @@ export default function App() {
             onToggleSteps={toggleTaskSteps}
             onFocusTask={setFocusedTaskId}
             onOpenTask={openTask}
+            onApproveTask={(task, choice) => void resolveTaskApproval(task, choice)}
           />
         </div>
 
@@ -1242,6 +1535,22 @@ export default function App() {
             if (!sidecarRunning) start();
           }}
           onRunWizard={() => setSetup({ mode: "onboarding" })}
+        />
+      ) : null}
+
+      {pendingApprovalTask ? (
+        <ApprovalPrompt
+          task={pendingApprovalTask}
+          onResolve={(choice) => void resolveTaskApproval(pendingApprovalTask, choice)}
+        />
+      ) : null}
+
+      {pendingInteractionTask ? (
+        <HermesInteractionPrompt
+          task={pendingInteractionTask}
+          onResolve={(value, choice) =>
+            void resolveHermesInteraction(pendingInteractionTask, value, choice)
+          }
         />
       ) : null}
 

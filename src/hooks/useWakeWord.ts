@@ -88,7 +88,7 @@ export function useWakeWord(
     let stream: MediaStream | null = null;
     let audioCtx: AudioContext | null = null;
     let source: MediaStreamAudioSourceNode | null = null;
-    let processor: ScriptProcessorNode | null = null;
+    let processor: AudioWorkletNode | ScriptProcessorNode | null = null;
     let timer: number | null = null;
 
     let mel: ort.InferenceSession | null = null;
@@ -215,12 +215,13 @@ export function useWakeWord(
 
         audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
         if (audioCtx.state === "suspended") await audioCtx.resume();
+        if (cancelled) {
+          stream.getTracks().forEach((track) => track.stop());
+          await audioCtx.close().catch(() => undefined);
+          return;
+        }
         source = audioCtx.createMediaStreamSource(stream);
-        processor = audioCtx.createScriptProcessor(2048, 1, 1);
-
-        processor.onaudioprocess = (event) => {
-          const input = event.inputBuffer.getChannelData(0);
-          event.outputBuffer.getChannelData(0).fill(0); // never echo mic to speakers
+        const consume = (input: Float32Array) => {
           const n = input.length;
           if (n >= ring.length) {
             ring.set(input.subarray(n - ring.length));
@@ -231,6 +232,27 @@ export function useWakeWord(
             filled = Math.min(ring.length, filled + n);
           }
         };
+        try {
+          await audioCtx.audioWorklet.addModule(
+            `${import.meta.env.BASE_URL}audio/iris-pcm-capture-worklet.js`,
+          );
+          const worklet = new AudioWorkletNode(audioCtx, "iris-pcm-capture");
+          worklet.port.onmessage = (event: MessageEvent<Float32Array>) => consume(event.data);
+          processor = worklet;
+        } catch {
+          const fallback = audioCtx.createScriptProcessor(2048, 1, 1);
+          fallback.onaudioprocess = (event) => {
+            event.outputBuffer.getChannelData(0).fill(0);
+            consume(event.inputBuffer.getChannelData(0));
+          };
+          processor = fallback;
+        }
+        if (cancelled) {
+          processor.disconnect();
+          stream.getTracks().forEach((track) => track.stop());
+          await audioCtx.close().catch(() => undefined);
+          return;
+        }
 
         source.connect(processor);
         processor.connect(audioCtx.destination);
@@ -252,6 +274,8 @@ export function useWakeWord(
       console.log("[wakeword] stopped listening");
       if (timer !== null) window.clearInterval(timer);
       try {
+        if (processor instanceof AudioWorkletNode) processor.port.onmessage = null;
+        else if (processor) processor.onaudioprocess = null;
         processor?.disconnect();
         source?.disconnect();
       } catch {

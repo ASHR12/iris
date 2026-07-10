@@ -1,52 +1,182 @@
 // ===== Hermes dispatch gate =====
-// Gemini sometimes dispatched without asking, or "confirmed" itself in the same
-// breath. This state machine makes that impossible at the tool level: a submit
-// only succeeds after (1) propose staged the brief, (2) the model finished the
-// turn where it read the brief back, and (3) the USER actually spoke again.
 //
-// Stages: awaiting_readback -> (model turn ends) -> awaiting_user
-//         awaiting_user     -> (user speaks)     -> confirmable
+// A submit is bound to one immutable proposal, one Hermes transcript, and an
+// explicit affirmative user turn. The model cannot alter the brief at submit
+// time and "the user said anything" is deliberately not confirmation.
 
-const PROPOSAL_TTL_MS = 5 * 60 * 1000;
+import crypto from "node:crypto";
 
-let proposal = null; // { task, urgency, stage, proposedAt }
+export const PROPOSAL_TTL_MS = 5 * 60 * 1000;
 
-export function proposeHermesTask(task, urgency = "normal") {
+const VALID_URGENCY = new Set(["low", "normal", "high"]);
+const AFFIRMATIVE = new Set([
+  "yes",
+  "yeah",
+  "yep",
+  "sure",
+  "ok",
+  "okay",
+  "approved",
+  "confirm",
+  "go",
+  "go ahead",
+  "please do",
+  "do it",
+  "send it",
+  "yes please",
+  "yes send it",
+  "okay send it",
+  "ok send it",
+]);
+const REJECTION_PREFIXES = [
+  "no",
+  "nope",
+  "do not",
+  "don't",
+  "dont",
+  "cancel",
+  "stop",
+  "wait",
+  "hold on",
+  "not yet",
+  "never mind",
+  "nevermind",
+];
+const REVISION_WORDS = new Set([
+  "but",
+  "change",
+  "instead",
+  "add",
+  "remove",
+  "update",
+  "correction",
+  "actually",
+  "except",
+]);
+
+let proposal = null;
+
+function normalizedWords(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}'’]+/gu, " ")
+    .replace(/[’]/g, "'")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+export function classifyConfirmation(value) {
+  const normalized = normalizedWords(value);
+  if (!normalized) return "other";
+  if (REJECTION_PREFIXES.some((prefix) => normalized === prefix || normalized.startsWith(`${prefix} `))) {
+    return "reject";
+  }
+  const words = normalized.split(" ");
+  if (words.some((word) => REVISION_WORDS.has(word))) return "revise";
+  return AFFIRMATIVE.has(normalized) ? "affirm" : "other";
+}
+
+function expire(now = Date.now()) {
+  if (proposal && now - proposal.proposedAt > PROPOSAL_TTL_MS) proposal = null;
+}
+
+function replaceProposal(updates) {
+  proposal = Object.freeze({ ...proposal, ...updates });
+  return proposal;
+}
+
+export function proposeHermesTask(task, urgency = "normal", options = {}) {
   const cleanTask = String(task || "").trim();
-  if (!cleanTask) return { ok: false };
-  proposal = { task: cleanTask, urgency, stage: "awaiting_readback", proposedAt: Date.now() };
-  return { ok: true, task: cleanTask };
+  if (!cleanTask) return { ok: false, reason: "empty_task" };
+  const cleanUrgency = VALID_URGENCY.has(String(urgency)) ? String(urgency) : "normal";
+  const sessionId = String(options.sessionId || "").trim();
+  proposal = Object.freeze({
+    id: crypto.randomUUID(),
+    task: cleanTask,
+    urgency: cleanUrgency,
+    sessionId,
+    stage: "awaiting_readback",
+    proposedAt: Number(options.now) || Date.now(),
+    userResponse: "",
+    responseKind: "other",
+  });
+  return { ok: true, proposal };
 }
 
-// The model finished speaking (turnComplete) or was interrupted mid-speech —
-// either way the read-back reached the user.
+/** Advance only after the model completed the read-back turn. */
 export function markModelTurnComplete() {
-  if (proposal?.stage === "awaiting_readback") proposal.stage = "awaiting_user";
+  if (proposal?.stage === "awaiting_readback") replaceProposal({ stage: "awaiting_user" });
 }
 
-export function markUserSpoke() {
-  if (proposal?.stage === "awaiting_user") proposal.stage = "confirmable";
+/**
+ * A barge-in does not prove that the complete brief was heard. The next model
+ * turn must stage/read a fresh proposal before submission can succeed.
+ */
+export function markModelTurnInterrupted() {
+  if (proposal?.stage === "awaiting_readback") replaceProposal({ stage: "readback_interrupted" });
+}
+
+/** Record the complete transcript accumulated for the latest user response. */
+export function recordUserResponse(text) {
+  if (proposal?.stage !== "awaiting_user") return { ok: false, reason: "not_awaiting_user" };
+  const userResponse = String(text || "").trim();
+  const responseKind = classifyConfirmation(userResponse);
+  const stage =
+    responseKind === "reject"
+      ? "rejected"
+      : responseKind === "revise"
+        ? "needs_revision"
+        : "awaiting_user";
+  replaceProposal({ userResponse, responseKind, stage });
+  return { ok: true, responseKind, stage };
+}
+
+// Backward-compatible name for callers; unlike the old implementation it
+// requires the transcript and never treats arbitrary speech as confirmation.
+export function markUserSpoke(text) {
+  return recordUserResponse(text);
 }
 
 export function resetHermesGate() {
   proposal = null;
 }
 
-/** A proposal is staged and still waiting for the user's yes/no. */
+/** A proposal is staged and still waiting for a secure terminal decision. */
 export function hasPendingProposal(now = Date.now()) {
-  if (proposal && now - proposal.proposedAt > PROPOSAL_TTL_MS) proposal = null;
-  return Boolean(proposal);
+  expire(now);
+  return Boolean(
+    proposal &&
+      ["awaiting_readback", "awaiting_user"].includes(proposal.stage),
+  );
+}
+
+export function getHermesProposal(now = Date.now()) {
+  expire(now);
+  return proposal ? { ...proposal } : null;
 }
 
 /**
- * Try to consume the staged proposal for an actual submit.
- * Returns { ok: true, proposal } and clears the stage on success, or
- * { ok: false, reason: "no_proposal" | "not_confirmed" }.
+ * Consume the exact staged proposal. `proposalId` and `sessionId` bind the
+ * model's submit call to what the user heard and to the selected Hermes thread.
  */
-export function claimConfirmedProposal(now = Date.now()) {
-  if (proposal && now - proposal.proposedAt > PROPOSAL_TTL_MS) proposal = null;
+export function claimConfirmedProposal(options = {}) {
+  const now = typeof options === "number" ? options : options.now ?? Date.now();
+  expire(now);
   if (!proposal) return { ok: false, reason: "no_proposal" };
-  if (proposal.stage !== "confirmable") return { ok: false, reason: "not_confirmed" };
+  if (!options.proposalId || options.proposalId !== proposal.id) {
+    return { ok: false, reason: "proposal_mismatch" };
+  }
+  if (proposal.sessionId && options.sessionId !== proposal.sessionId) {
+    return { ok: false, reason: "session_mismatch" };
+  }
+  if (proposal.stage === "rejected") return { ok: false, reason: "rejected" };
+  if (proposal.stage === "needs_revision") return { ok: false, reason: "needs_revision" };
+  if (proposal.stage === "readback_interrupted") {
+    return { ok: false, reason: "readback_interrupted" };
+  }
+  if (proposal.stage !== "awaiting_user" || proposal.responseKind !== "affirm") {
+    return { ok: false, reason: "not_confirmed" };
+  }
   const claimed = proposal;
   proposal = null;
   return { ok: true, proposal: claimed };

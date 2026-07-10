@@ -30,15 +30,25 @@ export default function ReaderOverlay({
   const handRef = useRef<HandState | null>(hand);
   const readerScaleRef = useRef(1);
   const zoomRef = useRef<{ distance: number; scale: number } | null>(null);
+  const closeTimerRef = useRef<number | null>(null);
+  const closingRef = useRef(false);
   handRef.current = hand;
 
   const CLOSE_DISTANCE = 160;
 
   function closeWithSnap() {
-    if (closing) return;
+    if (closingRef.current) return;
+    closingRef.current = true;
     setClosing(true);
-    window.setTimeout(onClose, 180);
+    closeTimerRef.current = window.setTimeout(onClose, 180);
   }
+
+  useEffect(
+    () => () => {
+      if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -191,7 +201,22 @@ export default function ReaderOverlay({
         ) : null}
         <div className="reader-body" ref={bodyRef}>
           <div className={`markdown-body ${task.error ? "error" : ""}`}>
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                a: ({ href, children }) => (
+                  <a
+                    href={href}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      if (href) void window.iris.openExternal(href);
+                    }}
+                  >
+                    {children}
+                  </a>
+                ),
+              }}
+            >
               {normalizeMarkdown(task.error || task.output)}
             </ReactMarkdown>
           </div>

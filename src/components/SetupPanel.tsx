@@ -88,6 +88,7 @@ export default function SetupPanel({
   useEffect(() => {
     if (!navigator.permissions?.query) return;
     let cancelled = false;
+    const watched: PermissionStatus[] = [];
     const toState = (state: PermissionState): PermState =>
       state === "granted" ? "granted" : state === "denied" ? "denied" : "idle";
 
@@ -95,8 +96,11 @@ export default function SetupPanel({
       try {
         const status = await navigator.permissions.query({ name: name as PermissionName });
         if (cancelled) return;
+        watched.push(status);
         setter(toState(status.state));
-        status.onchange = () => setter(toState(status.state));
+        status.onchange = () => {
+          if (!cancelled) setter(toState(status.state));
+        };
       } catch {
         // Some platforms don't support querying these names; leave as idle.
       }
@@ -106,6 +110,9 @@ export default function SetupPanel({
     watch("camera", setCam);
     return () => {
       cancelled = true;
+      watched.forEach((status) => {
+        status.onchange = null;
+      });
     };
   }, []);
 
@@ -138,7 +145,7 @@ export default function SetupPanel({
       result.ok
         ? {
             status: "ok",
-            message: `${result.total} notes · ${result.embedded} embedded · ${result.reused} reused · ${((result.ms ?? 0) / 1000).toFixed(1)}s`,
+            message: `${result.total} notes / ${result.chunks ?? result.total} chunks · ${result.embedded} embedded · ${result.reused} reused · ${((result.ms ?? 0) / 1000).toFixed(1)}s`,
           }
         : { status: "error", message: result.error },
     );
@@ -187,7 +194,7 @@ export default function SetupPanel({
     onStart?.();
   }
 
-  const keyReady = draft.GEMINI_API_KEY.trim().length > 0;
+  const keyReady = draft.GEMINI_API_KEY.trim().length > 0 || config.geminiApiKeyConfigured;
 
   // ---- Section renderers (shared between wizard steps and settings) ----
   const geminiSection = (
@@ -197,7 +204,7 @@ export default function SetupPanel({
         <input
           type="password"
           value={draft.GEMINI_API_KEY}
-          placeholder="AI… paste your key"
+          placeholder={config.geminiApiKeyConfigured ? "Saved locally — enter to replace" : "AI… paste your key"}
           onChange={(event) => {
             set("GEMINI_API_KEY", event.target.value);
             setGemini({ status: "idle" });
@@ -210,7 +217,7 @@ export default function SetupPanel({
           <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">
             Google AI Studio
           </a>
-          , then paste the whole thing. Stored locally only.
+          , then paste the whole thing. Saved keys are never returned to the UI.
         </small>
       </label>
       <div className="setup-actions">
@@ -244,8 +251,13 @@ export default function SetupPanel({
       <label className="setup-field">
         <span>API key</span>
         <input
+          type="password"
           value={draft.API_SERVER_KEY}
-          placeholder="paste output of: openssl rand -hex 32"
+          placeholder={
+            config.hermesKeyConfigured
+              ? "Saved locally — enter to replace"
+              : "paste output of: openssl rand -hex 32"
+          }
           onChange={(event) => {
             set("API_SERVER_KEY", event.target.value);
             setHermes({ status: "idle" });

@@ -27,7 +27,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 
-export const VERSION = 1;
+export const VERSION = 2;
 
 // Newest first; the sync probes and uses the first model the key can access.
 // gemini-embedding-2 is Google's first natively multimodal embedding model
@@ -40,7 +40,9 @@ export const EMBED_DIMS = 768;
 
 const EMBED_BASE = "https://generativelanguage.googleapis.com/v1beta";
 const BATCH_SIZE = 100; // API maximum for batchEmbedContents
-const EMBED_TEXT_MAX = 12000; // chars; vault notes are ~120 lines, this covers whole notes
+const MAX_NOTE_CHARS = 100000;
+const CHUNK_CHARS = 2400;
+const CHUNK_OVERLAP = 320;
 const RETRY_DELAYS_MS = [800, 2000, 5000];
 
 // ---------- small utilities ----------
@@ -149,31 +151,70 @@ export function buildNoteRecord(root, absPath) {
   const tags = (meta.tags || "").trim();
   const headings = [...cleaned.matchAll(/^#{1,6}\s+(.+)$/gm)].map((m) => m[1]).join(" · ");
 
-  const embedText = [
-    `Title: ${title}`,
-    aliases ? `Aliases: ${aliases}` : "",
-    tags ? `Tags: ${tags}` : "",
-    `Folder: ${folder}`,
-    headings ? `Sections: ${headings}` : "",
-    "",
-    cleaned.slice(0, EMBED_TEXT_MAX),
-  ]
-    .filter(Boolean)
-    .join("\n");
+  const searchBody = cleaned.slice(0, MAX_NOTE_CHARS);
+  const stat = fs.statSync(absPath);
 
   return {
     rel,
     title,
     folder,
-    hash: sha1(`v${VERSION}:${embedText}`),
-    embedText,
+    aliases,
+    tags,
+    headings,
+    mtimeMs: stat.mtimeMs,
     searchTitle: [title, aliases, tags, folder].filter(Boolean).join(" "),
-    searchBody: cleaned.slice(0, EMBED_TEXT_MAX),
+    searchBody,
   };
 }
 
 export function readVaultRecords(root) {
   return walkVaultFiles(root).map((file) => buildNoteRecord(root, file));
+}
+
+function chunkBody(body) {
+  if (!body) return [""];
+  const chunks = [];
+  let start = 0;
+  while (start < body.length) {
+    let end = Math.min(body.length, start + CHUNK_CHARS);
+    if (end < body.length) {
+      const paragraph = body.lastIndexOf("\n\n", end);
+      if (paragraph > start + CHUNK_CHARS * 0.55) end = paragraph;
+    }
+    chunks.push(body.slice(start, end).trim());
+    if (end >= body.length) break;
+    start = Math.max(start + 1, end - CHUNK_OVERLAP);
+  }
+  return chunks.filter(Boolean);
+}
+
+/** Chunk note bodies for semantic retrieval while lexical search stays note-level. */
+export function buildChunkRecords(records) {
+  return records.flatMap((record) =>
+    chunkBody(record.searchBody).map((body, chunkIndex) => {
+      const embedText = [
+        `Title: ${record.title}`,
+        record.aliases ? `Aliases: ${record.aliases}` : "",
+        record.tags ? `Tags: ${record.tags}` : "",
+        `Folder: ${record.folder}`,
+        record.headings ? `Sections: ${record.headings}` : "",
+        `Chunk: ${chunkIndex + 1}`,
+        "",
+        body,
+      ]
+        .filter(Boolean)
+        .join("\n");
+      return {
+        ...record,
+        id: `${record.rel}#${chunkIndex}`,
+        chunkIndex,
+        body,
+        snippet: body.replace(/\s+/g, " ").trim().slice(0, 500),
+        hash: sha1(`v${VERSION}:${embedText}`),
+        embedText,
+      };
+    }),
+  );
 }
 
 // ---------- Gemini embedding REST ----------
@@ -266,12 +307,19 @@ export function indexDirFor(vaultRoot) {
 export function loadIndexFromDisk(vaultRoot) {
   const dir = indexDirFor(vaultRoot);
   const manifestPath = path.join(dir, "manifest.json");
-  const vectorsPath = path.join(dir, "vectors.f32");
-  if (!fs.existsSync(manifestPath) || !fs.existsSync(vectorsPath)) return null;
+  if (!fs.existsSync(manifestPath)) return null;
   try {
     const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    const vectorsFile =
+      typeof manifest.vectorsFile === "string" && path.basename(manifest.vectorsFile) === manifest.vectorsFile
+        ? manifest.vectorsFile
+        : "vectors.f32";
+    const vectorsPath = path.join(dir, vectorsFile);
+    if (!fs.existsSync(vectorsPath)) return null;
     const buffer = fs.readFileSync(vectorsPath);
-    const vectors = new Float32Array(buffer.buffer, buffer.byteOffset, buffer.byteLength / 4);
+    if (buffer.byteLength % 4 !== 0) return null;
+    const exact = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+    const vectors = new Float32Array(exact);
     if (manifest.version !== VERSION || manifest.dims !== EMBED_DIMS) return null;
     if (vectors.length !== manifest.notes.length * manifest.dims) return null;
     return { manifest, vectors };
@@ -283,14 +331,27 @@ export function loadIndexFromDisk(vaultRoot) {
 function writeIndexAtomic(vaultRoot, manifest, vectors) {
   const dir = indexDirFor(vaultRoot);
   fs.mkdirSync(dir, { recursive: true });
-  // Vectors first, manifest last — a crash can never leave a manifest that
-  // references rows which don't exist yet.
-  const vectorsPath = path.join(dir, "vectors.f32");
+  // Versioned vector files make the two-file commit atomic: until the manifest
+  // rename, readers keep using the complete previous generation.
+  const generation = sha1(
+    `${manifest.version}:${manifest.model}:${manifest.notes.map((note) => note.hash).join(":")}`,
+  ).slice(0, 12);
+  const vectorsFile = `vectors-${generation}.f32`;
+  const vectorsPath = path.join(dir, vectorsFile);
   const manifestPath = path.join(dir, "manifest.json");
   fs.writeFileSync(`${vectorsPath}.tmp`, Buffer.from(vectors.buffer, vectors.byteOffset, vectors.byteLength));
   fs.renameSync(`${vectorsPath}.tmp`, vectorsPath);
-  fs.writeFileSync(`${manifestPath}.tmp`, JSON.stringify(manifest, null, 2));
+  const persistedManifest = { ...manifest, vectorsFile };
+  fs.writeFileSync(`${manifestPath}.tmp`, JSON.stringify(persistedManifest, null, 2));
   fs.renameSync(`${manifestPath}.tmp`, manifestPath);
+  for (const entry of fs.readdirSync(dir)) {
+    if (entry.startsWith("vectors-") && entry.endsWith(".f32") && entry !== vectorsFile) {
+      try { fs.unlinkSync(path.join(dir, entry)); } catch { /* best-effort cleanup */ }
+    }
+  }
+  // Remove the version-1 fixed filename after the new manifest is committed.
+  try { fs.unlinkSync(path.join(dir, "vectors.f32")); } catch { /* absent */ }
+  return persistedManifest;
 }
 
 /**
@@ -298,12 +359,13 @@ function writeIndexAtomic(vaultRoot, manifest, vectors) {
  * reuse vectors across renames (same hash, new path), prune deleted notes,
  * write atomically. Returns the fresh in-memory index + stats.
  */
-export async function syncBrainIndex({ vaultRoot, apiKey, log = () => {}, force = false, dryRun = false }) {
+async function syncBrainIndexUnlocked({ vaultRoot, apiKey, log = () => {}, force = false, dryRun = false }) {
   const startedAt = Date.now();
   const root = path.resolve(expandHome(vaultRoot));
   if (!fs.existsSync(root)) throw new Error(`Vault not found: ${root}`);
 
   const records = readVaultRecords(root);
+  const chunks = buildChunkRecords(records);
   const existing = force ? null : loadIndexFromDisk(root);
 
   // hash -> row lookup over the previous index (drives reuse + rename moves).
@@ -315,7 +377,7 @@ export async function syncBrainIndex({ vaultRoot, apiKey, log = () => {}, force 
   const reused = [];
   const pending = [];
   let renamed = 0;
-  for (const record of records) {
+  for (const record of chunks) {
     const prev = prevRows.get(record.hash);
     if (prev) {
       reused.push({ record, row: prev.row });
@@ -325,7 +387,7 @@ export async function syncBrainIndex({ vaultRoot, apiKey, log = () => {}, force 
     }
   }
   const prunedCount = existing
-    ? existing.manifest.notes.length - (records.length - pending.length)
+    ? existing.manifest.notes.length - (chunks.length - pending.length)
     : 0;
 
   if (dryRun) {
@@ -334,6 +396,7 @@ export async function syncBrainIndex({ vaultRoot, apiKey, log = () => {}, force 
       dryRun: true,
       model: existing?.manifest.model ?? null,
       total: records.length,
+      chunks: chunks.length,
       embedded: pending.length,
       reused: reused.length,
       renamed,
@@ -353,17 +416,25 @@ export async function syncBrainIndex({ vaultRoot, apiKey, log = () => {}, force 
   // available)? Everything must be re-embedded in the same space.
   if (pending.length > 0 && existing && existing.manifest.model !== model) {
     log(`embedding model changed (${existing.manifest.model} -> ${model}); full re-index`);
-    return syncBrainIndex({ vaultRoot, apiKey, log, force: true, dryRun });
+    return syncBrainIndexUnlocked({ vaultRoot, apiKey, log, force: true, dryRun });
   }
 
-  const vectors = new Float32Array(records.length * EMBED_DIMS);
-  const notes = new Array(records.length);
-  const rowOf = new Map(records.map((record, index) => [record.rel, index]));
+  const vectors = new Float32Array(chunks.length * EMBED_DIMS);
+  const notes = new Array(chunks.length);
+  const rowOf = new Map(chunks.map((record, index) => [record.id, index]));
 
   for (const { record, row } of reused) {
-    const target = rowOf.get(record.rel);
+    const target = rowOf.get(record.id);
     vectors.set(existing.vectors.subarray(row * EMBED_DIMS, (row + 1) * EMBED_DIMS), target * EMBED_DIMS);
-    notes[target] = { path: record.rel, title: record.title, folder: record.folder, hash: record.hash };
+    notes[target] = {
+      path: record.rel,
+      title: record.title,
+      folder: record.folder,
+      hash: record.hash,
+      chunkIndex: record.chunkIndex,
+      snippet: record.snippet,
+      mtimeMs: record.mtimeMs,
+    };
   }
 
   let embedded = 0;
@@ -380,9 +451,17 @@ export async function syncBrainIndex({ vaultRoot, apiKey, log = () => {}, force 
       log,
     });
     batch.forEach((record, i) => {
-      const target = rowOf.get(record.rel);
+      const target = rowOf.get(record.id);
       vectors.set(vectorsBatch[i], target * EMBED_DIMS);
-      notes[target] = { path: record.rel, title: record.title, folder: record.folder, hash: record.hash };
+      notes[target] = {
+        path: record.rel,
+        title: record.title,
+        folder: record.folder,
+        hash: record.hash,
+        chunkIndex: record.chunkIndex,
+        snippet: record.snippet,
+        mtimeMs: record.mtimeMs,
+      };
       embedded += 1;
     });
     log(`embedded ${Math.min(offset + batch.length, pending.length)}/${pending.length}`);
@@ -396,19 +475,71 @@ export async function syncBrainIndex({ vaultRoot, apiKey, log = () => {}, force 
     updatedAt: new Date().toISOString(),
     notes,
   };
-  writeIndexAtomic(root, manifest, vectors);
+  const persistedManifest = writeIndexAtomic(root, manifest, vectors);
 
   return {
     ok: true,
-    model: manifest.model,
+    model: persistedManifest.model,
     total: records.length,
+    chunks: chunks.length,
     embedded,
     reused: reused.length,
     renamed,
     pruned: Math.max(0, prunedCount),
     ms: Date.now() - startedAt,
-    index: { manifest, vectors },
+    index: { manifest: persistedManifest, vectors },
   };
+}
+
+const syncPromises = new Map();
+
+async function acquireIndexLock(vaultRoot) {
+  const dir = indexDirFor(vaultRoot);
+  fs.mkdirSync(dir, { recursive: true });
+  const lockPath = path.join(dir, ".sync.lock");
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) {
+    try {
+      const handle = fs.openSync(lockPath, "wx", 0o600);
+      fs.writeFileSync(handle, JSON.stringify({ pid: process.pid, at: Date.now() }));
+      return () => {
+        try { fs.closeSync(handle); } catch { /* already closed */ }
+        try { fs.unlinkSync(lockPath); } catch { /* already removed */ }
+      };
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      try {
+        const age = Date.now() - fs.statSync(lockPath).mtimeMs;
+        if (age > 10 * 60 * 1000) {
+          fs.unlinkSync(lockPath);
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      await sleep(200);
+    }
+  }
+  throw new Error("Brain index is busy in another process.");
+}
+
+export async function syncBrainIndex(options) {
+  const root = path.resolve(expandHome(options.vaultRoot));
+  if (syncPromises.has(root)) return syncPromises.get(root);
+  const operation = (async () => {
+    const release = await acquireIndexLock(root);
+    try {
+      return await syncBrainIndexUnlocked({ ...options, vaultRoot: root });
+    } finally {
+      release();
+    }
+  })();
+  syncPromises.set(root, operation);
+  try {
+    return await operation;
+  } finally {
+    if (syncPromises.get(root) === operation) syncPromises.delete(root);
+  }
 }
 
 // ---------- BM25F lexical search ----------
@@ -560,35 +691,66 @@ export function hybridSearch({ lexicon, index, queryVector, query, topK = 8 }) {
   const fused = new Map(); // rel -> { rel, title, folder, score, sources, lexScore, cosScore }
   const recordByRel = new Map(lexicon ? lexicon.docs.map((doc) => [doc.record.rel, doc.record]) : []);
 
-  const add = (rel, title, folder, rank, source, raw) => {
+  const add = (rel, title, folder, rank, source, raw, metadata = {}) => {
     const entry =
-      fused.get(rel) ?? { rel, title, folder, score: 0, sources: [], lexScore: 0, cosScore: 0 };
-    entry.score += 1 / (RRF_K + rank);
-    entry.sources.push(source);
-    if (source === "lexical") entry.lexScore = raw;
-    else entry.cosScore = raw;
+      fused.get(rel) ?? {
+        rel,
+        title,
+        folder,
+        score: 0,
+        sources: [],
+        lexScore: 0,
+        cosScore: 0,
+        semanticSnippet: "",
+        updatedAt: 0,
+      };
+    if (!entry.sources.includes(source)) {
+      entry.score += 1 / (RRF_K + rank);
+      entry.sources.push(source);
+    }
+    if (source === "lexical") {
+      entry.lexScore = Math.max(entry.lexScore, raw);
+    } else if (raw > entry.cosScore) {
+      entry.cosScore = raw;
+      entry.semanticSnippet = metadata.snippet || entry.semanticSnippet;
+    }
+    entry.updatedAt = Math.max(entry.updatedAt, Number(metadata.mtimeMs) || 0);
     fused.set(rel, entry);
   };
 
   if (lexicon) {
     lexicalSearch(lexicon, query, 12).forEach((hit, rank) =>
-      add(hit.record.rel, hit.record.title, hit.record.folder, rank + 1, "lexical", hit.score),
+      add(hit.record.rel, hit.record.title, hit.record.folder, rank + 1, "lexical", hit.score, {
+        mtimeMs: hit.record.mtimeMs,
+      }),
     );
   }
   if (index && queryVector) {
     vectorSearch(index, queryVector, 12).forEach((hit, rank) =>
-      add(hit.note.path, hit.note.title, hit.note.folder, rank + 1, "semantic", hit.score),
+      add(hit.note.path, hit.note.title, hit.note.folder, rank + 1, "semantic", hit.score, {
+        snippet: hit.note.snippet,
+        mtimeMs: hit.note.mtimeMs,
+      }),
     );
   }
 
   return [...fused.values()]
     .sort((a, b) => b.score - a.score)
     .slice(0, topK)
-    .map((entry) => ({
-      ...entry,
-      coverage: lexicon ? queryCoverage(lexicon, entry.rel, query) : 0,
-      snippet: recordByRel.has(entry.rel) ? bestSnippet(recordByRel.get(entry.rel).searchBody, query) : "",
-    }));
+    .map((entry) => {
+      const coverage = lexicon ? queryCoverage(lexicon, entry.rel, query) : 0;
+      const lexicalSnippet = recordByRel.has(entry.rel)
+        ? bestSnippet(recordByRel.get(entry.rel).searchBody, query)
+        : "";
+      return {
+        ...entry,
+        coverage,
+        snippet:
+          entry.sources.includes("semantic") && coverage === 0
+            ? entry.semanticSnippet || lexicalSnippet
+            : lexicalSnippet || entry.semanticSnippet,
+      };
+    });
 }
 
 // ---------- CLI ----------
@@ -669,7 +831,7 @@ if (isMain) {
     } else {
       const { manifest } = index;
       console.log(
-        `index: ${manifest.notes.length} notes · model ${manifest.model} · dims ${manifest.dims} · updated ${manifest.updatedAt}`,
+        `index: ${manifest.notes.length} chunks · model ${manifest.model} · dims ${manifest.dims} · updated ${manifest.updatedAt}`,
       );
       console.log(`location: ${indexDirFor(vaultRoot)}`);
     }
@@ -687,7 +849,7 @@ if (isMain) {
     });
     const mode = result.dryRun ? "dry-run" : "synced";
     console.log(
-      `${mode}: ${result.total} notes · ${result.embedded} embedded · ${result.reused} reused · ` +
+      `${mode}: ${result.total} notes / ${result.chunks} chunks · ${result.embedded} chunks embedded · ${result.reused} reused · ` +
         `${result.renamed} renamed · ${result.pruned} pruned · ${result.ms}ms · model ${result.model ?? "n/a"}`,
     );
     process.exit(0);

@@ -10,8 +10,33 @@ export type TaskStep = {
   ts: number;
 };
 
+export type TaskApproval = {
+  command?: string;
+  reason?: string;
+  choices: Array<"once" | "session" | "always" | "deny">;
+  requestedAt: number;
+  resolving?: boolean;
+  error?: string;
+};
+
+export type HermesInteraction = {
+  id: string;
+  type: "clarify" | "approval" | "sudo" | "secret";
+  question: string;
+  choices: string[];
+  command?: string;
+  envVar?: string;
+  allowCustom: boolean;
+  secret: boolean;
+  resolving?: boolean;
+  error?: string;
+  voiceValue?: string;
+  voiceSubmitting?: boolean;
+};
+
 export type TaskCard = {
   id: string;
+  sessionId?: string;
   task: string;
   status: string;
   output?: string;
@@ -19,6 +44,8 @@ export type TaskCard = {
   updatedAt: number;
   steps?: TaskStep[];
   notes?: string;
+  approval?: TaskApproval | null;
+  interaction?: HermesInteraction | null;
 };
 
 export type LogLine = {

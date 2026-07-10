@@ -204,6 +204,7 @@ export default function BrainGraph({
   // everything else is hidden. Mutually exclusive with isolation.
   const [queryFilter, setQueryFilter] = useState<{ query: string; ids: string[] } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
 
   const hoverIdRef = useRef<string | null>(null);
   const selectedIdRef = useRef<string | null>(null);
@@ -423,8 +424,19 @@ export default function BrainGraph({
 
   function showToast(message: string) {
     setToast(message);
-    window.setTimeout(() => setToast(null), 2600);
+    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => {
+      toastTimerRef.current = null;
+      setToast(null);
+    }, 2600);
   }
+
+  useEffect(
+    () => () => {
+      if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    },
+    [],
+  );
 
   // Screen-pixel hit-test shared by gestures, and by the HUD click-through
   // tracker (the window only becomes mouse-interactive over a real node).

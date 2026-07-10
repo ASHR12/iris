@@ -13,6 +13,23 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const releaseDir = path.join(root, "release");
 const DEST = "/Applications/Iris.app";
+const IRIS_EXECUTABLE_RE = "^/Applications/Iris\\.app/Contents/MacOS/Iris$";
+
+function isInstalledIrisRunning() {
+  const probe = spawnSync("pgrep", ["-f", IRIS_EXECUTABLE_RE], {
+    stdio: "ignore",
+  });
+  return probe.status === 0;
+}
+
+async function waitFor(check, expected, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (check() === expected) return true;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  return check() === expected;
+}
 
 if (process.platform !== "darwin") {
   console.error("install:mac only works on macOS.");
@@ -32,7 +49,9 @@ if (!appPath) {
 // Quit a running installed Iris before replacing it (ignore if not running).
 // Targets the app bundle by name only — never other Electron processes.
 spawnSync("osascript", ["-e", 'tell application "Iris" to quit'], { stdio: "ignore" });
-await new Promise((resolve) => setTimeout(resolve, 1500));
+if (!(await waitFor(isInstalledIrisRunning, false, 10000))) {
+  throw new Error("The running Iris instance did not quit in time; installation was cancelled.");
+}
 
 if (fs.existsSync(DEST)) {
   fs.rmSync(DEST, { recursive: true, force: true });
@@ -46,6 +65,19 @@ execSync(`xattr -cr "${DEST}"`);
 console.log(`✓ Installed ${DEST}`);
 
 if (!process.argv.includes("--no-launch")) {
-  execSync(`open "${DEST}"`);
+  // Cursor/CI shells may export ELECTRON_RUN_AS_NODE=1. Passing that through
+  // LaunchServices starts Iris as a headless Node process with no window.
+  const launchEnv = { ...process.env };
+  delete launchEnv.ELECTRON_RUN_AS_NODE;
+  const launched = spawnSync("open", [DEST], {
+    env: launchEnv,
+    stdio: "inherit",
+  });
+  if (launched.status !== 0) {
+    throw new Error(`Could not launch Iris (open exited ${launched.status}).`);
+  }
+  if (!(await waitFor(isInstalledIrisRunning, true, 10000))) {
+    throw new Error("LaunchServices returned success, but the Iris process did not start.");
+  }
   console.log("✓ Launched Iris");
 }
