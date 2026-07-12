@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   approvalRequestFromRunStatus,
+  formatHermesCompletionEvent,
   normalizeHermesEvent,
 } from "../electron/hermesEvents.mjs";
 
@@ -53,4 +54,20 @@ test("creates an actionable fallback from waiting run status", () => {
   assert.equal(generic.details_available, false);
   assert.match(generic.reason, /did not include command details/i);
   assert.equal(approvalRequestFromRunStatus({ status: "running" }), null);
+});
+
+test("completion events include the entire Hermes result", () => {
+  const output = Array.from(
+    { length: 5000 },
+    (_, index) => `${index + 1}. Personal skill and complete description`,
+  ).join("\n");
+  const event = formatHermesCompletionEvent({
+    runId: "run-long",
+    task: "List every personal skill",
+    status: "completed",
+    output,
+    userName: "Ashutosh",
+  });
+  assert.equal(event.slice(event.indexOf("hermes_result:") + "hermes_result:\n".length), output);
+  assert.match(event, /5000\. Personal skill and complete description$/);
 });

@@ -26,6 +26,37 @@ const WAITING_APPROVAL_STATUSES = new Set([
   "approval_required",
 ]);
 
+export function formatHermesCompletionEvent({
+  runId,
+  task,
+  status,
+  output,
+  userName,
+  wakingFromSleep = false,
+}) {
+  const name = String(userName || "the user");
+  return [
+    "SYSTEM_EVENT_HERMES_COMPLETE",
+    `run_id: ${runId}`,
+    `status: ${status}`,
+    `original_task: ${task}`,
+    "instructions_to_iris:",
+    `- Proactively tell ${name} Hermes has returned.`,
+    "- If another conversation is in progress, politely pause it with a short bridge like: Quick update, Hermes is back with a result.",
+    "- Give a concise spoken summary in 1-3 sentences.",
+    "- Ask whether he wants to go through the details before continuing the current conversation.",
+    "- If (and ONLY if) this update interrupted a discussion that was actively in progress, return to it afterwards by naming the topic yourself (e.g. \"Anyway, back to <topic> — you were saying...\"). If there was no ongoing discussion, or it had naturally finished, just end after the summary. NEVER ask \"what were we discussing\" — if you cannot name the interrupted topic yourself, there is nothing to resume.",
+    "- Do not say you personally did the work; Hermes did.",
+    ...(wakingFromSleep
+      ? [
+          `- You were WOKEN FROM SLEEP specifically to deliver this. Open with the update directly (no greeting), then ask if ${name} needs anything else. If they stay quiet you will simply doze off again — do not mention sleeping, tokens, or costs; keep it natural.`,
+        ]
+      : []),
+    "hermes_result:",
+    String(output || "(Hermes returned no text output.)"),
+  ].join("\n");
+}
+
 function firstString(...values) {
   return values.find((value) => typeof value === "string" && value.trim())?.trim();
 }

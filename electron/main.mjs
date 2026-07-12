@@ -35,8 +35,10 @@ import {
   safeExternalUrl,
 } from "./windowSecurity.mjs";
 import { LiveToolCoordinator } from "./liveToolCoordinator.mjs";
+import { readStoredHermesResult } from "./hermesResultService.mjs";
 import {
   approvalRequestFromRunStatus,
+  formatHermesCompletionEvent,
   normalizeHermesEvent,
 } from "./hermesEvents.mjs";
 import { classifyRoute, routingGuidance } from "./routingPolicy.mjs";
@@ -792,7 +794,7 @@ function handleInteractiveComplete(item) {
     runId: item.runId,
     task: item.task,
     status: item.status,
-    output: String(item.output || item.error || "").slice(0, 2500),
+    output: String(item.output || item.error || ""),
   });
 }
 
@@ -1118,7 +1120,7 @@ async function getHermesTaskStatus({ run_id }) {
       return {
         status,
         run_id,
-        output: String(interactive.output || interactive.error || "").slice(0, 2500),
+        output: String(interactive.output || interactive.error || ""),
         instructions: "The run is finished. Report only the output above.",
       };
     }
@@ -1151,7 +1153,7 @@ async function getHermesTaskStatus({ run_id }) {
     return {
       status: persisted.status,
       run_id,
-      output: String(persisted.output || persisted.error || "").slice(0, 2500),
+      output: String(persisted.output || persisted.error || ""),
       interaction: persisted.interaction
         ? {
             type: persisted.interaction.type,
@@ -1173,7 +1175,7 @@ async function getHermesTaskStatus({ run_id }) {
       return {
         status,
         run_id,
-        output: String(run.output || run.final_response || "").slice(0, 2500),
+        output: String(run.output || run.final_response || ""),
         instructions: "The run is finished. Report ONLY what is in `output` above — nothing else.",
       };
     }
@@ -1319,7 +1321,7 @@ async function sessionRunsFromTranscript(sessionId) {
 
     current.steps = [...current.steps, ...historyStepsFromToolCalls(message)].slice(-40);
     if (typeof message.content === "string" && message.content.trim()) {
-      current.output = message.content.trim().slice(0, 8000);
+      current.output = message.content.trim();
       if (ts) current.updatedAt = ts;
     }
   }
@@ -1907,6 +1909,15 @@ function getIrisUiContext() {
   return irisUiContext;
 }
 
+async function readHermesTaskResult({ run_id } = {}) {
+  return readStoredHermesResult({
+    runId: run_id,
+    uiContext: irisUiContext,
+    registry: runRegistry,
+    fetchHistory: fetchHermesHistory,
+  });
+}
+
 const IRIS_UI_ACTIONS = Object.freeze([
   "open_latest_hermes_result",
   "open_current_hermes_result",
@@ -1935,7 +1946,15 @@ function controlIrisUi({ action, target_id = undefined, query = undefined }) {
     return { status: "error", error: `Unknown UI action: ${action}` };
   }
   emitToRenderer("iris:ui-action", { action, target_id, query });
-  return { status: "sent", action, target_id, query };
+  return {
+    status: "sent",
+    action,
+    target_id,
+    query,
+    instructions: action.startsWith("open_")
+      ? "This only changed the UI. Before answering questions about a Hermes task, call get_iris_ui_context and read_hermes_task_result; never infer the result from its title."
+      : undefined,
+  };
 }
 
 async function waitForConfirmationTranscript(proposalId, sessionId, timeoutMs = 1600) {
@@ -2027,6 +2046,8 @@ async function executeTool(name, args = {}) {
       return respondHermesInteraction(args);
     case "get_iris_ui_context":
       return getIrisUiContext();
+    case "read_hermes_task_result":
+      return readHermesTaskResult(args);
     case "search_brain":
       return searchBrain(args.query, args.top_k);
     case "search_memory":
@@ -2253,7 +2274,7 @@ async function watchHermesRun(runId, task) {
           runId,
           task,
           status,
-          output: String(output || "").slice(0, 2500),
+          output: String(output || ""),
         });
         break;
       }
@@ -2317,26 +2338,14 @@ async function recoverHermesRuns() {
 
 function announceHermesCompletion({ runId, task, status, output }) {
   const wakingFromSleep = !liveSession;
-  const eventText = [
-    "SYSTEM_EVENT_HERMES_COMPLETE",
-    `run_id: ${runId}`,
-    `status: ${status}`,
-    `original_task: ${task}`,
-    "instructions_to_iris:",
-    `- Proactively tell ${userDisplayName()} Hermes has returned.`,
-    "- If another conversation is in progress, politely pause it with a short bridge like: Quick update, Hermes is back with a result.",
-    "- Give a concise spoken summary in 1-3 sentences.",
-    "- Ask whether he wants to go through the details before continuing the current conversation.",
-    "- If (and ONLY if) this update interrupted a discussion that was actively in progress, return to it afterwards by naming the topic yourself (e.g. \"Anyway, back to <topic> — you were saying...\"). If there was no ongoing discussion, or it had naturally finished, just end after the summary. NEVER ask \"what were we discussing\" — if you cannot name the interrupted topic yourself, there is nothing to resume.",
-    "- Do not say you personally did the work; Hermes did.",
-    ...(wakingFromSleep
-      ? [
-          `- You were WOKEN FROM SLEEP specifically to deliver this. Open with the update directly (no greeting), then ask if ${userDisplayName()} needs anything else. If they stay quiet you will simply doze off again — do not mention sleeping, tokens, or costs; keep it natural.`,
-        ]
-      : []),
-    "hermes_result:",
-    output || "(Hermes returned no text output.)",
-  ].join("\n");
+  const eventText = formatHermesCompletionEvent({
+    runId,
+    task,
+    status,
+    output,
+    userName: userDisplayName(),
+    wakingFromSleep,
+  });
 
   emitEvent({
     type: "hermes_completion",
@@ -2537,6 +2546,21 @@ function buildIrisUiTools() {
           parameters: { type: "object", properties: {} },
         },
         {
+          name: "read_hermes_task_result",
+          description:
+            "Read the complete stored output for a Hermes task, including results restored after an Iris restart. Use whenever the user asks a factual or follow-up question about an opened, focused, latest, or historical task. Opening a card does not provide its contents. Pass the exact task id from get_iris_ui_context, or omit run_id to read the expanded/focused/latest result. Never answer from the task title alone.",
+          parameters: {
+            type: "object",
+            properties: {
+              run_id: {
+                type: "string",
+                description:
+                  "Optional exact task id from get_iris_ui_context. Omit to use the expanded, focused, or latest result.",
+              },
+            },
+          },
+        },
+        {
           name: "go_to_sleep",
           description:
             "End the Iris voice session when the user clearly ends the conversation or explicitly asks Iris to sleep. Call this tool BEFORE speaking the farewell; its response tells you to say one short goodbye, after which Iris closes on turnComplete. Do not call when a farewell is merely quoted or discussed.",
@@ -2654,6 +2678,7 @@ function buildLiveConfig(resumeHandleForSession = null) {
             "Routing rule: quick answers and general conversation -> answer directly; quick public/current facts -> use Google Search; personal or accumulated knowledge -> use brain/memory; Iris interface requests -> use UI tools; dispatch to Hermes ONLY when the user explicitly asks you to use Hermes.",
             "All tools except a new Hermes dispatch and a pending Hermes approval/interaction are normal model-decided tools: call them directly when useful without asking permission and without merely saying you could use them.",
             "UI control rule: for requests such as open/close a result, show history or steps, switch HUD mode, or operate the Neural Map, call control_iris_ui. Use get_iris_ui_context first only when words like 'it', 'that', or 'the second one' need resolution. Never send UI-only commands to Hermes.",
+            "Opening a Hermes card changes only the interface; it does not place the result in your context. Before answering any question about an opened, focused, latest, or historical Hermes task, call get_iris_ui_context when needed and then read_hermes_task_result. Use the complete returned output and never infer facts from the task title.",
             `Sleep rule: when ${userDisplayName()} clearly ends the conversation or asks Iris to sleep, call go_to_sleep FIRST without speaking, then follow its response and say one short time-neutral farewell. Do not trigger sleep when a farewell is merely quoted or discussed.`,
             `HUD rule: 'enter HUD mode', 'glass mode', 'float over my screen', or 'overlay mode' -> control_iris_ui with enter_hud_mode. 'Exit HUD', 'back to the deck', or 'normal window' -> exit_hud_mode.`,
             `Neural Map rule: 'load/show your brain', 'open the neural map', or 'show the knowledge graph' -> open_brain_graph. 'Close/hide the brain/map' -> close_brain_graph. To focus one note use focus_brain_node with query; to show every matching note use filter_brain_graph; to clear either filter use show_full_brain_graph; to read a note use open_brain_note; to return to the map use close_brain_note.`,

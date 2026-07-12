@@ -67,3 +67,17 @@ test("registry files are valid bounded JSON", (t) => {
   assert.equal(payload.version, 1);
   assert.equal(payload.runs.length, 2);
 });
+
+test("registry preserves complete Hermes output without truncation", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "iris-run-registry-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const filePath = path.join(dir, "runs.json");
+  const output = Array.from(
+    { length: 5000 },
+    (_, index) => `${index + 1}. Complete Hermes result line`,
+  ).join("\n");
+  const registry = new RunRegistry({ filePath });
+  registry.start({ runId: "long-output", task: "List everything", sessionId: "s" });
+  registry.update("long-output", { status: "completed", output });
+  assert.equal(new RunRegistry({ filePath }).get("long-output").output, output);
+});

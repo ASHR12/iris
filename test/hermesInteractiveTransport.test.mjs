@@ -76,6 +76,33 @@ test("full protocol pauses for clarification and resumes with the chosen answer"
   assert.equal(completed[0].output, "Deployed to staging.");
 });
 
+test("full protocol preserves complete streamed output", async () => {
+  const client = new FakeGatewayClient();
+  const transport = new HermesInteractiveTransport({ client });
+  const completed = [];
+  transport.on("complete", (event) => completed.push(event));
+  await transport.submit({ task: "Return a long result", sessionId: "stored-1" });
+  await new Promise((resolve) => setImmediate(resolve));
+  const first = "A".repeat(15000);
+  const second = "B".repeat(15000);
+  client.emit("event", {
+    type: "message.delta",
+    session_id: "live-1",
+    payload: { text: first },
+  });
+  client.emit("event", {
+    type: "message.delta",
+    session_id: "live-1",
+    payload: { text: second },
+  });
+  client.emit("event", {
+    type: "message.complete",
+    session_id: "live-1",
+    payload: { status: "complete" },
+  });
+  assert.equal(completed[0].output, first + second);
+});
+
 test("approval, sudo, and secret requests use their exact response methods", async () => {
   const client = new FakeGatewayClient();
   const transport = new HermesInteractiveTransport({ client });

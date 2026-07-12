@@ -189,7 +189,7 @@ export class HermesInteractiveTransport extends EventEmitter {
     }
     if (type === "message.delta") {
       const delta = String(payload.text || "");
-      item.output = `${item.output}${delta}`.slice(-12000);
+      item.output = `${item.output}${delta}`;
       this.emit("run-event", {
         runId: item.runId,
         task: item.task,
