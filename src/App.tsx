@@ -44,6 +44,7 @@ export default function App() {
   const [hermesStatus, setHermesStatus] = useState("offline");
   const [audioState, setAudioState] = useState("idle");
   const [webSearching, setWebSearching] = useState(false);
+  const [hermesSummarizing, setHermesSummarizing] = useState(false);
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
   const [, setLogs] = useState<LogLine[]>([]);
   const [tasks, setTasks] = useState<TaskCard[]>([]);
@@ -535,12 +536,12 @@ export default function App() {
   const reactorState: ReactorState = useMemo(() => {
     if (!sidecarRunning) return "idle";
     if (audioState === "speaking") return "speaking";
-    if (webSearching) return "working";
+    if (webSearching || hermesSummarizing) return "working";
     if (audioState === "listening") return "listening";
     if (working) return "working";
     if (geminiStatus === "connected") return "online";
     return "idle";
-  }, [audioState, geminiStatus, sidecarRunning, webSearching, working]);
+  }, [audioState, geminiStatus, sidecarRunning, webSearching, hermesSummarizing, working]);
 
   function handleSidecarEvent(event: SidecarEvent) {
     if (event.type === "sidecar_status") {
@@ -550,7 +551,10 @@ export default function App() {
       const status = readStatusObject(event.status);
       setSidecarRunning(Boolean(status.running));
       setSidecarPid(typeof status.pid === "number" ? status.pid : null);
-      if (!status.running) setWebSearching(false);
+      if (!status.running) {
+        setWebSearching(false);
+        setHermesSummarizing(false);
+      }
       return;
     }
 
@@ -571,7 +575,9 @@ export default function App() {
     }
 
     if (event.type === "audio_state") {
-      setAudioState(readString(event.state, "idle"));
+      const state = readString(event.state, "idle");
+      setAudioState(state);
+      if (state === "speaking") setHermesSummarizing(false);
       return;
     }
 
@@ -697,7 +703,41 @@ export default function App() {
     }
 
     if (event.type === "hermes_completion") {
-      pushLog("info", `Hermes returned: ${readString(event.task, "task complete")}`, eventTime(event));
+      setHermesSummarizing(true);
+      const task = readString(event.task, "Hermes task");
+      const runId = readString(event.run_id) || taskKeyFor(task);
+      const output = readString(event.output);
+      const status = readString(event.status, "completed");
+      const updatedAt = eventTime(event);
+      setTasks((current) => {
+        const existing = current.find((item) => item.id === runId);
+        const completed: TaskCard = {
+          id: runId,
+          sessionId:
+            readString(event.session_id) ||
+            existing?.sessionId ||
+            hermesSessionRef.current ||
+            undefined,
+          task,
+          status,
+          output: output || existing?.output,
+          error: existing?.error,
+          updatedAt,
+          steps: existing?.steps,
+          notes: existing?.notes,
+          approval: null,
+          interaction: null,
+        };
+        return [
+          completed,
+          ...current.filter(
+            (item) =>
+              item.id !== runId &&
+              item.id !== taskKeyFor(task),
+          ),
+        ].slice(0, MAX_TASKS_TOTAL);
+      });
+      pushLog("info", `Hermes returned: ${task}`, updatedAt);
       return;
     }
 
@@ -1275,6 +1315,8 @@ export default function App() {
         compact: true,
       };
     if (webSearching) return { text: "Searching Google…", dim: false, compact: true };
+    if (hermesSummarizing)
+      return { text: "Hermes is back — Iris is summarizing…", dim: false, compact: true };
     if (audioState === "speaking") return { text: "Speaking…", dim: false, compact: true };
     if (audioState === "listening") return { text: "Listening…", dim: false, compact: true };
     if (working) return { text: "Working on it…", dim: false, compact: true };
@@ -1282,7 +1324,7 @@ export default function App() {
     if (last) return { text: last.text, dim: false, compact: false };
     if (geminiStatus === "connected") return { text: "How can I help?", dim: true, compact: true };
     return { text: "Connecting…", dim: true, compact: true };
-  }, [sidecarRunning, webSearching, audioState, working, transcript, geminiStatus, wakeWordEnabled, autoSlept]);
+  }, [sidecarRunning, webSearching, hermesSummarizing, audioState, working, transcript, geminiStatus, wakeWordEnabled, autoSlept]);
 
   function openTask(task: TaskCard) {
     if (!(task.output || task.error)) return;

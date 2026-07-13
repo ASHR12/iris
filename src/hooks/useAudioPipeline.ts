@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { MicVAD } from "@ricky0123/vad-web";
 import { base64ToBytes, downsampleTo16k, parsePcmRate } from "../lib/audio";
 
 /**
@@ -19,6 +20,8 @@ export function useAudioPipeline(
   const inputStreamRef = useRef<MediaStream | null>(null);
   const inputSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const inputProcessorRef = useRef<AudioWorkletNode | ScriptProcessorNode | null>(null);
+  const speechVadRef = useRef<MicVAD | null>(null);
+  const speechActiveRef = useRef(false);
   const capturePromiseRef = useRef<Promise<void> | null>(null);
   const captureGenerationRef = useRef(0);
   const outputContextRef = useRef<AudioContext | null>(null);
@@ -158,6 +161,75 @@ export function useAudioPipeline(
       inputProcessorRef.current = processor;
       inputAnalyserRef.current = analyser;
       onLog("info", "WebRTC echo cancellation enabled for microphone.");
+
+      const vadAssetPath = new URL(
+        `${import.meta.env.BASE_URL}vad-assets/`,
+        window.location.href,
+      ).href;
+      void MicVAD.new({
+        model: "v5",
+        startOnLoad: false,
+        audioContext: context,
+        getStream: async () => stream,
+        pauseStream: async () => undefined,
+        resumeStream: async () => stream,
+        baseAssetPath: vadAssetPath,
+        onnxWASMBasePath: vadAssetPath,
+        onSpeechRealStart: () => {
+          if (generation !== captureGenerationRef.current) return;
+          speechActiveRef.current = true;
+          void window.iris.sendCommand({
+            type: "speech_activity",
+            source: "silero",
+            active: true,
+          }).catch(() => undefined);
+        },
+        onSpeechEnd: () => {
+          if (generation !== captureGenerationRef.current) return;
+          speechActiveRef.current = false;
+          void window.iris.sendCommand({
+            type: "speech_activity",
+            source: "silero",
+            active: false,
+          }).catch(() => undefined);
+        },
+        onVADMisfire: () => {
+          if (!speechActiveRef.current) return;
+          speechActiveRef.current = false;
+          void window.iris.sendCommand({
+            type: "speech_activity",
+            source: "silero",
+            active: false,
+          }).catch(() => undefined);
+        },
+      })
+        .then(async (vad) => {
+          if (generation !== captureGenerationRef.current) {
+            await vad.destroy();
+            return;
+          }
+          speechVadRef.current = vad;
+          await vad.start();
+          onLog("info", "Local Silero speech detection enabled for standby.");
+          await window.iris
+            .sendCommand({ type: "speech_vad_status", ready: true })
+            .catch(() => undefined);
+        })
+        .catch((error) => {
+          void window.iris
+            .sendCommand({
+              type: "speech_vad_status",
+              ready: false,
+              error: error instanceof Error ? error.message : String(error),
+            })
+            .catch(() => undefined);
+          onLog(
+            "warn",
+            `Speech detection unavailable; standby will use Live transcripts: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        });
     })();
     capturePromiseRef.current = operation;
     try {
@@ -176,6 +248,19 @@ export function useAudioPipeline(
         .sendCommand({ type: "audio_stream_end" })
         .catch(() => undefined);
     }
+    const speechVad = speechVadRef.current;
+    speechVadRef.current = null;
+    if (speechActiveRef.current) {
+      speechActiveRef.current = false;
+      await window.iris
+        .sendCommand({
+          type: "speech_activity",
+          source: "silero",
+          active: false,
+        })
+        .catch(() => undefined);
+    }
+    await speechVad?.destroy().catch(() => undefined);
     if (inputProcessorRef.current instanceof AudioWorkletNode) {
       inputProcessorRef.current.port.onmessage = null;
     } else if (inputProcessorRef.current) {

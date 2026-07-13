@@ -140,6 +140,8 @@ let interactiveHermes = null;
 let lastVoiceActivityAt = Date.now();
 let autoSleepTimer = null;
 const liveTurnState = new LiveTurnState();
+let localSpeechActive = false;
+const localSpeechSources = new Set();
 let autoSlept = false; // last sleep was the idle timer, not the user
 let intentionalClose = false; // distinguishes stopLive() from server drops
 let reconnectAttempts = 0;
@@ -294,12 +296,19 @@ function setGoogleSearchActive(active, query = "") {
 
 // Emit the user's line on its own. Called as soon as Iris starts responding so
 // "You: …" shows up immediately, instead of waiting for the whole turn to end.
+function isInternalSystemTranscript(text) {
+  return /^\s*SYSTEM_EVENT_[A-Z_]+/i.test(String(text || ""));
+}
+
 function flushUserTranscript() {
   if (userTranscriptTimer) {
     clearTimeout(userTranscriptTimer);
     userTranscriptTimer = null;
   }
-  if (userTranscriptBuffer.trim()) {
+  if (
+    userTranscriptBuffer.trim() &&
+    !isInternalSystemTranscript(userTranscriptBuffer)
+  ) {
     emitEvent({ type: "transcript", speaker: "you", text: userTranscriptBuffer.trim() });
   }
   userTranscriptBuffer = "";
@@ -310,7 +319,10 @@ function flushModelTranscript() {
     clearTimeout(modelTranscriptTimer);
     modelTranscriptTimer = null;
   }
-  if (modelTranscriptBuffer.trim()) {
+  if (
+    modelTranscriptBuffer.trim() &&
+    !isInternalSystemTranscript(modelTranscriptBuffer)
+  ) {
     emitEvent({ type: "transcript", speaker: "gemini", text: modelTranscriptBuffer.trim() });
   }
   modelTranscriptBuffer = "";
@@ -992,7 +1004,7 @@ async function submitHermesTask({ task, urgency = "normal" }) {
   const cleanTask = String(task).trim();
   const protectedPaths = hermesProtectedPaths();
   const instructions =
-    "You are invoked from Iris voice. Work autonomously and report concise final results. " +
+    "You are invoked from Iris voice. Work autonomously and report final results. " +
     "You have a full interactive channel back to the user: when a meaningful decision, missing requirement, dangerous command approval, sudo password, or secret is genuinely required, use the appropriate native Hermes interaction instead of guessing or timing out. " +
     `Local filesystem safety: stay within the session's configured workspace and never recursively enumerate the home directory or its parents. Do not enter or search these protected locations unless the user explicitly named the exact folder as part of this task: ${protectedPaths.join(", ")}. The Downloads folder remains available when relevant. Never run a broad wildcard search from home. ` +
     "This session may contain your own earlier runs: when the task repeats or extends previous work, reuse those results, scripts, and resolved IDs instead of re-deriving everything; re-check only what could have changed.";
@@ -2340,7 +2352,6 @@ function announceHermesCompletion({ runId, task, status, output }) {
   const wakingFromSleep = !liveSession;
   const eventText = formatHermesCompletionEvent({
     runId,
-    task,
     status,
     output,
     userName: userDisplayName(),
@@ -2759,6 +2770,8 @@ async function startLive({ preserveLogicalStart = false } = {}) {
     endResponseWait();
     setGoogleSearchActive(false);
     clearTranscriptBuffers();
+    localSpeechActive = false;
+    localSpeechSources.clear();
     welcomeGreeted = false;
     userInputSeenSinceStart = false;
   }
@@ -2950,19 +2963,18 @@ async function startLive({ preserveLogicalStart = false } = {}) {
   }
 
   if (resuming) {
-    // The conversation never ended. Complete a short resume turn before
-    // startLive resolves, so renderer mic capture cannot race old context.
+    // The conversation never ended. Start a short, interruptible resume turn
+    // without delaying microphone capture or the user's first words.
     welcomeGreeted = true;
     if (welcomeFallbackTimer) {
       clearTimeout(welcomeFallbackTimer);
       welcomeFallbackTimer = null;
     }
     if (!hadAnnouncements && !preserveLogicalStart && liveSession) {
-      const greetingComplete = waitForResumeGreeting();
+      void waitForResumeGreeting();
       sendLiveText(
         `SYSTEM_EVENT_SESSION_RESUMED: The previous farewell is historical and already completed. Do not repeat it and do not call go_to_sleep. Say exactly one short welcome such as "I'm back, ${userDisplayName()}—what's next?" Then end your turn.`,
       );
-      await greetingComplete;
     }
   } else if (hadAnnouncements) {
     // Fresh session (the handle aged out during a long nap) but a Hermes
@@ -3237,6 +3249,8 @@ async function stopLive({ preserveProposal = false, forQuit = false } = {}) {
   endResponseWait();
   setGoogleSearchActive(false);
   flushTranscripts();
+  localSpeechActive = false;
+  localSpeechSources.clear();
   intentionalClose = true;
   liveConnectionId += 1;
   if (forQuit) closePreviewSession();
@@ -3387,6 +3401,7 @@ function startAutoSleepTimer() {
   bumpVoiceActivity();
   autoSleepTimer = setInterval(() => {
     if (!liveSession) return;
+    if (localSpeechActive) return;
     const decision = autoSleepDecision({
       idleMs: ms,
       lastActivityAt: lastVoiceActivityAt,
@@ -3475,6 +3490,32 @@ function sendCommand(command) {
   if (command?.type === "audio_stream_end") {
     if (!liveSession) return { ok: false, reason: "offline" };
     liveSession.sendRealtimeInput({ audioStreamEnd: true });
+    return { ok: true };
+  }
+  if (command?.type === "speech_activity") {
+    const source = String(command.source || "vad");
+    if (command.active === true) localSpeechSources.add(source);
+    else localSpeechSources.delete(source);
+    localSpeechActive = localSpeechSources.size > 0;
+    bumpVoiceActivity();
+    if (localSpeechActive) {
+      userInputSeenSinceStart = true;
+      if (welcomeFallbackTimer) {
+        clearTimeout(welcomeFallbackTimer);
+        welcomeFallbackTimer = null;
+      }
+    }
+    return { ok: true };
+  }
+  if (command?.type === "speech_vad_status") {
+    emitEvent({
+      type: "log",
+      level: command.ready === true ? "info" : "warn",
+      message:
+        command.ready === true
+          ? "Local Silero speech detection is ready."
+          : `Local speech detection failed: ${String(command.error || "unknown error")}`,
+    });
     return { ok: true };
   }
   return { ok: false, reason: "unsupported_command" };

@@ -28,7 +28,6 @@ const WAITING_APPROVAL_STATUSES = new Set([
 
 export function formatHermesCompletionEvent({
   runId,
-  task,
   status,
   output,
   userName,
@@ -39,20 +38,16 @@ export function formatHermesCompletionEvent({
     "SYSTEM_EVENT_HERMES_COMPLETE",
     `run_id: ${runId}`,
     `status: ${status}`,
-    `original_task: ${task}`,
     "instructions_to_iris:",
-    `- Proactively tell ${name} Hermes has returned.`,
-    "- If another conversation is in progress, politely pause it with a short bridge like: Quick update, Hermes is back with a result.",
-    "- Give a concise spoken summary in 1-3 sentences.",
-    "- Ask whether he wants to go through the details before continuing the current conversation.",
-    "- If (and ONLY if) this update interrupted a discussion that was actively in progress, return to it afterwards by naming the topic yourself (e.g. \"Anyway, back to <topic> — you were saying...\"). If there was no ongoing discussion, or it had naturally finished, just end after the summary. NEVER ask \"what were we discussing\" — if you cannot name the interrupted topic yourself, there is nothing to resume.",
-    "- Do not say you personally did the work; Hermes did.",
+    `- Tell ${name} Hermes has returned and summarize the authoritative result below in 1-3 sentences.`,
+    "- Preserve explicit counts, names, and quantities exactly; if unsure, omit them rather than infer.",
+    "- Ask whether to review the details. Do not claim you performed Hermes's work.",
     ...(wakingFromSleep
       ? [
-          `- You were WOKEN FROM SLEEP specifically to deliver this. Open with the update directly (no greeting), then ask if ${name} needs anything else. If they stay quiet you will simply doze off again — do not mention sleeping, tokens, or costs; keep it natural.`,
+          "- Iris was woken for this result. Deliver it directly without a greeting.",
         ]
       : []),
-    "hermes_result:",
+    "authoritative_hermes_result:",
     String(output || "(Hermes returned no text output.)"),
   ].join("\n");
 }

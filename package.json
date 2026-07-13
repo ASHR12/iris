@@ -23,6 +23,8 @@
     "verify": "npm run test && npm run check:electron && npm run build && npm run check:python",
     "test:live-search": "npm run build && node scripts/test-live-search.mjs",
     "test:live-sleep": "npm run build && node scripts/test-live-sleep-resume.mjs",
+    "test:live-speech": "npm run build && node scripts/test-live-speech-standby.mjs",
+    "test:hermes-wake": "npm run build && node scripts/test-live-hermes-wake.mjs",
     "soak": "node scripts/soak-runtime.mjs",
     "preview": "vite preview",
     "start": "npm run build && node scripts/run-electron.mjs --prod",
@@ -45,6 +47,7 @@
     "@fontsource/jetbrains-mono": "^5.2.8",
     "@google/genai": "^2.10.0",
     "@mediapipe/tasks-vision": "^0.10.35",
+    "@ricky0123/vad-web": "^0.0.30",
     "d3-force": "^3.0.0",
     "force-graph": "^1.51.4",
     "lucide-react": "1.21.0",
@@ -68,6 +71,7 @@
     "playwright-core": "^1.61.1",
     "typescript": "6.0.3",
     "vite": "8.1.0",
+    "vite-plugin-static-copy": "^4.1.1",
     "wait-on": "9.0.10"
   },
   "build": {

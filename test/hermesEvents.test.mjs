@@ -68,6 +68,12 @@ test("completion events include the entire Hermes result", () => {
     output,
     userName: "Ashutosh",
   });
-  assert.equal(event.slice(event.indexOf("hermes_result:") + "hermes_result:\n".length), output);
+  assert.equal(
+    event.slice(
+      event.indexOf("authoritative_hermes_result:") +
+        "authoritative_hermes_result:\n".length,
+    ),
+    output,
+  );
   assert.match(event, /5000\. Personal skill and complete description$/);
 });

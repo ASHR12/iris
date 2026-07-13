@@ -59,6 +59,7 @@ When Hermes finishes a background task, Iris **proactively speaks up**: *"Quick 
 - **Realtime voice** via Gemini Live (16 kHz in / 24 kHz out, WebRTC echo cancellation — works fine on laptop speakers)
 - **"Hey Iris" wake word** — local, on-device ONNX inference; nothing leaves your machine while asleep
 - **Barge-in** — interrupt Iris mid-sentence and it yields immediately
+- **Speech-aware standby** — local Silero VAD protects long utterances from the idle timer without using room-volume thresholds; Gemini retains its own automatic VAD for conversation turns
 - **Voice-driven UI** — "open the latest result", "show the steps", "open the failed one", "close it" — fuzzy-matched against what's on screen
 - **Shared personal context** — a bounded snapshot of Hermes `USER.md` and `MEMORY.md` keeps ordinary conversation coherent; brain notes and deeper memory details remain available through sourced retrieval tools
 
@@ -359,6 +360,8 @@ npm test         # gate, Hermes contract, memory, routing, persistence and secur
 npm run verify   # tests + Electron checks + build + Python reference compile
 npm run test:live-search # real Gemini Search must survive aggressive standby
 npm run test:live-sleep  # explicit sleep must resume cleanly into a new turn
+npm run test:live-speech # active speech must block standby until speech ends
+npm run test:hermes-wake # measure Hermes completion wake and announcement
 npm run soak     # 8-hour Electron RSS/heap and wake/HUD lifecycle sampler
 ```
 

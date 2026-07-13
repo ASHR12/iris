@@ -62,6 +62,7 @@ try {
   const wakeStatus = await page.evaluate(() =>
     window.iris.startSidecar({ mode: "none" }),
   );
+  const wakeConnectMs = Date.now() - wokeAt;
   if (!wakeStatus.running) throw new Error("Iris did not wake.");
   try {
     await page.waitForFunction(
@@ -120,7 +121,7 @@ try {
       .map(({ event }) => ({ speaker: event.speaker, text: event.text })),
     wokeAt,
   );
-  console.log(JSON.stringify({ wakeStatus, finalStatus, transcripts }));
+  console.log(JSON.stringify({ wakeStatus, wakeConnectMs, finalStatus, transcripts }));
   await page.evaluate(() => window.iris.stopSidecar());
 } finally {
   await app.close();
