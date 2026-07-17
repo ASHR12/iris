@@ -46,6 +46,14 @@ try {
     ),
   );
   await page.waitForFunction(
+    () =>
+      document
+        .querySelector(".wake-reason-pill")
+        ?.textContent?.includes("HERMES RESULT"),
+    undefined,
+    { timeout: 10000 },
+  );
+  await page.waitForFunction(
     (at) =>
       window.__hermesWakeTest.events.some(
         ({ at: eventAt, event }) =>
@@ -108,6 +116,12 @@ try {
   }));
   if (ui.commsText.includes("SYSTEM_EVENT_HERMES_COMPLETE")) {
     throw new Error("Internal Hermes completion payload leaked into Comms.");
+  }
+  const persistentIndicator = await page
+    .locator(".wake-reason-pill")
+    .textContent();
+  if (!persistentIndicator?.includes("WOKE · HERMES RESULT")) {
+    throw new Error("Hermes wake source did not remain visible.");
   }
   console.log(JSON.stringify({ ...result, cardPopulated: true }));
   await page.evaluate(() => window.iris.stopSidecar());

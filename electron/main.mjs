@@ -789,7 +789,10 @@ function announceHermesInteraction(runId, task, interaction) {
     announcementLedger.sendNow(eventText, sendLiveText);
   } else {
     announcementLedger.enqueue(eventText);
-    requestAutoWake(`Hermes needs input for "${String(task || "").slice(0, 80)}".`);
+    requestAutoWake(
+      `Hermes needs input for "${String(task || "").slice(0, 80)}".`,
+      "hermes_input",
+    );
   }
 }
 
@@ -2151,7 +2154,10 @@ function announceHermesApproval(runId, task, approval) {
     announcementLedger.sendNow(eventText, sendLiveText);
   } else {
     announcementLedger.enqueue(eventText);
-    requestAutoWake(`Hermes needs approval for "${String(task || "").slice(0, 80)}".`);
+    requestAutoWake(
+      `Hermes needs approval for "${String(task || "").slice(0, 80)}".`,
+      "hermes_approval",
+    );
   }
 }
 
@@ -2373,7 +2379,10 @@ function announceHermesCompletion({ runId, task, status, output }) {
     announcementLedger.sendNow(eventText, sendLiveText);
   } else {
     announcementLedger.enqueue(eventText);
-    requestAutoWake(`Hermes finished "${String(task).slice(0, 80)}" while Iris was asleep.`);
+    requestAutoWake(
+      `Hermes finished "${String(task).slice(0, 80)}" while Iris was asleep.`,
+      "hermes_result",
+    );
   }
 }
 
@@ -3438,7 +3447,7 @@ async function autoVoiceSleep(idleForMs) {
 // ===== Auto-wake (Hermes completions while asleep) =====
 let autoWakePending = false;
 
-function requestAutoWake(reason) {
+function requestAutoWake(reason, source = "hermes") {
   if (shuttingDown || liveSession || autoWakePending || !autoWakeOnHermes()) return;
   autoWakePending = true;
   emitEvent({ type: "log", level: "info", message: `Auto-wake: ${reason}` });
@@ -3447,7 +3456,7 @@ function requestAutoWake(reason) {
   // Normal path: the renderer runs its full wake flow (mic capture + live
   // session). Safety net: if it didn't come up, start the session directly —
   // the announcement must not be lost.
-  emitToRenderer("iris:wake", {});
+  emitToRenderer("iris:wake", { source, detail: reason });
   if (autoWakeTimer) clearTimeout(autoWakeTimer);
   autoWakeTimer = setTimeout(() => {
     autoWakeTimer = null;
@@ -3688,7 +3697,11 @@ function updateTrayMenu() {
     Menu.buildFromTemplate([
       {
         label: liveStatus.running ? "Sleep Iris" : "Wake Iris",
-        click: () => emitToRenderer(liveStatus.running ? "iris:sleep" : "iris:wake", {}),
+        click: () =>
+          emitToRenderer(
+            liveStatus.running ? "iris:sleep" : "iris:wake",
+            liveStatus.running ? {} : { source: "tray" },
+          ),
       },
       { label: uiMode === "hud" ? "Exit Glass HUD" : "Enter Glass HUD", click: () => toggleHud() },
       { type: "separator" },
@@ -3926,7 +3939,9 @@ app.whenReady().then(() => {
   // Wake/sleep must work from ANY app — critical in HUD mode, where another
   // window has keyboard focus and the renderer's own keydown handler (its
   // fallback when registration fails) never fires.
-  const wakeRegistered = globalShortcut.register("Alt+W", () => emitToRenderer("iris:wake", {}));
+  const wakeRegistered = globalShortcut.register("Alt+W", () =>
+    emitToRenderer("iris:wake", { source: "hotkey" }),
+  );
   const sleepRegistered = globalShortcut.register("Alt+S", () => emitToRenderer("iris:sleep", {}));
   if (!wakeRegistered || !sleepRegistered) {
     emitEvent({

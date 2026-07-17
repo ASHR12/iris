@@ -63,6 +63,7 @@ export default function App() {
   const [wakeWordEnabled, setWakeWordEnabled] = useState(false);
   const [wakeSensitivity, setWakeSensitivity] = useState("balanced");
   const [wakeStarting, setWakeStarting] = useState(false);
+  const [wakeReason, setWakeReason] = useState<string | null>(null);
   const startPromiseRef = useRef<Promise<void> | null>(null);
   // True when the idle timer (not the user) put Iris to sleep.
   const [autoSlept, setAutoSlept] = useState(false);
@@ -119,6 +120,22 @@ export default function App() {
     setLogs((current) =>
       [{ id: crypto.randomUUID(), level, message, timestamp }, ...current].slice(0, MAX_LOGS),
     );
+  }
+
+  function showWakeReason(source = "manual", detail = "") {
+    const label =
+      {
+        wake_word: "HEY IRIS",
+        hermes_result: "HERMES RESULT",
+        hermes_input: "HERMES INPUT",
+        hermes_approval: "HERMES APPROVAL",
+        hotkey: "⌥W",
+        tray: "TRAY",
+        neural_map: "NEURAL MAP",
+        manual: "MANUAL",
+      }[source] || source.replace(/[_-]+/g, " ").toUpperCase();
+    setWakeReason(label);
+    pushLog("info", `Wake source: ${label}${detail ? ` — ${detail}` : ""}`);
   }
 
   const audio = useAudioPipeline(hasBridge, pushLog, fullConfig?.micDevice || "");
@@ -327,8 +344,10 @@ export default function App() {
         modeTimerRef.current = window.setTimeout(() => setModeTransition(null), 600);
       }
     });
-    const offWake = window.iris.onWakeRequest(() => {
-      if (!sidecarRunning) start();
+    const offWake = window.iris.onWakeRequest((request) => {
+      if (!sidecarRunning) {
+        start(request.source || "manual", request.detail || "");
+      }
     });
     const offSleep = window.iris.onSleepRequest(() => {
       if (sidecarRunning) stop();
@@ -412,7 +431,7 @@ export default function App() {
   useWakeWord(
     hasBridge && wakeWordEnabled && !sidecarRunning && !wakeStarting,
     () => {
-      if (!sidecarRunning) start();
+      if (!sidecarRunning) start("wake_word");
     },
     (message) => pushLog("error", `Wake word: ${message}`),
     wakeThreshold,
@@ -453,7 +472,7 @@ export default function App() {
       // event.key into a special character (⌥W -> "∑").
       if (event.altKey && event.code === "KeyW" && !sidecarRunning) {
         event.preventDefault();
-        start();
+        start("hotkey");
         return;
       }
       if (event.altKey && event.code === "KeyS" && sidecarRunning) {
@@ -829,7 +848,7 @@ export default function App() {
     }
   }
 
-  async function start() {
+  async function start(wakeSource = "manual", wakeDetail = "") {
     if (startPromiseRef.current) return startPromiseRef.current;
     const operation = (async () => {
       if (!hasBridge) {
@@ -844,6 +863,7 @@ export default function App() {
         setSidecarRunning(true);
         setSidecarPid(status.pid);
         sessionStartRef.current = Date.now();
+        showWakeReason(wakeSource, wakeDetail);
         await audio.startCapture();
         setHandControl(true);
       } catch (error) {
@@ -1125,7 +1145,7 @@ export default function App() {
     const wasOpen = prevBrainOpenRef.current;
     prevBrainOpenRef.current = brainOpen;
     if (!brainOpen || wasOpen) return;
-    if (!sidecarRunning) void start(); // start() also enables the camera
+    if (!sidecarRunning) void start("neural_map"); // start() also enables the camera
     else if (!handControl) setHandControl(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [brainOpen]);
@@ -1583,7 +1603,7 @@ export default function App() {
             setSoundsEnabled(config.sounds);
           }}
           onStart={() => {
-            if (!sidecarRunning) start();
+            if (!sidecarRunning) start("manual");
           }}
           onRunWizard={() => setSetup({ mode: "onboarding" })}
         />
@@ -1603,6 +1623,18 @@ export default function App() {
             void resolveHermesInteraction(pendingInteractionTask, value, choice)
           }
         />
+      ) : null}
+
+      {wakeReason ? (
+        <div
+          className={`wake-reason-pill ${sidecarRunning ? "active" : "asleep"}`}
+          role="status"
+        >
+          <i />
+          <span>
+            {sidecarRunning ? "WOKE" : "LAST WAKE"} · {wakeReason}
+          </span>
+        </div>
       ) : null}
 
       <HandoffLayer pulses={pulses} onPulseEnd={removePulse} />

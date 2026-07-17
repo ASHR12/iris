@@ -2,6 +2,11 @@
 
 type SidecarMode = "none" | "camera" | "screen";
 
+type IrisWakeRequest = {
+  source?: string;
+  detail?: string;
+};
+
 type SidecarEvent = {
   type: string;
   timestamp?: number;
@@ -218,7 +223,7 @@ type IrisApi = {
   toggleHud: () => Promise<{ mode: "deck" | "hud" }>;
   setHudInteractive: (on: boolean) => void;
   onHudMode: (callback: (payload: { mode: "deck" | "hud" }) => void) => () => void;
-  onWakeRequest: (callback: () => void) => () => void;
+  onWakeRequest: (callback: (request: IrisWakeRequest) => void) => () => void;
   onSleepRequest: (callback: () => void) => () => void;
   onAutoSleep: (callback: () => void) => () => void;
   sendCommand: (

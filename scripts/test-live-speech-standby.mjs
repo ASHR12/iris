@@ -44,6 +44,12 @@ try {
     });
   });
   await page.keyboard.press("Alt+W");
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".wake-reason-pill")?.textContent?.includes("⌥W"),
+    undefined,
+    { timeout: 10000 },
+  );
   try {
     await page.waitForFunction(
       () =>
@@ -82,6 +88,12 @@ try {
   if (!duringSpeech.running) {
     throw new Error("Iris entered standby while local speech was active.");
   }
+  const activeIndicator = await page
+    .locator(".wake-reason-pill")
+    .textContent();
+  if (!activeIndicator?.includes("WOKE · ⌥W")) {
+    throw new Error("Wake-source indicator did not remain visible while awake.");
+  }
 
   await page.evaluate(() =>
     window.iris.sendCommand({
@@ -94,6 +106,12 @@ try {
   const afterSpeech = await page.evaluate(() => window.iris.getSidecarStatus());
   if (afterSpeech.running) {
     throw new Error("Iris did not enter standby after speech ended.");
+  }
+  const sleepingIndicator = await page
+    .locator(".wake-reason-pill")
+    .textContent();
+  if (!sleepingIndicator?.includes("LAST WAKE · ⌥W")) {
+    throw new Error("Last wake source was not retained during standby.");
   }
   console.log(JSON.stringify({ duringSpeech, afterSpeech }));
 } finally {

@@ -36,7 +36,7 @@ contextBridge.exposeInMainWorld("iris", {
     return () => ipcRenderer.removeListener("hud:mode", handler);
   },
   onWakeRequest: (callback) => {
-    const handler = () => callback();
+    const handler = (_event, payload) => callback(payload || {});
     ipcRenderer.on("iris:wake", handler);
     return () => ipcRenderer.removeListener("iris:wake", handler);
   },

@@ -179,6 +179,54 @@
 }
 
 /* --- Hand control reticles --- */
+.wake-reason-pill {
+  position: fixed;
+  left: 50%;
+  bottom: 52px;
+  z-index: 90;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 11px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  pointer-events: none;
+  color: var(--cyan-bright);
+  background: rgba(4, 12, 24, 0.86);
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--cyan-rgb), 0.28),
+    0 0 22px rgba(var(--cyan-rgb), 0.15);
+  backdrop-filter: blur(14px);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  animation: wake-reason-in 0.22s ease both;
+}
+
+.wake-reason-pill.asleep {
+  color: var(--muted);
+  background: rgba(4, 12, 24, 0.7);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.16);
+}
+
+.wake-reason-pill.asleep i {
+  background: var(--muted);
+  box-shadow: 0 0 7px rgba(148, 163, 184, 0.45);
+}
+
+.wake-reason-pill i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--cyan);
+  box-shadow: 0 0 9px var(--cyan);
+}
+
+@keyframes wake-reason-in {
+  from { opacity: 0; transform: translate(-50%, 5px) scale(0.96); }
+  to { opacity: 1; transform: translate(-50%, 0) scale(1); }
+}
+
 .hand-reticle {
   position: fixed;
   top: 0;
