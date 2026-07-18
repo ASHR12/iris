@@ -71,7 +71,11 @@ function getSessions(): Promise<WakeSessions> {
 
 export function useWakeWord(
   enabled: boolean,
-  onWake: () => void,
+  onWake: (diagnostic: {
+    score: number;
+    floor: number;
+    threshold: number;
+  }) => void,
   onError?: (message: string) => void,
   threshold: number = DEFAULT_THRESHOLD,
   micDeviceId = "",
@@ -168,7 +172,7 @@ export function useWakeWord(
         if (score >= floor && now - lastWakeAt > COOLDOWN_MS) {
           lastWakeAt = now;
           console.log(`[wakeword] ✅ WAKE — "Hey Iris" detected (score ${score.toFixed(3)})`);
-          onWakeRef.current();
+          onWakeRef.current({ score, floor, threshold });
         }
 
         // Update the background estimate AFTER the decision, clamped at the

@@ -63,7 +63,10 @@ export default function App() {
   const [wakeWordEnabled, setWakeWordEnabled] = useState(false);
   const [wakeSensitivity, setWakeSensitivity] = useState("balanced");
   const [wakeStarting, setWakeStarting] = useState(false);
-  const [wakeReason, setWakeReason] = useState<string | null>(null);
+  const [wakeReason, setWakeReason] = useState<{
+    label: string;
+    detail?: string;
+  } | null>(null);
   const startPromiseRef = useRef<Promise<void> | null>(null);
   // True when the idle timer (not the user) put Iris to sleep.
   const [autoSlept, setAutoSlept] = useState(false);
@@ -134,7 +137,10 @@ export default function App() {
         neural_map: "NEURAL MAP",
         manual: "MANUAL",
       }[source] || source.replace(/[_-]+/g, " ").toUpperCase();
-    setWakeReason(label);
+    setWakeReason({
+      label,
+      detail: source === "wake_word" ? detail : undefined,
+    });
     pushLog("info", `Wake source: ${label}${detail ? ` — ${detail}` : ""}`);
   }
 
@@ -427,11 +433,21 @@ export default function App() {
   // Sensitivity -> score threshold: relaxed wakes easily (quiet rooms / soft
   // voices), strict needs a loud clear phrase. The adaptive noise floor in
   // the hook handles noisy rooms automatically at every level.
-  const wakeThreshold = wakeSensitivity === "relaxed" ? 0.08 : wakeSensitivity === "strict" ? 0.2 : 0.12;
+  const wakeThreshold =
+    wakeSensitivity === "relaxed"
+      ? 0.2
+      : wakeSensitivity === "strict"
+        ? 0.4
+        : 0.3;
   useWakeWord(
     hasBridge && wakeWordEnabled && !sidecarRunning && !wakeStarting,
-    () => {
-      if (!sidecarRunning) start("wake_word");
+    ({ score, floor }) => {
+      if (!sidecarRunning) {
+        start(
+          "wake_word",
+          `CONF ${(score * 100).toFixed(1)}% · BAR ${(floor * 100).toFixed(1)}%`,
+        );
+      }
     },
     (message) => pushLog("error", `Wake word: ${message}`),
     wakeThreshold,
@@ -1632,7 +1648,8 @@ export default function App() {
         >
           <i />
           <span>
-            {sidecarRunning ? "WOKE" : "LAST WAKE"} · {wakeReason}
+            {sidecarRunning ? "WOKE" : "LAST WAKE"} · {wakeReason.label}
+            {wakeReason.detail ? ` · ${wakeReason.detail}` : ""}
           </span>
         </div>
       ) : null}

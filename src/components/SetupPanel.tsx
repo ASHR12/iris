@@ -472,9 +472,9 @@ export default function SetupPanel({
           ariaLabel="Wake word sensitivity"
           value={draft.IRIS_WAKE_SENSITIVITY}
           options={[
-            { value: "balanced", label: "Balanced (recommended)" },
-            { value: "relaxed", label: "Relaxed — wakes easily (quiet rooms)" },
-            { value: "strict", label: "Strict — needs a loud, clear phrase (noisy rooms)" },
+            { value: "balanced", label: "Balanced (30%) — recommended" },
+            { value: "relaxed", label: "Relaxed (20%) — wakes easily" },
+            { value: "strict", label: "Strict (40%) — needs a loud, clear phrase" },
           ]}
           onChange={(value) => set("IRIS_WAKE_SENSITIVITY", value)}
         />
