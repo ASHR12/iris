@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { MicVAD } from "@ricky0123/vad-web";
 import * as ort from "onnxruntime-web";
 
 // Local "Hey Iris" wake word. Ports the livekit-wakeword / openWakeWord inference
@@ -27,6 +28,7 @@ const NOISE_ALPHA = 0.05; // ~4s memory at 5 predictions/sec
 const NOISE_MULTIPLIER = 3.5; // spike must stand this far above the background
 const FLOOR_CAP_FACTOR = 2.2; // the bar can never exceed threshold * this
 const COOLDOWN_MS = 2500;
+const SPEECH_CONFIRM_WINDOW_MS = 1500;
 
 let ortConfigured = false;
 function configureOrt() {
@@ -75,6 +77,7 @@ export function useWakeWord(
     score: number;
     floor: number;
     threshold: number;
+    speechConfirmed: boolean;
   }) => void,
   onError?: (message: string) => void,
   threshold: number = DEFAULT_THRESHOLD,
@@ -93,6 +96,7 @@ export function useWakeWord(
     let audioCtx: AudioContext | null = null;
     let source: MediaStreamAudioSourceNode | null = null;
     let processor: AudioWorkletNode | ScriptProcessorNode | null = null;
+    let speechVad: MicVAD | null = null;
     let timer: number | null = null;
 
     let mel: ort.InferenceSession | null = null;
@@ -106,6 +110,35 @@ export function useWakeWord(
     let peakScore = 0;
     let lastPeakLogAt = 0;
     let noiseEma = 0;
+    let speechActive = false;
+    let lastSpeechConfirmedAt = 0;
+    let pendingWake:
+      | { score: number; floor: number; threshold: number; at: number }
+      | null = null;
+
+    function fireWake(candidate: {
+      score: number;
+      floor: number;
+      threshold: number;
+    }) {
+      const now = performance.now();
+      if (now - lastWakeAt <= COOLDOWN_MS) return;
+      lastWakeAt = now;
+      pendingWake = null;
+      console.log(
+        `[wakeword] ✅ WAKE — phrase ${candidate.score.toFixed(3)}, speech confirmed`,
+      );
+      onWakeRef.current({ ...candidate, speechConfirmed: true });
+    }
+
+    function confirmPendingWake() {
+      const now = performance.now();
+      if (pendingWake && now - pendingWake.at <= SPEECH_CONFIRM_WINDOW_MS) {
+        fireWake(pendingWake);
+      } else if (pendingWake) {
+        pendingWake = null;
+      }
+    }
 
     async function predict() {
       if (busy || cancelled || !mel || !emb || !cls || filled < WINDOW_SAMPLES) return;
@@ -166,13 +199,21 @@ export function useWakeWord(
           console.log(`[wakeword] near miss: ${score.toFixed(3)} (bar ${floor.toFixed(3)})`);
         }
 
-        // Fire INSTANTLY on a single frame over the bar — the synthetic-data
-        // model spikes briefly for real voices, so no multi-frame demands.
-        // The cooldown prevents rapid double-fires from the same utterance.
+        // The phrase model can spike on non-speech noise. Wake only when the
+        // independent Silero model confirms human speech in the same window.
         if (score >= floor && now - lastWakeAt > COOLDOWN_MS) {
-          lastWakeAt = now;
-          console.log(`[wakeword] ✅ WAKE — "Hey Iris" detected (score ${score.toFixed(3)})`);
-          onWakeRef.current({ score, floor, threshold });
+          const candidate = { score, floor, threshold, at: now };
+          const recentlyConfirmed =
+            speechActive ||
+            now - lastSpeechConfirmedAt <= SPEECH_CONFIRM_WINDOW_MS;
+          if (recentlyConfirmed) {
+            fireWake(candidate);
+          } else {
+            pendingWake = candidate;
+            console.log(
+              `[wakeword] phrase candidate ${score.toFixed(3)} awaiting speech confirmation`,
+            );
+          }
         }
 
         // Update the background estimate AFTER the decision, clamped at the
@@ -260,9 +301,42 @@ export function useWakeWord(
 
         source.connect(processor);
         processor.connect(audioCtx.destination);
+        const vadAssetPath = new URL(
+          `${import.meta.env.BASE_URL}vad-assets/`,
+          window.location.href,
+        ).href;
+        speechVad = await MicVAD.new({
+          model: "v5",
+          startOnLoad: false,
+          audioContext: audioCtx,
+          getStream: async () => stream!,
+          pauseStream: async () => undefined,
+          resumeStream: async () => stream!,
+          baseAssetPath: vadAssetPath,
+          onnxWASMBasePath: vadAssetPath,
+          onSpeechRealStart: () => {
+            if (cancelled) return;
+            speechActive = true;
+            lastSpeechConfirmedAt = performance.now();
+            confirmPendingWake();
+          },
+          onSpeechEnd: () => {
+            speechActive = false;
+            lastSpeechConfirmedAt = performance.now();
+          },
+          onVADMisfire: () => {
+            speechActive = false;
+          },
+        });
+        await speechVad.start();
+        if (cancelled) {
+          await speechVad.destroy();
+          speechVad = null;
+          return;
+        }
         timer = window.setInterval(predict, PREDICT_INTERVAL_MS);
         console.log(
-          `[wakeword] 🎙️ listening for "Hey Iris" @ ${audioCtx.sampleRate}Hz — say it to test (watch scores below)`,
+          `[wakeword] 🎙️ phrase + speech confirmation ready @ ${audioCtx.sampleRate}Hz`,
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -285,6 +359,9 @@ export function useWakeWord(
       } catch {
         // best-effort
       }
+      const vad = speechVad;
+      speechVad = null;
+      void vad?.destroy().catch(() => undefined);
       stream?.getTracks().forEach((track) => track.stop());
       audioCtx?.close().catch(() => undefined);
       // NOTE: ONNX sessions are cached module-level and intentionally NOT released

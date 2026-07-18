@@ -481,7 +481,7 @@ export default function SetupPanel({
         <small className="setup-note">
           If Iris misses your voice, choose Relaxed; if she still wakes too easily, choose Strict. Every level wakes
           instantly on a clear phrase and automatically demands a stronger score while the room has been noisy (TV,
-          music, chatter) — the bar drops back within seconds of quiet.
+          music, chatter). A separate on-device speech check must also confirm a human voice.
         </small>
       </label>
       <label className="setup-field">

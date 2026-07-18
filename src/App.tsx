@@ -441,11 +441,11 @@ export default function App() {
         : 0.3;
   useWakeWord(
     hasBridge && wakeWordEnabled && !sidecarRunning && !wakeStarting,
-    ({ score, floor }) => {
+    ({ score, floor, speechConfirmed }) => {
       if (!sidecarRunning) {
         start(
           "wake_word",
-          `CONF ${(score * 100).toFixed(1)}% · BAR ${(floor * 100).toFixed(1)}%`,
+          `CONF ${(score * 100).toFixed(1)}% · BAR ${(floor * 100).toFixed(1)}% · VOICE ${speechConfirmed ? "YES" : "NO"}`,
         );
       }
     },
