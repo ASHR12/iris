@@ -62,12 +62,17 @@ export default function App() {
   const [setup, setSetup] = useState<{ mode: "onboarding" | "settings" } | null>(null);
   const [wakeWordEnabled, setWakeWordEnabled] = useState(false);
   const [wakeSensitivity, setWakeSensitivity] = useState("balanced");
+  const [showWakeDiagnostics, setShowWakeDiagnostics] = useState(false);
+  const showWakeDiagnosticsRef = useRef(false);
+  showWakeDiagnosticsRef.current = showWakeDiagnostics;
+  const [wakeDiagnosticVisible, setWakeDiagnosticVisible] = useState(false);
   const [wakeStarting, setWakeStarting] = useState(false);
   const [wakeReason, setWakeReason] = useState<{
     label: string;
     detail?: string;
   } | null>(null);
   const startPromiseRef = useRef<Promise<void> | null>(null);
+  const wakeDiagnosticTimerRef = useRef<number | null>(null);
   // True when the idle timer (not the user) put Iris to sleep.
   const [autoSlept, setAutoSlept] = useState(false);
   const [hermesSession, setHermesSession] = useState<string | null>(null);
@@ -142,7 +147,28 @@ export default function App() {
       detail: source === "wake_word" ? detail : undefined,
     });
     pushLog("info", `Wake source: ${label}${detail ? ` — ${detail}` : ""}`);
+    if (!showWakeDiagnosticsRef.current) {
+      setWakeDiagnosticVisible(false);
+      return;
+    }
+    setWakeDiagnosticVisible(true);
+    if (wakeDiagnosticTimerRef.current) {
+      window.clearTimeout(wakeDiagnosticTimerRef.current);
+    }
+    wakeDiagnosticTimerRef.current = window.setTimeout(() => {
+      wakeDiagnosticTimerRef.current = null;
+      setWakeDiagnosticVisible(false);
+    }, 6000);
   }
+
+  useEffect(
+    () => () => {
+      if (wakeDiagnosticTimerRef.current) {
+        window.clearTimeout(wakeDiagnosticTimerRef.current);
+      }
+    },
+    [],
+  );
 
   const audio = useAudioPipeline(hasBridge, pushLog, fullConfig?.micDevice || "");
   const { pulses, removePulse, orbFlash, clearOrbFlash, acceptedIds } = useHandoffFx(
@@ -320,6 +346,7 @@ export default function App() {
       setFullConfig(config);
       setWakeWordEnabled(config.wakeWord);
       setWakeSensitivity(config.wakeSensitivity || "balanced");
+      setShowWakeDiagnostics(config.showWakeDiagnostics);
       if (!config.configured) setSetup({ mode: "onboarding" });
     });
   }, [hasBridge]);
@@ -1616,12 +1643,19 @@ export default function App() {
             setTestDataEnabled(config.loadTestData);
             setWakeWordEnabled(config.wakeWord);
             setWakeSensitivity(config.wakeSensitivity || "balanced");
+            setShowWakeDiagnostics(config.showWakeDiagnostics);
+            if (!config.showWakeDiagnostics) setWakeDiagnosticVisible(false);
             setSoundsEnabled(config.sounds);
           }}
           onStart={() => {
             if (!sidecarRunning) start("manual");
           }}
           onRunWizard={() => setSetup({ mode: "onboarding" })}
+          lastWakeDiagnostic={
+            wakeReason
+              ? `${wakeReason.label}${wakeReason.detail ? ` · ${wakeReason.detail}` : ""}`
+              : null
+          }
         />
       ) : null}
 
@@ -1641,7 +1675,7 @@ export default function App() {
         />
       ) : null}
 
-      {wakeReason ? (
+      {wakeReason && wakeDiagnosticVisible ? (
         <div
           className={`wake-reason-pill ${sidecarRunning ? "active" : "asleep"}`}
           role="status"

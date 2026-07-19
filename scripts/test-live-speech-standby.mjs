@@ -11,6 +11,7 @@ const env = {
   IRIS_HERMES_AUTOSTART: "false",
   IRIS_AUTO_WAKE_ON_HERMES: "false",
   IRIS_AUTO_SLEEP_SECONDS: "15",
+  IRIS_SHOW_WAKE_DIAGNOSTICS: "true",
   IRIS_TEST_HOOKS: "1",
   IRIS_TEST_SKIP_WELCOME: "1",
 };
@@ -43,7 +44,16 @@ try {
       window.__speechStandbyTest.events.push(event);
     });
   });
-  await page.keyboard.press("Alt+W");
+  await page.waitForTimeout(1000);
+  const config = await page.evaluate(() => window.iris.getConfig());
+  if (!config.showWakeDiagnostics) {
+    throw new Error("Wake diagnostics test configuration was not enabled.");
+  }
+  await app.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows()[0].webContents.send("iris:wake", {
+      source: "hotkey",
+    });
+  });
   await page.waitForFunction(
     () =>
       document.querySelector(".wake-reason-pill")?.textContent?.includes("⌥W"),
@@ -88,11 +98,8 @@ try {
   if (!duringSpeech.running) {
     throw new Error("Iris entered standby while local speech was active.");
   }
-  const activeIndicator = await page
-    .locator(".wake-reason-pill")
-    .textContent();
-  if (!activeIndicator?.includes("WOKE · ⌥W")) {
-    throw new Error("Wake-source indicator did not remain visible while awake.");
+  if ((await page.locator(".wake-reason-pill").count()) !== 0) {
+    throw new Error("Wake diagnostics overlay did not auto-hide.");
   }
 
   await page.evaluate(() =>
@@ -107,11 +114,8 @@ try {
   if (afterSpeech.running) {
     throw new Error("Iris did not enter standby after speech ended.");
   }
-  const sleepingIndicator = await page
-    .locator(".wake-reason-pill")
-    .textContent();
-  if (!sleepingIndicator?.includes("LAST WAKE · ⌥W")) {
-    throw new Error("Last wake source was not retained during standby.");
+  if ((await page.locator(".wake-reason-pill").count()) !== 0) {
+    throw new Error("Wake diagnostics overlay reappeared during standby.");
   }
   console.log(JSON.stringify({ duringSpeech, afterSpeech }));
 } finally {

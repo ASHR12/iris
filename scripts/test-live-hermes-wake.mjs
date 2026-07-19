@@ -11,6 +11,7 @@ const env = {
   IRIS_HERMES_AUTOSTART: "false",
   IRIS_AUTO_WAKE_ON_HERMES: "true",
   IRIS_AUTO_SLEEP_SECONDS: "120",
+  IRIS_SHOW_WAKE_DIAGNOSTICS: "true",
   IRIS_TEST_HOOKS: "1",
   IRIS_TEST_SKIP_WELCOME: "1",
 };
@@ -117,12 +118,10 @@ try {
   if (ui.commsText.includes("SYSTEM_EVENT_HERMES_COMPLETE")) {
     throw new Error("Internal Hermes completion payload leaked into Comms.");
   }
-  const persistentIndicator = await page
-    .locator(".wake-reason-pill")
-    .textContent();
-  if (!persistentIndicator?.includes("WOKE · HERMES RESULT")) {
-    throw new Error("Hermes wake source did not remain visible.");
-  }
+  await page.waitForSelector(".wake-reason-pill", {
+    state: "detached",
+    timeout: 8000,
+  });
   console.log(JSON.stringify({ ...result, cardPopulated: true }));
   await page.evaluate(() => window.iris.stopSidecar());
 } finally {

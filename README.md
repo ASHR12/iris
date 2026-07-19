@@ -297,6 +297,8 @@ IRIS_HERMES_TRANSPORT=interactive                 # full TUI Gateway protocol; r
 IRIS_HERMES_SESSION=iris-voice                    # pinned Hermes chat (or use the UI switcher)
 IRIS_HERMES_MEMORY_KEY=iris:desktop:your-name     # stable long-term memory scope (auto-derived if omitted)
 IRIS_WAKE_WORD=true                               # "Hey Iris" on-device wake word
+IRIS_WAKE_SENSITIVITY=balanced                    # relaxed 20% / balanced 30% / strict 40%
+IRIS_SHOW_WAKE_DIAGNOSTICS=false                  # optional 6-second wake reason/confidence overlay
 IRIS_HUD_HOTKEY=Alt+H                             # global Glass HUD hotkey
 IRIS_AUTO_SLEEP_SECONDS=30                        # standby after N s of silence (0 = never) — saves ~80% of Live API cost
 IRIS_AUTO_WAKE_ON_HERMES=true                     # Hermes results wake Iris from standby to announce themselves

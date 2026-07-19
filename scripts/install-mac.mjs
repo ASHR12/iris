@@ -37,9 +37,10 @@ if (process.platform !== "darwin") {
 }
 
 // electron-builder outputs per-arch folders; take whichever exists.
-const appPath = ["mac-arm64", "mac", "mac-x64"]
-  .map((dir) => path.join(releaseDir, dir, "Iris.app"))
-  .find((candidate) => fs.existsSync(candidate));
+const appCandidates = ["mac-arm64", "mac", "mac-x64"].map((dir) =>
+  path.join(releaseDir, dir, "Iris.app"),
+);
+const appPath = appCandidates.find((candidate) => fs.existsSync(candidate));
 
 if (!appPath) {
   console.error("No packaged Iris.app found in release/. Run: npm run package:mac");
@@ -63,6 +64,18 @@ execSync(`ditto "${appPath}" "${DEST}"`, { stdio: "inherit" });
 execSync(`xattr -cr "${DEST}"`);
 
 console.log(`✓ Installed ${DEST}`);
+
+// The packaged bundle is only a staging artifact. Keeping it makes Spotlight /
+// Finder show both this copy and /Applications/Iris.app.
+for (const candidate of appCandidates) {
+  if (!fs.existsSync(candidate)) continue;
+  fs.rmSync(candidate, { recursive: true, force: true });
+  const parent = path.dirname(candidate);
+  if (fs.existsSync(parent) && fs.readdirSync(parent).length === 0) {
+    fs.rmdirSync(parent);
+  }
+}
+console.log("✓ Removed packaged Iris.app staging bundle");
 
 if (!process.argv.includes("--no-launch")) {
   // Cursor/CI shells may export ELECTRON_RUN_AS_NODE=1. Passing that through

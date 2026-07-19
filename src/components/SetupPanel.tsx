@@ -31,6 +31,7 @@ type Draft = {
   IRIS_LOAD_TEST_DATA: string;
   IRIS_WAKE_WORD: string;
   IRIS_WAKE_SENSITIVITY: string;
+  IRIS_SHOW_WAKE_DIAGNOSTICS: string;
   IRIS_SOUNDS: string;
   IRIS_AUTO_SLEEP_SECONDS: string;
   IRIS_AUTO_WAKE_ON_HERMES: string;
@@ -45,6 +46,7 @@ export default function SetupPanel({
   onSaved,
   onStart,
   onRunWizard,
+  lastWakeDiagnostic,
 }: {
   mode: Mode;
   config: IrisConfig;
@@ -52,6 +54,7 @@ export default function SetupPanel({
   onSaved: (config: IrisConfig) => void;
   onStart?: () => void;
   onRunWizard?: () => void;
+  lastWakeDiagnostic?: string | null;
 }) {
   const [draft, setDraft] = useState<Draft>({
     GEMINI_API_KEY: config.geminiApiKey,
@@ -68,6 +71,7 @@ export default function SetupPanel({
     IRIS_LOAD_TEST_DATA: config.loadTestData ? "true" : "false",
     IRIS_WAKE_WORD: config.wakeWord ? "true" : "false",
     IRIS_WAKE_SENSITIVITY: config.wakeSensitivity || "balanced",
+    IRIS_SHOW_WAKE_DIAGNOSTICS: config.showWakeDiagnostics ? "true" : "false",
     IRIS_SOUNDS: config.sounds ? "true" : "false",
     IRIS_AUTO_SLEEP_SECONDS: config.autoSleepSeconds || "30",
     IRIS_AUTO_WAKE_ON_HERMES: config.autoWakeOnHermes ? "true" : "false",
@@ -482,6 +486,23 @@ export default function SetupPanel({
           If Iris misses your voice, choose Relaxed; if she still wakes too easily, choose Strict. Every level wakes
           instantly on a clear phrase and automatically demands a stronger score while the room has been noisy (TV,
           music, chatter). A separate on-device speech check must also confirm a human voice.
+        </small>
+      </label>
+      <label className="setup-field">
+        <span>Wake diagnostics overlay</span>
+        <ThemedSelect
+          ariaLabel="Wake diagnostics overlay"
+          value={draft.IRIS_SHOW_WAKE_DIAGNOSTICS}
+          options={[
+            { value: "false", label: "Off — keep wake details in Settings" },
+            { value: "true", label: "On — show for 6 seconds after waking" },
+          ]}
+          onChange={(value) => set("IRIS_SHOW_WAKE_DIAGNOSTICS", value)}
+        />
+        <small className="setup-note">
+          {lastWakeDiagnostic
+            ? `Last wake: ${lastWakeDiagnostic}`
+            : "No wake has been recorded in this app session."}
         </small>
       </label>
       <label className="setup-field">

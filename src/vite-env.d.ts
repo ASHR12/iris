@@ -61,6 +61,7 @@ type IrisConfig = {
   loadTestData: boolean;
   wakeWord: boolean;
   wakeSensitivity: string;
+  showWakeDiagnostics: boolean;
   sounds: boolean;
   autoSleepSeconds: string;
   autoWakeOnHermes: boolean;
