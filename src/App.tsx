@@ -1377,17 +1377,18 @@ export default function App() {
         dim: true,
         compact: true,
       };
-    if (webSearching) return { text: "Searching Google…", dim: false, compact: true };
     if (hermesSummarizing)
       return { text: "Hermes is back — Iris is summarizing…", dim: false, compact: true };
     if (audioState === "speaking") return { text: "Speaking…", dim: false, compact: true };
+    if (webSearching) return { text: "Searching Google…", dim: false, compact: true };
+    if (orbThinking) return { text: "Thinking…", dim: false, compact: true };
     if (audioState === "listening") return { text: "Listening…", dim: false, compact: true };
     if (working) return { text: "Working on it…", dim: false, compact: true };
     const last = transcript[transcript.length - 1];
     if (last) return { text: last.text, dim: false, compact: false };
     if (geminiStatus === "connected") return { text: "How can I help?", dim: true, compact: true };
     return { text: "Connecting…", dim: true, compact: true };
-  }, [sidecarRunning, webSearching, hermesSummarizing, audioState, working, transcript, geminiStatus, wakeWordEnabled, autoSlept]);
+  }, [sidecarRunning, webSearching, hermesSummarizing, audioState, orbThinking, working, transcript, geminiStatus, wakeWordEnabled, autoSlept]);
 
   function openTask(task: TaskCard) {
     if (!(task.output || task.error)) return;

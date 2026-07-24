@@ -72,7 +72,7 @@ When Hermes finishes a background task, Iris **proactively speaks up**: *"Quick 
 - **Full Hermes interaction bridge** — native clarification choices/free text, dangerous-command approvals, sudo passwords, and secret prompts surface in Iris. Sensitive values stay UI-only and never enter Gemini.
 - **Visible voice answers** — spoken clarification text fills the on-screen field/choice briefly before Iris submits it to Hermes
 - **Proactive completion announcements** — Iris tells you the moment work finishes and summarizes it out loud
-- **System-enforced confirmation gate** — Iris *cannot* dispatch until it reads back an immutable proposal and you give a standalone yes in your own turn. Proposal ID, exact brief, selected Hermes thread, TTL, and semantic yes/no are enforced in code.
+- **Intent-aware confirmation gate** — Iris reads back an immutable proposal and interprets your next response conversationally, with no required approval phrase. Code still enforces a separate user turn, proposal ID, exact brief, selected Hermes thread, and TTL before dispatch.
 - **Anti-hallucination guardrails** — status and results can only come from real Hermes API responses; "still working" is the only honest answer until then, and tool responses say so explicitly
 
 
@@ -227,7 +227,7 @@ The packaged app reads config from `~/.iris/.env` (`%USERPROFILE%\.iris\.env` on
 ### Say things like
 
 - *"What's the latest on the OpenAI news?"* → answered directly with Google Search
-- *"Check my unread emails and tell me if anything needs attention"* → read-back → your "yes" → Hermes runs it in the background
+- *"Check my unread emails and tell me if anything needs attention"* → read-back → your natural confirmation → Hermes runs it in the background
 - *"How's that task going?"* → real status from the Hermes API, never invented
 - *"Open the latest result"* / *"show the steps"* / *"open the failed one"* → UI obeys
 

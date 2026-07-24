@@ -31,6 +31,18 @@ export function autoSleepDecision({
 }
 
 /**
+ * Gemini Live performs Google Search server-side. Treat only protocol evidence
+ * as search activity; predicted intent from a partial user transcript is not a
+ * search invocation.
+ */
+export function hasGoogleSearchEvidence(serverContent = {}) {
+  if (serverContent.groundingMetadata) return true;
+  return (serverContent.modelTurn?.parts || []).some(
+    (part) => Boolean(part?.executableCode || part?.codeExecutionResult),
+  );
+}
+
+/**
  * Tracks the protocol-level lifecycle of one Gemini Live conversation.
  * Realtime text/audio can overlap, so completion is bound to an input epoch:
  * an older interrupted greeting must never settle a newer user question.

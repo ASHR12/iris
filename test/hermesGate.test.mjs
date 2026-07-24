@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   PROPOSAL_TTL_MS,
   claimConfirmedProposal,
-  classifyConfirmation,
+  discardHermesProposal,
   getHermesProposal,
   markModelTurnComplete,
   markModelTurnInterrupted,
@@ -12,19 +12,26 @@ import {
   resetHermesGate,
 } from "../electron/hermesGate.mjs";
 
-test("classifies only standalone affirmative responses", () => {
-  resetHermesGate();
-  assert.equal(classifyConfirmation("yes"), "affirm");
-  assert.equal(classifyConfirmation("Okay, send it."), "affirm");
-  assert.equal(classifyConfirmation("I already said yes—send it now."), "affirm");
-  assert.equal(classifyConfirmation("I am giving you that yes. Do it now."), "affirm");
-  assert.equal(classifyConfirmation("yes but change the date"), "revise");
-  assert.equal(classifyConfirmation("no, do not send it"), "reject");
-  assert.equal(classifyConfirmation("I said yes, but do not send it now"), "reject");
-  assert.equal(classifyConfirmation("I was thinking about it"), "other");
+test("records a real user turn without hard-coding its wording", () => {
+  for (const response of [
+    "Okay, yes, yes, yes.",
+    "That sounds good to me.",
+    "हाँ, भेज दो",
+  ]) {
+    resetHermesGate();
+    const staged = proposeHermesTask("Task", "normal", { sessionId: "s" }).proposal;
+    markModelTurnComplete();
+    const recorded = recordUserResponse(response);
+    assert.equal(recorded.userTurnObserved, true, response);
+    assert.equal(
+      claimConfirmedProposal({ proposalId: staged.id, sessionId: "s" }).ok,
+      true,
+      response,
+    );
+  }
 });
 
-test("requires completed readback, exact proposal id, session, and affirmative turn", () => {
+test("requires completed readback, a real user turn, exact proposal id, and session", () => {
   resetHermesGate();
   const staged = proposeHermesTask("Goal:\nPrepare the report", "high", {
     sessionId: "session-a",
@@ -37,20 +44,19 @@ test("requires completed readback, exact proposal id, session, and affirmative t
       proposalId: staged.proposal.id,
       sessionId: "session-a",
     }).reason,
-    "not_confirmed",
+    "no_user_turn",
   );
 
   markModelTurnComplete();
-  recordUserResponse("I have another thought");
   assert.equal(
     claimConfirmedProposal({
       proposalId: staged.proposal.id,
       sessionId: "session-a",
     }).reason,
-    "not_confirmed",
+    "no_user_turn",
   );
 
-  recordUserResponse("yes");
+  recordUserResponse("Okay, yes, yes, yes.");
   assert.equal(
     claimConfirmedProposal({
       proposalId: "different",
@@ -75,24 +81,23 @@ test("requires completed readback, exact proposal id, session, and affirmative t
   assert.equal(getHermesProposal(), null);
 });
 
-test("a rejection or requested revision cannot be submitted", () => {
+test("Gemini can discard the exact staged proposal when it interprets a decline", () => {
   resetHermesGate();
-  const rejected = proposeHermesTask("Task A", "normal", { sessionId: "s" }).proposal;
+  const staged = proposeHermesTask("Task A", "normal", { sessionId: "s" }).proposal;
   markModelTurnComplete();
-  recordUserResponse("no");
+  recordUserResponse("No, let's leave it.");
   assert.equal(
-    claimConfirmedProposal({ proposalId: rejected.id, sessionId: "s" }).reason,
-    "rejected",
+    discardHermesProposal({ proposalId: "different", sessionId: "s" }).reason,
+    "proposal_mismatch",
   );
-
-  resetHermesGate();
-  const revised = proposeHermesTask("Task B", "normal", { sessionId: "s" }).proposal;
-  markModelTurnComplete();
-  recordUserResponse("yes but add the July numbers");
   assert.equal(
-    claimConfirmedProposal({ proposalId: revised.id, sessionId: "s" }).reason,
-    "needs_revision",
+    discardHermesProposal({ proposalId: staged.id, sessionId: "other" }).reason,
+    "session_mismatch",
   );
+  const discarded = discardHermesProposal({ proposalId: staged.id, sessionId: "s" });
+  assert.equal(discarded.ok, true);
+  assert.equal(discarded.proposal.task, "Task A");
+  assert.equal(getHermesProposal(), null);
 });
 
 test("an interrupted readback never unlocks submission", () => {
@@ -106,12 +111,12 @@ test("an interrupted readback never unlocks submission", () => {
   );
 });
 
-test("captures a quick yes that arrives just before readback completion", () => {
+test("captures a quick response that arrives just before readback completion", () => {
   resetHermesGate();
   const staged = proposeHermesTask("Task", "normal", { sessionId: "s" }).proposal;
   assert.equal(
-    recordUserResponse("yes", { allowDuringReadback: true }).responseKind,
-    "affirm",
+    recordUserResponse("Mm-hmm, go ahead.", { allowDuringReadback: true }).userTurnObserved,
+    true,
   );
   markModelTurnComplete();
   const claimed = claimConfirmedProposal({
@@ -128,7 +133,7 @@ test("does not mistake a pre-readback transcript tail for confirmation", () => {
   markModelTurnComplete();
   assert.equal(
     claimConfirmedProposal({ proposalId: staged.id, sessionId: "s" }).reason,
-    "not_confirmed",
+    "no_user_turn",
   );
 });
 

@@ -3,6 +3,7 @@ import { GoogleGenAI } from "@google/genai";
 import {
   proposeHermesTask as gatePropose,
   claimConfirmedProposal,
+  discardHermesProposal,
   markModelTurnComplete,
   markModelTurnInterrupted,
   markUserSpoke,
@@ -52,6 +53,7 @@ import {
   LiveTurnState,
   ResumeHandleStore,
   autoSleepDecision,
+  hasGoogleSearchEvidence,
 } from "./liveSessionState.mjs";
 import { HermesGatewayClient } from "./hermesGatewayClient.mjs";
 import { HermesInteractiveTransport } from "./hermesInteractiveTransport.mjs";
@@ -1123,7 +1125,7 @@ function proposeHermesTask(args = {}) {
     instructions: [
       `Now read this exact brief back to ${userDisplayName()} in one or two short sentences, ask "Should I send this to Hermes?", and END YOUR TURN.`,
       "Do NOT call submit_hermes_task yet — it will be rejected until they answer.",
-      `If ${userDisplayName()} explicitly agrees, submit proposal_id "${staged.proposal.id}". If they decline, drop it. If they change any detail, call propose_hermes_task again and read back the replacement proposal.`,
+      `Interpret ${userDisplayName()}'s next response by meaning, not by matching specific words. If they clearly authorize sending, submit proposal_id "${staged.proposal.id}". If they decline, call discard_hermes_proposal with that proposal_id. If they change any detail, call propose_hermes_task again and read back the replacement proposal. If their intent is ambiguous, ask one short natural clarification.`,
     ].join(" "),
   };
 }
@@ -1974,7 +1976,7 @@ function controlIrisUi({ action, target_id = undefined, query = undefined }) {
   };
 }
 
-async function waitForConfirmationTranscript(proposalId, sessionId, timeoutMs = 1600) {
+async function waitForUserConfirmationTurn(proposalId, sessionId, timeoutMs = 1600) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const proposal = getHermesProposal();
@@ -1986,7 +1988,7 @@ async function waitForConfirmationTranscript(proposalId, sessionId, timeoutMs = 
       return;
     }
     if (
-      proposal.responseKind !== "other" ||
+      proposal.userTurnObserved ||
       !["awaiting_readback", "awaiting_user"].includes(proposal.stage)
     ) {
       return;
@@ -2008,8 +2010,27 @@ async function executeTool(name, args = {}) {
         };
       }
       return proposeHermesTask(args);
+    case "discard_hermes_proposal": {
+      const discarded = discardHermesProposal({
+        proposalId: args.proposal_id,
+        sessionId: hermesSessionId(),
+      });
+      if (!discarded.ok) {
+        return {
+          status: "blocked",
+          error: `Could not discard the staged Hermes proposal: ${discarded.reason}.`,
+          active_proposal_id: getHermesProposal()?.id || null,
+          instructions: "Do not claim that a different proposal was discarded.",
+        };
+      }
+      return {
+        status: "discarded",
+        proposal_id: discarded.proposal.id,
+        instructions: "Acknowledge the decline briefly. Do not send this proposal to Hermes.",
+      };
+    }
     case "submit_hermes_task": {
-      await waitForConfirmationTranscript(
+      await waitForUserConfirmationTurn(
         args.proposal_id,
         hermesSessionId(),
       );
@@ -2026,23 +2047,20 @@ async function executeTool(name, args = {}) {
             "REJECTED: proposal_id does not match the exact brief shown to the user.",
           session_mismatch:
             "REJECTED: the selected Hermes chat changed. Stage and confirm the brief again.",
-          rejected: `REJECTED: ${userDisplayName()} declined this proposal.`,
-          needs_revision:
-            "REJECTED: the user requested changes. Stage the revised brief and read it back again.",
           readback_interrupted:
             "REJECTED: the proposal read-back was interrupted. Stage it again and let the full read-back finish before asking for confirmation.",
-          not_confirmed:
-            `REJECTED: ${userDisplayName()} has not given a standalone explicit confirmation yet.`,
+          no_user_turn:
+            `REJECTED: no distinct response from ${userDisplayName()} was observed after the proposal read-back.`,
         };
         return {
           status: "blocked",
           error: reasons[claim.reason] || "REJECTED: proposal confirmation is invalid.",
           active_proposal_id: activeProposal?.id || null,
           instructions:
-            claim.reason === "needs_revision" || claim.reason === "readback_interrupted"
+            claim.reason === "readback_interrupted"
               ? "Call propose_hermes_task with the corrected brief."
-              : claim.reason === "not_confirmed"
-                ? "Keep the same proposal staged. Do not call propose_hermes_task again; ask for one standalone confirmation, then retry submit_hermes_task with the same proposal_id."
+              : claim.reason === "no_user_turn"
+                ? "Keep the same proposal staged, end your turn, and wait for the user's response. If their response was not captured, ask one brief natural clarification. Never demand specific confirmation wording."
                 : claim.reason === "proposal_mismatch" && activeProposal
                   ? "Do not restage or repeat the readback. Retry submit_hermes_task using active_proposal_id if this is the proposal the user just confirmed."
                   : "Do not claim the task was sent.",
@@ -2484,7 +2502,7 @@ function buildHermesTools() {
         {
           name: "submit_hermes_task",
           description:
-            "Send the exact staged Hermes proposal. This is the ONLY initial tool action that requires a separate explicit user confirmation. Call after the user confirms the readback in their own turn; never restage an unchanged confirmed proposal.",
+            "Send the exact staged Hermes proposal. Call only when the meaning of the user's latest response clearly authorizes sending after the readback; confirmation has no required wording. If intent is ambiguous, ask naturally instead of calling. Never restage an unchanged confirmed proposal.",
           parameters: {
             type: "object",
             properties: {
@@ -2492,6 +2510,21 @@ function buildHermesTools() {
                 type: "string",
                 description:
                   "The proposal_id returned by propose_hermes_task. It cannot be replaced or edited.",
+              },
+            },
+            required: ["proposal_id"],
+          },
+        },
+        {
+          name: "discard_hermes_proposal",
+          description:
+            "Discard an unsent staged Hermes proposal when the user's response means they decline or cancel it. Interpret intent conversationally; no particular rejection phrase is required. This does not stop a task that was already submitted.",
+          parameters: {
+            type: "object",
+            properties: {
+              proposal_id: {
+                type: "string",
+                description: "The proposal_id returned by propose_hermes_task.",
               },
             },
             required: ["proposal_id"],
@@ -2693,7 +2726,7 @@ function buildLiveConfig(resumeHandleForSession = null) {
             "Hermes is your worker brain for tools, terminal, files, deals, coding, deep research, and automations.",
             "You also have built-in Google Search. Use Google Search directly for quick current facts, simple web lookups, and lightweight questions that do not need Hermes to do work.",
             "When the user explicitly asks you to search and already gives the subject, start the lookup immediately rather than asking what to search. When the Live API permits, acknowledge briefly that you are checking before delivering the grounded answer.",
-            `CRITICAL Hermes dispatch flow — two steps, enforced by the system: (1) only when ${userDisplayName()} explicitly asks you to use or delegate work to Hermes, call propose_hermes_task with the complete brief, read it back in one or two sentences, ask "Should I send this to Hermes?", and END your turn. (2) Only after ${userDisplayName()} explicitly confirms in their OWN turn, call submit_hermes_task with the exact proposal_id. Never dispatch to Hermes on your own initiative. If they decline, drop it. If they change details, stage the updated brief once and re-confirm.`,
+            `CRITICAL Hermes dispatch flow — two steps, enforced by the system: (1) only when ${userDisplayName()} explicitly asks you to use or delegate work to Hermes, call propose_hermes_task with the complete brief, read it back in one or two sentences, ask "Should I send this to Hermes?", and END your turn. (2) After ${userDisplayName()} responds in their OWN turn, interpret their intent from the full conversational meaning, not fixed words or exact phrasing. If the response clearly authorizes sending, call submit_hermes_task with the exact proposal_id. If it clearly declines, call discard_hermes_proposal. If it changes details, stage the updated brief once and re-confirm. If it is genuinely ambiguous, ask one short natural clarification. Never dispatch to Hermes on your own initiative.`,
             "CRITICAL truthfulness rule — you have no knowledge of what Hermes is doing or has found. Facts about a run come only from SYSTEM_EVENT_HERMES_COMPLETE or the exact output of get_hermes_task_status with a terminal status. Until then, say only that Hermes is still working.",
             "When asked how a Hermes task is going, call get_hermes_task_status (or check_hermes_status for connectivity) and speak strictly from its response. Never guess progress, results, or timing.",
             "After submitting a task, give one short acknowledgement that Hermes has started. Never phrase it as if a result already exists.",
@@ -3099,9 +3132,6 @@ function handleLiveMessage(message) {
     scheduleUserTranscriptFlush();
     if (userTranscriptBuffer.trim()) {
       lastUserRoute = classifyRoute(userTranscriptBuffer);
-      if (lastUserRoute === "web") {
-        setGoogleSearchActive(true, userTranscriptBuffer);
-      }
       markUserSpoke(userTranscriptBuffer, {
         allowDuringReadback:
           modelTranscriptBuffer.trim().length >= MIN_AUDIBLE_READBACK_CHARS,
@@ -3177,7 +3207,7 @@ function handleLiveMessage(message) {
     bumpVoiceActivity(); // Iris speaking resets the idle clock too
   }
 
-  if (content.groundingMetadata) {
+  if (hasGoogleSearchEvidence(content)) {
     setGoogleSearchActive(true, userTranscriptBuffer);
   }
 
@@ -3193,9 +3223,6 @@ function handleLiveMessage(message) {
   }
 
   for (const part of content.modelTurn?.parts || []) {
-    if (part.executableCode || part.codeExecutionResult) {
-      setGoogleSearchActive(true, userTranscriptBuffer);
-    }
     if (part.text) {
       modelTranscriptBuffer += part.text;
       if (modelTranscriptSettled) scheduleModelTranscriptFlush();

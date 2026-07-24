@@ -5,6 +5,7 @@ import {
   LiveTurnState,
   ResumeHandleStore,
   autoSleepDecision,
+  hasGoogleSearchEvidence,
 } from "../electron/liveSessionState.mjs";
 
 test("resume handles expire deterministically", () => {
@@ -51,6 +52,34 @@ test("auto-sleep never closes an active server-side search", () => {
   });
   assert.equal(timedOut.responseTimedOut, true);
   assert.equal(timedOut.sleep, true);
+});
+
+test("Google search status requires actual Live server evidence", () => {
+  assert.equal(
+    hasGoogleSearchEvidence({
+      inputTranscription: { text: "Look at the current code and explain it" },
+    }),
+    false,
+  );
+  assert.equal(
+    hasGoogleSearchEvidence({
+      modelTurn: { parts: [{ text: "I can explain that directly." }] },
+    }),
+    false,
+  );
+  assert.equal(hasGoogleSearchEvidence({ groundingMetadata: {} }), true);
+  assert.equal(
+    hasGoogleSearchEvidence({
+      modelTurn: { parts: [{ executableCode: { code: "search(...)" } }] },
+    }),
+    true,
+  );
+  assert.equal(
+    hasGoogleSearchEvidence({
+      modelTurn: { parts: [{ codeExecutionResult: { output: "results" } }] },
+    }),
+    true,
+  );
 });
 
 test("normal idle and pending-confirmation budgets remain bounded", () => {
