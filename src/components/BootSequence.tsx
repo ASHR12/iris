@@ -44,7 +44,6 @@ export default function BootSequence({
           className="orb-stage boot-orb"
           style={{ "--orb-accent": ORB_ACCENT.online } as CSSProperties}
         >
-          <span className="orb-plinth" aria-hidden="true" />
           <span className="orb-ring" />
           <span className="orb-radar" />
           <ReactorCore state="online" />

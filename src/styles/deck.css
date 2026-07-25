@@ -513,53 +513,11 @@
   height: 100%;
 }
 
-/* --- The plinth ---
-   The orb used to float in the gap between two panels, which read as a hole
-   in the layout. A light pool plus a bright floor line gives it somewhere to
-   stand, so the center becomes a stage and clearly outranks the side rails. */
-.orb-plinth {
-  position: absolute;
-  left: 50%;
-  bottom: -7%;
-  width: 118%;
-  height: 26%;
-  transform: translateX(-50%);
-  pointer-events: none;
-  border-radius: 50%;
-  background: radial-gradient(
-    ellipse at 50% 50%,
-    rgba(var(--accent-rgb), 0.5) 0%,
-    rgba(var(--accent-rgb), 0.16) 42%,
-    transparent 72%
-  );
-  filter: blur(14px);
-  opacity: 0;
-  transition: opacity 0.9s ease, background var(--accent-ease);
-}
-
-/* The specular floor line — narrow, bright at the center, fading at the ends. */
-.orb-plinth::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 64%;
-  height: 2px;
-  transform: translate(-50%, -50%);
-  border-radius: var(--r-pill);
-  background: linear-gradient(
-    90deg,
-    transparent,
-    rgba(var(--accent-rgb), 0.95) 50%,
-    transparent
-  );
-  box-shadow: 0 0 14px rgba(var(--accent-rgb), 0.6);
-}
-
-.deck.awake .orb-plinth,
-.hud-shell.awake .orb-plinth { opacity: 1; }
-.deck.asleep .orb-plinth,
-.hud-shell.asleep .orb-plinth { opacity: 0.18; }
+/* There is deliberately no plinth under the orb. A blurred elliptical light pool
+   plus a specular floor line used to sit here to stop the orb floating in the
+   gap between the two panels, but a large soft ellipse under the reactor reads
+   as a drop shadow, not as a stage. The reactor is centered and much brighter
+   than the rails, which is enough to make it outrank them. */
 
 /* Orb chrome: rotating tick ring + sweeping radar arc around the core */
 .orb-ring,

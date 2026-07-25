@@ -110,7 +110,6 @@ export default function CenterStage({
         ref={orbStageRef}
         style={{ "--orb-accent": ORB_ACCENT[reactorState] } as CSSProperties}
       >
-        <span className="orb-plinth" aria-hidden="true" />
         <span className="orb-ring" />
         <span className="orb-radar" />
         <ReactorCore

@@ -40,6 +40,10 @@ export const ORB_ACCENT: Record<ReactorState, string> = {
   working: PALETTES.working.primary,
 };
 
+/** Energy of an idle/asleep reactor. Anything soft and glowing must be keyed
+ *  off the distance above this, so a dark orb throws no light at all. */
+const REST_ENERGY = 0.18;
+
 function drawArc(
   c: CanvasRenderingContext2D,
   x: number,
@@ -153,7 +157,7 @@ export default function ReactorCore({
       if (s === "working") return 0.88;
       if (s === "listening") return 0.72;
       if (s === "online") return 0.45;
-      return 0.18;
+      return REST_ENERGY;
     }
 
     function draw(time: number) {
@@ -183,15 +187,24 @@ export default function ReactorCore({
 
       c.clearRect(0, 0, width, height);
 
-      // Soft reactor halo
-      const halo = c.createRadialGradient(cx, cy, 0, cx, cy, base * 0.95);
-      halo.addColorStop(0, `rgba(${palette.glow}, ${0.32 + energy * 0.24})`);
-      halo.addColorStop(0.34, `rgba(${palette.glow}, ${0.12 + energy * 0.08})`);
-      halo.addColorStop(1, "rgba(0,0,0,0)");
-      c.fillStyle = halo;
-      c.beginPath();
-      c.arc(cx, cy, base * 0.95, 0, Math.PI * 2);
-      c.fill();
+      // Soft reactor halo — light thrown by a running reactor, so it must not
+      // exist when the reactor is off. It used to carry a fixed alpha floor,
+      // which left a wide glow disc (bigger than the drawn ring) sitting behind
+      // a sleeping orb; desaturated by the asleep filter it read as a grey
+      // shadow blob rather than as light. The gate reaches full strength by the
+      // time Iris is merely online, so the awake look is unchanged.
+      const bloom = Math.min(1, Math.max(0, (energy - REST_ENERGY) / 0.27));
+      if (bloom > 0.01) {
+        const haloR = base * 0.95;
+        const halo = c.createRadialGradient(cx, cy, 0, cx, cy, haloR);
+        halo.addColorStop(0, `rgba(${palette.glow}, ${bloom * (0.34 + energy * 0.22)})`);
+        halo.addColorStop(0.34, `rgba(${palette.glow}, ${bloom * (0.12 + energy * 0.08)})`);
+        halo.addColorStop(1, "rgba(0,0,0,0)");
+        c.fillStyle = halo;
+        c.beginPath();
+        c.arc(cx, cy, haloR, 0, Math.PI * 2);
+        c.fill();
+      }
 
       // Outer micro ticks (futuristic HUD radial scale)
       const tickCount = 144;

@@ -107,39 +107,11 @@ html:not(.hud-mode) .setup-backdrop {
   height: 190px;
 }
 
-/* The reactor is drawn with additive glow, which needs darkness to glow
-   against — over a bright wallpaper it washed out to a pale smudge. This soft
-   radial scrim gives it a lens to sit in. Negative z-index keeps it behind the
-   canvas but inside the cluster's stacking context, so it never dims the
-   caption or the rail. */
-.hud-orb::before {
-  content: "";
-  position: absolute;
-  inset: -20%;
-  z-index: -1;
-  border-radius: 50%;
-  pointer-events: none;
-  /* Long, multi-stop falloff plus a blur: any shorter and the scrim reads as a
-     visible grey disc bolted behind the orb instead of ambient shading. */
-  background: radial-gradient(
-    circle,
-    rgba(3, 7, 15, 0.5) 0%,
-    rgba(3, 7, 15, 0.36) 34%,
-    rgba(3, 7, 15, 0.18) 52%,
-    rgba(3, 7, 15, 0.06) 68%,
-    transparent 84%
-  );
-  filter: blur(8px);
-}
-
-/* Tighter light pool than the deck's: the HUD orb sits close to the Dock
-   clearance line and the glow must not bleed down into it. */
-.hud-orb .orb-plinth {
-  bottom: -2%;
-  width: 104%;
-  height: 18%;
-  filter: blur(10px);
-}
+/* No scrim behind the reactor. There used to be a blurred 266px dark radial
+   here to give the additive glow something to sit against over bright
+   wallpapers, but on a dark desktop it reads as exactly what it is: a large
+   soft shadow blob around the orb. The reactor's own strokes carry enough
+   contrast, and a soft wash is the one thing this design does not use. */
 
 .hud-shell.awake .orb-ring { opacity: 1; }
 .hud-shell.awake .orb-radar { opacity: 0.7; }
