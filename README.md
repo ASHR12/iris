@@ -317,17 +317,31 @@ Config resolution order: repo `.env` (dev) → `~/.iris/.env` (wizard/packaged) 
 ```
 electron/          main process — Gemini Live session, Hermes bridge, dispatch
                    gate, Glass HUD window control, tray, config
-                   extracted clients/policies — Hermes HTTP/events, run registry,
-                   memory, config, renderer queue, routing and security boundaries
+                   liveSessionState / liveToolCoordinator — turn lifecycle,
+                   resume handles, serialized tool execution
+                   hermes* — HTTP/gateway clients, event stream, interactive
+                   transport, dispatch gate, result service
+                   brainIndex.mjs — embedding + BM25 retrieval stack (also a CLI)
+                   runRegistry, memoryService, configStore, rendererBridge,
+                   routingPolicy, approvalPolicy, sleepIntent, windowSecurity
 src/
   components/      TopBar, CommsPanel, WorkStream, WorkCard, CenterStage,
-                   HudShell, ReaderOverlay, SessionSwitcher, SetupPanel, …
+                   HudShell, BrainGraph, ReaderOverlay, SessionSwitcher,
+                   SetupPanel, DevicePicker, HermesInteractionPrompt,
+                   ApprovalPrompt, CameraDock, …
   hooks/           useAudioPipeline, useHandControl, useWakeWord, useHandoffFx
-  lib/             audio/PCM helpers, task utils + fuzzy matching, fixtures
-  styles/          deep-space design system (tokens → base → deck → overlays → fx → hud)
+  lib/             audio/PCM helpers, task utils + fuzzy matching, sounds, fixtures
+  styles/          deep-space design system (tokens → base → deck → overlays → fx
+                   → hud → brain)
+test/              17 Node test files — gate, Live lifecycle, Hermes contract,
+                   registry, memory, routing, security
+scripts/           dev launcher, icon renderer, macOS package/install/sign,
+                   demo-vault generator, live-API harnesses, soak runner
 public/wakeword/   on-device "Hey Iris" ONNX models
+public/audio/      PCM capture AudioWorklet
 build/             app icon (SVG source + renderer) and tray assets
-scripts/           dev launcher, icon renderer
+demo-obsidian-vault/  164 generated fictional notes for demoing the Neural Map
+sidecar/           legacy Python Live reference (off unless explicitly enabled)
 ```
 
 ---
@@ -369,7 +383,11 @@ npm run soak     # 8-hour Electron RSS/heap and wake/HUD lifecycle sampler
 
 Please keep the two golden rules: **voice must never regress because of gestures**, and **Iris never invents Hermes results** — status comes from the API or it doesn't exist.
 
+Release history lives in [CHANGELOG.md](CHANGELOG.md).
+
 ## ⚠️ Privacy & security notes
+
+Found a vulnerability? Please report it privately — see [SECURITY.md](SECURITY.md). Iris dispatches terminal-capable work to Hermes, so anything that can influence a dispatch is treated as a security issue rather than a UX one.
 
 - Your Gemini key and Hermes key live in mode-`0600` `~/.iris/.env`, are never returned to renderer state, and are never committed.
 - Camera frames and wake-word audio are processed **entirely on-device** and never uploaded.
