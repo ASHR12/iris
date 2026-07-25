@@ -3784,7 +3784,23 @@ function installAppMenu() {
         { role: "forceReload" },
         { role: "toggleDevTools" },
         { type: "separator" },
-        { role: "togglefullscreen" },
+        // NOT `role: "togglefullscreen"`. The window is `fullscreenable: false`
+        // (it is transparent and frameless, and the Glass HUD is this app's
+        // real full-screen mode), so that item was a silent no-op. Worse, it
+        // implied a full-screen state the user would then look to undo.
+        // This exposes the actual mode switch, and gives a way back out of the
+        // HUD from the menu bar as well as the tray and ⌥H.
+        // The hotkey is shown in the label rather than set as `accelerator`:
+        // ⌥H is already claimed by globalShortcut, and registering the same
+        // chord in both places risks firing twice — which would toggle the HUD
+        // out and straight back in, making the item look broken.
+        {
+          label: `Toggle Glass HUD (${hudHotkey().replace("Alt+", "⌥")})`,
+          click: () => {
+            toggleHud();
+            updateTrayMenu();
+          },
+        },
       ],
     },
     { role: "windowMenu" },

@@ -98,13 +98,82 @@ When Hermes finishes a background task, Iris **proactively speaks up**: *"Quick 
 
 ### Design
 
-- **Deep-space design system** — electric cyan + violet on near-black, glass panels, Inter / Space Grotesk / JetBrains Mono
+- **Deep-space design system** — electric cyan + violet on flat deep navy (deliberately *not* near-black — see [below](#dark-ui-without-colour-banding)), glass panels, Inter / Space Grotesk / JetBrains Mono
 - **The orb** — a canvas-drawn arc reactor that breathes with the actual audio level, changes palette per state (listening / speaking / working), and flashes when work is handed off
 - **Orb micro-expressions** — a double-pulse on wake, a soft ripple when your words are locked in, and an orbiting "thinking" swirl in the gap before Iris speaks
 - **Two voice signatures** — your voice renders as sharp radial bars around the orb; Iris's voice as a smooth breathing wave. You can *see* who's talking.
 - **Sound design** — five subtle synthesized cues (wake, sleep, task sent, task done, approval needed). No audio files; pure tuned Web Audio tones. Toggle in Settings.
 - **Comet handoff** — a particle streaks from the orb to the task card when Gemini delegates, and back when Hermes returns
 - **Cinematic boot sequence**, animated transitions, and a custom app icon rendered from the orb itself
+
+### Dark UI without colour banding
+
+If you have ever built a dark interface and seen faint **contour lines** — concentric
+rings or horizontal bands across large dark areas — this section is why Iris does
+not have them. It is the most transferable thing in this design system, so it is
+written up in full.
+
+**The cause.** A display gives you 256 steps per channel, and sRGB spends very few
+of them near black. A soft gradient stretched across 900px has only a handful of
+values available to cross that distance, so it cannot render as a gradient at all:
+it becomes a few wide flat plateaus with a hard 1-level edge between each. Those
+edges are the contour lines. It gets worse the darker you go, because below the
+sRGB toe brightness is proportional to code value — **one code step at value 7 is a
+~14% jump in brightness; at value 21 the same step is ~5%**, which is under the
+threshold where the eye reads it as a line.
+
+This is not a bug anyone has fixed. You can see it in Cursor, in native macOS
+windows, and in dark video. Polished apps don't solve it — they avoid causing it.
+Look closely at Linear, Raycast, Xcode or Things: almost no large soft gradients
+anywhere. Flat surfaces, hairlines, small shadows, and gradients only where they
+are small and steep.
+
+**The rules Iris follows.**
+
+1. **If a gradient crosses more pixels than it has code levels to cross them with,
+   it is not a gradient — it is a stack of plateaus with visible edges.** Make it a
+   flat fill. The deck background was two window-sized radial washes plus a
+   `--bg-1 → --bg-0` ramp; that ramp spanned **2 levels of green over 860px**.
+   Invisible as shading, glaring as edges.
+2. **Keep the whole palette out of the crush zone.** `--bg-0` is `#0b111c`, not the
+   `#030509` it started as. Everything painted later — vignettes, scrims, overlays —
+   has to respect the same floor, or it drags its own region back down.
+3. **Gradients on dark surfaces must be small and steep.** A 40px button fade has
+   plenty of levels for its range. A 900px wash does not.
+4. **Depth comes from a step of fill tone plus spacing**, not from washes or
+   outlines. Surfaces here nest by tone: background → panel → card. None of them
+   carry a border, because a surface a step lighter than its parent already reads as
+   separate, and saying it twice means the lines are what you notice.
+5. **One light source, and let it be real.** The reactor canvas is the only thing
+   that glows. Beware the trap: once the background is flat, a single soft halo
+   becomes the *only* brightness variation, so a bright centre falling off to dark
+   corners is exactly what vignetting looks like.
+
+**What does not work**, in case you are tempted:
+
+- **A noise/dither overlay.** The standard advice, and it is a band-aid. It cannot
+  remove a staircase that is already baked into a rasterized layer — it only
+  textures over it, so the low-frequency steps the eye integrates survive. Worse,
+  `backdrop-filter` **averages** its backdrop, so any dither underneath a blurred
+  glass panel is smoothed away and the banding comes back inside the glass.
+- **Blend modes.** `mix-blend-mode: overlay` resolves to `2 × backdrop × source`
+  below mid-grey, so on a near-black surface its effect is a fraction of one code
+  level. Invisible.
+- **More gradient stops.** The steps are a quantization limit, not a stop-count
+  problem.
+
+**If you need to measure it.** Run-length checks will lie to you: dither makes runs
+look short while the banding is untouched. The eye integrates *along* a long
+straight edge, so average each row across a wide strip of background first (which
+cancels per-pixel noise), then look for jumps in that row-average. Max local slope
+is the number that tracks visibility — a smooth 30-level ramp over 600px climbs at
+~0.05 levels/px, and anything spiking well above that is a line you can see.
+
+> These rules are enforced for future work, not just documented: they live as a
+> Cursor rule in [`.cursor/rules/dark-theme-no-banding.mdc`](.cursor/rules/dark-theme-no-banding.mdc),
+> scoped to `src/styles/**/*.css`, so anyone (or any agent) editing the styles gets
+> them automatically. Copy that file into another project to carry the approach
+> over.
 
 ---
 

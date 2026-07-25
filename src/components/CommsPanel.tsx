@@ -22,7 +22,11 @@ export default function CommsPanel({
       <div className="comms-scroll" ref={scrollRef}>
         {transcript.length === 0 ? (
           <div className="empty">
-            <p>No conversation yet. Wake Iris and start talking.</p>
+            <span className="empty-icon">
+              <MessageSquare size={19} />
+            </span>
+            <p>No conversation yet</p>
+            <small>Wake Iris and start talking — everything you say lands here.</small>
             {testDataEnabled ? (
               <button className="demo-load" onClick={onLoadDemo}>
                 Load demo comms

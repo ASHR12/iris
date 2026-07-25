@@ -1,19 +1,11 @@
 import { useEffect, useRef, useState, type CSSProperties, type RefObject } from "react";
-import { BrainCircuit, ChevronDown, Hand, Maximize2, MessageSquare, Mic, MicOff, Power, Terminal } from "lucide-react";
-import ReactorCore from "./ReactorCore";
+import { BrainCircuit, ChevronDown, Hand, MessageSquare, Mic, MicOff, Minimize2, Power, Terminal } from "lucide-react";
+import ReactorCore, { ORB_ACCENT } from "./ReactorCore";
 import WorkCard from "./WorkCard";
 import { HandSkeleton } from "./CameraDock";
 import type { HandoffTone, ReactorState, TaskCard, TranscriptLine } from "../types";
 import type { HandState } from "../hooks/useHandControl";
 import { acceptedKey } from "../lib/tasks";
-
-const ORB_ACCENT: Record<ReactorState, string> = {
-  idle: "120, 170, 150",
-  online: "18, 163, 148",
-  listening: "40, 205, 170",
-  speaking: "238, 122, 92",
-  working: "120, 180, 120",
-};
 
 function HudCamera({
   stream,
@@ -183,7 +175,11 @@ export default function HudShell({
   })();
 
   return (
-    <div className={`hud-shell ${awake ? "awake" : "asleep"}`}>
+    <div
+      className={`hud-shell ${awake ? "awake" : "asleep"}`}
+      /* Lights every HUD island from the reactor's current state (inherited). */
+      style={{ "--orb-accent": ORB_ACCENT[reactorState] } as CSSProperties}
+    >
       {/* Slim work stream, top-right — collapsible like Comms */}
       {visibleTasks.length > 0 ? (
         <div className="hud-right">
@@ -263,13 +259,17 @@ export default function HudShell({
         {/* One source of truth: App's caption already covers awake states,
             asleep hints, and the token-saving nap (with/without Hermes). */}
         <div className={`hud-caption ${captionDim ? "dim" : ""} ${!awake || captionCompact ? "hint" : ""}`}>
-          {caption}
+          {/* State light, matched to the orb's current color. Suppressed on
+              hints — those are instructions, not Iris speaking. */}
+          {awake && !captionCompact ? <i className="hud-caption-dot" aria-hidden="true" /> : null}
+          <span className="hud-caption-text">{caption}</span>
         </div>
         <div
           className={`orb-stage hud-orb ${autoSlept && !awake ? "napping" : ""}`}
           ref={orbStageRef}
           style={{ "--orb-accent": ORB_ACCENT[reactorState] } as CSSProperties}
         >
+          <span className="orb-plinth" aria-hidden="true" />
           <span className="orb-ring" />
           <span className="orb-radar" />
           <ReactorCore
@@ -326,8 +326,11 @@ export default function HudShell({
           >
             <Hand size={14} />
           </button>
-          <button className="hud-btn" onClick={onExitHud} title="Back to deck (⌥H)">
-            <Maximize2 size={14} />
+          {/* Inward arrows are the conventional "exit fullscreen" glyph;
+              Maximize2's outward arrows read as "make this bigger", the
+              opposite of what this does. */}
+          <button className="hud-btn" onClick={onExitHud} title="Exit Glass HUD — back to the window (⌥H)">
+            <Minimize2 size={14} />
           </button>
         </div>
       </div>

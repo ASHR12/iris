@@ -1,0 +1,49 @@
+---
+description: Dark-theme rules that prevent 8-bit colour banding (contour lines)
+globs: src/styles/**/*.css
+alwaysApply: false
+---
+
+# Dark surfaces must not band
+
+Contour lines in a dark UI come from 8-bit quantization: sRGB has very few code
+levels near black, so a wide soft gradient has nothing to put between its steps
+and renders as flat plateaus with hard edges. Below the sRGB toe brightness is
+proportional to code value, so **one step at value 7 is a ~14% brightness jump;
+at value 21 it is ~5%** and stops reading as a line. Full explanation in
+`README.md` → "Dark UI without colour banding".
+
+## Rules
+
+1. **A gradient that crosses more pixels than it has code levels is not a
+   gradient — it is plateaus with visible edges.** Use a flat fill.
+2. **Never take a surface below `--bg-0` (`#0b111c`).** Vignettes, scrims and
+   overlays must land above that floor too, or they drag their region back into
+   the crush zone.
+3. **Gradients on dark surfaces must be small and steep** — a 40px button fade is
+   fine, a 900px wash is not.
+4. **Depth = one step of fill tone + spacing.** Not washes, not outlines. Surfaces
+   nest by tone (background → panel → card) and carry no border; borders are only
+   for things that float (menus, popovers).
+5. **One light source.** Only the reactor canvas glows. Note the trap: on a flat
+   background a lone soft halo becomes the only brightness variation, which is
+   exactly what vignetting looks like.
+
+```css
+/* ❌ BAD — 2 levels of green stretched over 860px, plus window-sized washes */
+background:
+  radial-gradient(92% 78% at 50% 30%, rgba(18, 36, 68, 0.55), transparent 74%),
+  linear-gradient(180deg, #05070d 0%, #030509 100%);
+
+/* ✅ GOOD */
+background: var(--bg-1);
+```
+
+## Do not "fix" banding with these
+
+- **Noise/dither overlays.** Cannot remove a staircase already baked into a
+  rasterized layer, and `backdrop-filter` averages any dither beneath it away, so
+  banding returns inside blurred glass.
+- **`mix-blend-mode: overlay`.** Resolves to `2 × backdrop × source` below
+  mid-grey, so on dark surfaces its effect is a fraction of one code level.
+- **More gradient stops.** The limit is quantization, not stop count.

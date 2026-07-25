@@ -153,12 +153,12 @@
   z-index: 3;
   display: inline-flex;
   align-items: center;
-  padding: 3px 9px;
-  border-radius: 999px;
+  padding: var(--s-05) var(--s-2);
+  border-radius: var(--r-pill);
   font-family: var(--font-mono);
-  font-size: 8px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
+  font-size: var(--t-2xs);
+  font-weight: var(--w-bold);
+  letter-spacing: var(--tr-caps);
   text-transform: uppercase;
   color: #1c1305;
   background: linear-gradient(180deg, #ffd589, #f0a93f);
@@ -198,8 +198,8 @@
     0 0 22px rgba(var(--cyan-rgb), 0.15);
   backdrop-filter: blur(14px);
   font-family: var(--font-mono);
-  font-size: 9px;
-  letter-spacing: 0.12em;
+  font-size: var(--t-2xs);
+  letter-spacing: var(--tr-label);
   animation: wake-reason-in 0.22s ease both;
 }
 
@@ -341,25 +341,26 @@
   position: absolute;
   font-family: var(--font-display, var(--font-mono));
   font-style: normal;
-  font-weight: 700;
+  font-weight: var(--w-bold);
   color: rgba(var(--violet-rgb), 0.95);
   text-shadow: 0 0 14px rgba(var(--violet-rgb), 0.65);
   opacity: 0;
   animation: nap-z 4.8s ease-out infinite;
 }
 
+/* Ascending ramp — the three Zs drift up and grow as they rise. */
 .nap-zzz i:nth-child(1) {
-  font-size: 13px;
+  font-size: var(--t-md);
   animation-delay: 0s;
 }
 
 .nap-zzz i:nth-child(2) {
-  font-size: 17px;
+  font-size: var(--t-lg);
   animation-delay: 1.6s;
 }
 
 .nap-zzz i:nth-child(3) {
-  font-size: 21px;
+  font-size: var(--t-xl);
   animation-delay: 3.2s;
 }
 
@@ -420,12 +421,12 @@
   top: 22px;
   left: 0;
   transform: translateX(-50%);
-  padding: 2px 8px;
-  border-radius: 999px;
+  padding: var(--s-05) var(--s-2);
+  border-radius: var(--r-pill);
   font-family: var(--font-mono);
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.18em;
+  font-size: var(--t-2xs);
+  font-weight: var(--w-bold);
+  letter-spacing: var(--tr-caps);
   white-space: nowrap;
   background: rgba(10, 16, 28, 0.78);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);

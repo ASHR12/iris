@@ -1,6 +1,5 @@
 import { useEffect, useRef } from "react";
-
-type ReactorState = "idle" | "online" | "listening" | "speaking" | "working";
+import type { ReactorState } from "../types";
 
 type Palette = {
   primary: string;
@@ -9,12 +8,36 @@ type Palette = {
   glow: string;
 };
 
+/**
+ * State palettes, tuned to the same family as the UI tokens so the orb and the
+ * room around it read as one object. The mapping is semantic, matching the
+ * status-dot language the app already speaks:
+ *   cyan   = Iris herself (online, hearing you)
+ *   amber  = Iris's voice going out (the one warm state, so "she is talking"
+ *            is unmistakable against the cool resting states)
+ *   violet = Hermes is working — the same violet as the Hermes status dot
+ *   slate  = dormant
+ */
 const PALETTES: Record<ReactorState, Palette> = {
-  idle: { primary: "120, 170, 150", secondary: "150, 185, 165", accent: "210, 225, 218", glow: "150, 205, 180" },
-  online: { primary: "18, 163, 148", secondary: "70, 200, 175", accent: "230, 255, 248", glow: "60, 195, 170" },
-  listening: { primary: "40, 205, 170", secondary: "18, 163, 148", accent: "236, 255, 250", glow: "70, 214, 185" },
-  speaking: { primary: "238, 122, 92", secondary: "255, 188, 108", accent: "255, 250, 230", glow: "255, 154, 104" },
-  working: { primary: "120, 180, 120", secondary: "40, 200, 170", accent: "252, 255, 230", glow: "130, 195, 150" },
+  idle: { primary: "130, 158, 180", secondary: "150, 175, 195", accent: "215, 228, 240", glow: "150, 180, 205" },
+  online: { primary: "34, 190, 205", secondary: "80, 216, 226", accent: "230, 253, 255", glow: "60, 200, 215" },
+  listening: { primary: "56, 214, 236", secondary: "34, 190, 205", accent: "236, 253, 255", glow: "80, 220, 240" },
+  speaking: { primary: "245, 160, 92", secondary: "255, 200, 120", accent: "255, 248, 232", glow: "252, 176, 104" },
+  working: { primary: "150, 130, 245", secondary: "186, 160, 255", accent: "244, 240, 255", glow: "160, 140, 250" },
+};
+
+/**
+ * The room's light color per state. Published as `--orb-accent` on the deck /
+ * HUD root so the ambient glow, glass edge-light and hairlines are all tinted
+ * by whatever Iris is doing. Single source of truth — the orb chrome, the deck
+ * and the HUD all read from here.
+ */
+export const ORB_ACCENT: Record<ReactorState, string> = {
+  idle: PALETTES.idle.primary,
+  online: PALETTES.online.primary,
+  listening: PALETTES.listening.primary,
+  speaking: PALETTES.speaking.primary,
+  working: PALETTES.working.primary,
 };
 
 function drawArc(
