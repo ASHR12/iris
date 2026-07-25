@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type { ReactorState, TaskCard, LogLine, TranscriptLine } from "./types";
 import {
   TERMINAL,
@@ -19,6 +19,7 @@ import TopBar from "./components/TopBar";
 import CommsPanel from "./components/CommsPanel";
 import CameraDock from "./components/CameraDock";
 import CenterStage from "./components/CenterStage";
+import { ORB_ACCENT } from "./components/ReactorCore";
 import WorkStream from "./components/WorkStream";
 import ReaderOverlay from "./components/ReaderOverlay";
 import HistoryDrawer from "./components/HistoryDrawer";
@@ -1499,11 +1500,11 @@ export default function App() {
         className={`deck ${sidecarRunning ? "awake" : "asleep"} ${
           modeTransition === "to-hud" ? "deck-leaving" : ""
         } ${modeTransition === "to-deck" ? "deck-entering" : ""}`}
+        /* The reactor is the lamp of the room: this inherits down so the
+           ambient aurora, glass edge-light and hairlines are all tinted by
+           whatever Iris is doing right now. */
+        style={{ "--orb-accent": ORB_ACCENT[reactorState] } as CSSProperties}
       >
-        <div className="hud-nebula" />
-        <div className="hud-glow" />
-        <div className="hud-vignette" />
-
         <TopBar
           geminiDot={dotState(geminiStatus, ["connected"])}
           hermesDot={dotState(hermesStatus, ["ready"])}

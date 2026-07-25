@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties } from "react";
-import ReactorCore from "./ReactorCore";
+import ReactorCore, { ORB_ACCENT } from "./ReactorCore";
 
 const BOOT_LINES = [
   "initializing neural core",
@@ -40,7 +40,10 @@ export default function BootSequence({
   return (
     <div className={`boot ${compact ? "compact" : ""} ${closing ? "closing" : ""}`}>
       {!compact ? (
-        <div className="orb-stage boot-orb" style={{ "--orb-accent": "18, 163, 148" } as CSSProperties}>
+        <div
+          className="orb-stage boot-orb"
+          style={{ "--orb-accent": ORB_ACCENT.online } as CSSProperties}
+        >
           <span className="orb-ring" />
           <span className="orb-radar" />
           <ReactorCore state="online" />

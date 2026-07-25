@@ -17,7 +17,7 @@ body {
   overflow: hidden;
   color: var(--text);
   font-family: var(--font-ui);
-  font-size: 14px;
+  font-size: var(--t-base);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   background: transparent;
@@ -27,8 +27,8 @@ body {
   display: grid;
   place-content: center;
   min-height: 100vh;
-  gap: 12px;
-  padding: 32px;
+  gap: var(--s-3);
+  padding: var(--s-7);
   text-align: center;
   color: var(--text);
   background: var(--bg);
@@ -41,7 +41,7 @@ body {
 
 .fatal-boundary button {
   justify-self: center;
-  padding: 9px 14px;
+  padding: var(--s-2) var(--s-4);
   border-radius: var(--r-sm);
   color: var(--cyan-bright);
   background: rgba(var(--cyan-rgb), 0.1);
@@ -72,55 +72,20 @@ input:focus-visible {
   outline-offset: 2px;
 }
 
-/* ===== Ambient layers (decorative, pointer-transparent) ===== */
+/* ===== No ambient layer =====
+   The deck background is a single flat fill, and that is the design, not a
+   placeholder. It has held, in order: an aurora of six blurred colour washes on
+   two drifting plates plus a full-window vignette (read as unrelated purple and
+   cyan smudges, and caused all the banding), and then one 340px glow behind the
+   reactor. That glow had to go too: once the background is flat, the only
+   brightness variation left IS the glow, so a bright centre falling off to dark
+   corners is precisely what vignetting looks like. Any single soft light on a
+   flat dark field will do the same thing.
 
-/* Faint drifting nebula: cyan + violet depth, kept very low so panels read clean.
-   Absolute (not fixed) so the deck's rounded corners clip them. */
-.hud-nebula {
-  position: absolute;
-  inset: -22%;
-  z-index: 0;
-  pointer-events: none;
-  background:
-    radial-gradient(42% 42% at 24% 22%, rgba(var(--cyan-rgb), 0.07), transparent 70%),
-    radial-gradient(40% 44% at 80% 18%, rgba(var(--violet-rgb), 0.07), transparent 72%),
-    radial-gradient(50% 50% at 62% 88%, rgba(56, 89, 179, 0.09), transparent 76%);
-  filter: blur(60px);
-  animation: nebula-drift 40s ease-in-out infinite alternate;
-}
-
-/* Halo behind the orb so the core feels like the light source of the room */
-.hud-glow {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background: radial-gradient(
-    36% 44% at 50% 42%,
-    rgba(var(--cyan-rgb), 0.075),
-    rgba(var(--cyan-rgb), 0.02) 55%,
-    transparent 75%
-  );
-  transition: opacity 1.2s ease;
-}
-
-.deck.asleep .hud-glow {
-  opacity: 0.35;
-}
-
-.hud-vignette {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  box-shadow: inset 0 0 220px rgba(0, 0, 0, 0.72);
-}
-
-@keyframes nebula-drift {
-  0% { transform: translate3d(-1.5%, -1%, 0) scale(1); }
-  50% { transform: translate3d(2%, 1.5%, 0) scale(1.06); }
-  100% { transform: translate3d(-1%, 2%, 0) scale(1.02); }
-}
+   The reactor canvas draws its own light, which is the focal point the room
+   needs. Two rules to keep this calm: gradients on dark surfaces must be small
+   and steep, and depth comes from a step of fill tone plus spacing rather than
+   from washes or outlines. */
 
 /* ===== Shared scrollbars ===== */
 ::-webkit-scrollbar {
@@ -129,7 +94,7 @@ input:focus-visible {
 }
 
 ::-webkit-scrollbar-thumb {
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: rgba(148, 196, 255, 0.14);
 }
 
@@ -141,57 +106,63 @@ input:focus-visible {
   background: transparent;
 }
 
-/* ===== Shared micro-label (panel headers etc.) ===== */
+/* ===== Panel header =====
+   Was 10px tracked-out uppercase mono, same as every other label in the app.
+   Now it speaks in the UI font at a legible size: the instrument voice is
+   rationed to real readouts (telemetry, run ids, boot log) so that when
+   something IS mono-tracked, it means something. */
 .col-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 15px 16px 11px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: 0.24em;
-  text-transform: uppercase;
-  color: var(--muted);
+  gap: var(--s-2);
+  padding: var(--s-4) var(--s-4) var(--s-3);
+  font-size: var(--t-sm);
+  font-weight: var(--w-semi);
+  letter-spacing: var(--tr-snug);
+  color: var(--text-soft);
 }
 
 .col-head svg {
-  color: rgba(var(--cyan-rgb), 0.66);
+  color: rgba(var(--accent-rgb), 0.8);
+  transition: color var(--accent-ease);
 }
 
 .col-head .count {
   display: inline-grid;
   place-items: center;
-  min-width: 19px;
-  height: 19px;
-  padding: 0 6px;
-  border-radius: 999px;
-  font-size: 10px;
-  letter-spacing: 0.05em;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 var(--s-2);
+  border-radius: var(--r-pill);
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs);
+  font-weight: var(--w-medium);
+  letter-spacing: 0;
   color: var(--cyan-bright);
-  background: rgba(var(--cyan-rgb), 0.1);
-  box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb), 0.18);
+  background: rgba(var(--cyan-rgb), 0.12);
+  box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb), 0.2);
 }
 
 .col-head .head-state {
   margin-left: auto;
-  font-size: 9px;
-  letter-spacing: 0.2em;
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs);
+  font-weight: var(--w-medium);
+  letter-spacing: var(--tr-caps);
+  text-transform: uppercase;
   color: var(--muted);
-  opacity: 0.7;
 }
 
 .col-head .view-all {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  margin-left: 8px;
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
+  gap: var(--s-1);
+  margin-left: var(--s-2);
+  font-size: var(--t-xs);
+  font-weight: var(--w-medium);
+  letter-spacing: 0;
   color: var(--text-soft);
-  transition: color 0.15s ease;
+  transition: color var(--dur-fast) ease;
 }
 
 .col-head .count + .view-all,
@@ -200,55 +171,85 @@ input:focus-visible {
 }
 
 .col-head .view-all + .view-all {
-  margin-left: 10px;
+  margin-left: var(--s-3);
 }
 
 .col-head .view-all:hover {
   color: var(--cyan-bright);
 }
 
-/* ===== Shared empty state ===== */
+/* ===== Shared empty state =====
+   The first thing a new user sees in both columns, so it gets a real
+   structure: a soft accent-ringed icon, a lead line, then a quieter hint. */
 .empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-3);
   margin: auto;
-  padding: 30px 18px;
+  padding: var(--s-7) var(--s-5);
   text-align: center;
-  font-size: 12.5px;
-  line-height: 1.55;
   color: var(--muted);
 }
 
+.empty-icon {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  border-radius: var(--r-pill);
+  color: rgba(var(--accent-rgb), 0.85);
+  background: radial-gradient(circle, rgba(var(--accent-rgb), 0.14), transparent 72%);
+  box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.2);
+  transition: color var(--accent-ease), box-shadow var(--accent-ease);
+}
+
 .empty p {
-  margin: 0 0 12px;
+  margin: 0;
+  max-width: 25ch;
+  font-size: var(--t-md);
+  font-weight: var(--w-medium);
+  line-height: var(--lh-snug);
+  color: var(--text-soft);
+}
+
+.empty small {
+  display: block;
+  max-width: 28ch;
+  font-size: var(--t-sm);
+  line-height: var(--lh-body);
+  color: var(--muted);
 }
 
 .demo-load {
-  padding: 7px 13px;
-  border-radius: 999px;
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-pill);
   color: var(--cyan-bright);
-  background: rgba(var(--cyan-rgb), 0.07);
-  box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb), 0.2);
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  font-weight: 500;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  transition: background 0.15s ease, box-shadow 0.15s ease;
+  background: rgba(var(--cyan-rgb), 0.08);
+  box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb), 0.22);
+  font-size: var(--t-xs);
+  font-weight: var(--w-medium);
+  letter-spacing: 0;
+  transition: background var(--dur-fast) ease, box-shadow var(--dur-fast) ease;
 }
 
 .demo-load:hover {
-  background: rgba(var(--cyan-rgb), 0.13);
-  box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb), 0.34);
+  background: rgba(var(--cyan-rgb), 0.15);
+  box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb), 0.36);
 }
 
-/* ===== Shared status badge (dot + mono uppercase, no filled pill) ===== */
+/* ===== Shared status badge (dot + mono uppercase, no filled pill) =====
+   Status IS a genuine readout, so this keeps the instrument voice — but at a
+   legible 10px floor instead of 9.5px. */
 .badge {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--s-2);
   font-family: var(--font-mono);
-  font-size: 9.5px;
-  font-weight: 600;
-  letter-spacing: 0.2em;
+  font-size: var(--t-2xs);
+  font-weight: var(--w-semi);
+  letter-spacing: var(--tr-wide);
   text-transform: uppercase;
   color: var(--text-soft);
 }
@@ -284,7 +285,6 @@ input:focus-visible {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .hud-nebula,
   .badge.working::before,
   .badge.started::before,
   .badge.running::before {

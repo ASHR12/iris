@@ -82,6 +82,10 @@ export default function WorkCard({
       className={`wcard ${active ? "working" : ""} ${expandable ? "expandable" : ""} ${
         accepted ? "accepted" : ""
       }`}
+      /* Drives the status-colored rail on the card's left edge. An attribute
+         rather than a class so Hermes status strings can never collide with
+         layout class names. */
+      data-status={status}
       data-task-id={expandable ? task.id : undefined}
       onPointerEnter={onFocus}
       onFocus={onFocus}

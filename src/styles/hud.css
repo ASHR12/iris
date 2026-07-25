@@ -3,6 +3,11 @@
    The window is transparent + click-through; only `.hud-hit` elements
    (and open overlays) accept the pointer. Everything else lets you keep
    working in the apps underneath.
+
+   Material rule: every island (tasks, comms, camera, caption, orb rail)
+   draws from ONE glass recipe in tokens.css — `--hud-fill`, `--hud-edge`,
+   `--hud-inner`. Five separate recipes is what used to make the HUD read as
+   scattered popups instead of one system.
    ===================================================================== */
 
 html.hud-mode,
@@ -30,7 +35,7 @@ html:not(.hud-mode) .reader-backdrop,
 html:not(.hud-mode) .history-backdrop,
 html:not(.hud-mode) .match-backdrop,
 html:not(.hud-mode) .setup-backdrop {
-  border-radius: 14px;
+  border-radius: var(--r-md);
 }
 
 /* ===== Mode transitions ===== */
@@ -49,7 +54,7 @@ html:not(.hud-mode) .setup-backdrop {
 /* Exiting HUD: the deck mounts invisible and fades in as the window bounds
    are restored (the hold hides the resize). */
 .deck.deck-entering {
-  animation: deck-in 0.38s cubic-bezier(0.2, 0.8, 0.2, 1) 0.22s backwards;
+  animation: deck-in 0.38s var(--ease-out) 0.22s backwards;
 }
 
 @keyframes deck-in {
@@ -67,6 +72,15 @@ html:not(.hud-mode) .setup-backdrop {
   pointer-events: none;
 }
 
+/* ===== Shared HUD surfaces ===== */
+.hud-surface {
+  background: var(--hud-fill);
+  border: 1px solid var(--hud-edge);
+  box-shadow:
+    var(--hud-inner),
+    var(--hud-lift);
+}
+
 /* ===== Orb cluster (bottom-right) ===== */
 .hud-orb-cluster {
   position: absolute;
@@ -82,16 +96,22 @@ html:not(.hud-mode) .setup-backdrop {
   /* Right-aligned so the orb hugs the corner deterministically — the
      control column anchors to its left edge regardless of caption width. */
   align-items: flex-end;
-  gap: 10px;
+  gap: var(--s-3);
   /* Delayed + backwards-filled so elements stay invisible until the window
      has finished jumping to fullscreen bounds. */
-  animation: hud-rise 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) 0.16s backwards;
+  animation: hud-rise 0.5s var(--ease-out) 0.16s backwards;
 }
 
 .hud-orb.orb-stage {
   width: 190px;
   height: 190px;
 }
+
+/* No scrim behind the reactor. There used to be a blurred 266px dark radial
+   here to give the additive glow something to sit against over bright
+   wallpapers, but on a dark desktop it reads as exactly what it is: a large
+   soft shadow blob around the orb. The reactor's own strokes carry enough
+   contrast, and a soft wash is the one thing this design does not use. */
 
 .hud-shell.awake .orb-ring { opacity: 1; }
 .hud-shell.awake .orb-radar { opacity: 0.7; }
@@ -102,35 +122,74 @@ html:not(.hud-mode) .setup-backdrop {
   opacity: 0.72;
 }
 
+/* ===== Caption =====
+   In HUD mode this pill IS Iris's presence — it is the only place her voice
+   appears. It used to be a 13px rounded rect indistinguishable from a
+   tooltip; now it carries real typographic weight and a state light, so your
+   eye goes to it the moment she speaks. */
 .hud-caption {
   /* Centered above the reactor: the orb is right-aligned in the cluster, so
      its center sits 95px from the cluster's right edge. */
   position: absolute;
-  bottom: calc(100% + 10px);
+  bottom: calc(100% + var(--s-2));
   right: 95px;
   transform: translateX(50%);
   width: max-content;
-  max-width: 240px; /* stays fully on-screen when centered on the orb */
-  padding: 8px 15px;
-  border-radius: 14px;
-  background: linear-gradient(180deg, rgba(26, 36, 57, 0.68), rgba(10, 16, 28, 0.72));
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  /* Hard ceiling, not taste: centered on an orb whose center sits 121px from
+     the screen edge (26px margin + 95px), the pill's right edge lands at
+     `edge - 121 + width/2`, so anything over ~226px hangs off-screen. */
+  max-width: 224px;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-md);
+  background: var(--hud-fill-strong);
+  border: 1px solid var(--hud-edge);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.12),
-    0 1px 8px rgba(0, 0, 0, 0.18);
-  font-size: 13px;
-  line-height: 1.45;
-  text-align: center;
-  color: #f2f7ff;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.65);
+    var(--hud-inner),
+    0 2px 14px rgba(0, 0, 0, 0.28),
+    0 0 34px -10px rgba(var(--accent-rgb), 0.5);
+  font-size: var(--t-base);
+  font-weight: var(--w-medium);
+  line-height: var(--lh-snug);
+  letter-spacing: var(--tr-snug);
+  text-align: left;
+  color: var(--hud-text);
+  text-shadow: var(--hud-shadow-text);
+  transition: box-shadow var(--accent-ease);
+}
+
+/* Three lines: the pill is narrow (see max-width above) and Iris's replies are
+   whole sentences — two lines clipped most of them mid-thought. */
+.hud-caption-text {
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
 
+/* The state light: same color the orb is running, so the caption is visibly
+   part of the reactor rather than a floating label. */
+.hud-caption-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: rgba(var(--accent-rgb), 1);
+  box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.9);
+  transition: background var(--accent-ease), box-shadow var(--accent-ease);
+  animation: caption-live 2.4s ease-in-out infinite;
+}
+
+@keyframes caption-live {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
 .hud-caption.dim {
-  color: #c3cfe0;
+  color: var(--hud-text-soft);
 }
 
 /* Whisper-size states: the asleep hint ("Say Hey Iris") and transient status
@@ -138,19 +197,35 @@ html:not(.hud-mode) .setup-backdrop {
    the full size above. Three lines allowed — the standby-with-Hermes message
    is the longest and must never clip mid-sentence. */
 .hud-caption.hint {
-  max-width: 230px;
-  padding: 4px 10px;
-  border-radius: 9px;
-  font-size: 9.5px;
-  letter-spacing: 0.04em;
-  opacity: 0.85;
+  max-width: 208px;
+  padding: var(--s-1) var(--s-3);
+  border-radius: var(--r-sm);
+  font-size: var(--t-2xs);
+  font-weight: var(--w-normal);
+  letter-spacing: var(--tr-label);
+  opacity: 0.9;
+  box-shadow: var(--hud-inner), var(--hud-lift);
+}
+
+.hud-caption.hint .hud-caption-text {
   -webkit-line-clamp: 3;
 }
 
-/* Control buttons: a vertical column to the LEFT of the orb, bottom-aligned
-   with the camera's 100px Dock-clearance line — never under the Dock, no
-   matter how many buttons or how wide the Dock gets. (Fixed-positioned, but
-   hover still works: the column is a DOM child of the cluster.) */
+/* ===== Control rail =====
+   Was four free-floating circles; now ONE capsule that reads as a single
+   object clipped to the orb. Vertical column to the LEFT of the orb,
+   bottom-aligned with the camera's 100px Dock-clearance line — never under
+   the Dock, no matter how many buttons or how wide the Dock gets.
+   (Fixed-positioned, but hover still works: `:hover` is DOM-based, so the
+   pointer over this fixed child still matches the cluster ancestor — which is
+   what lets you travel from the orb onto the rail without it vanishing.)
+
+   Hidden at rest ON PURPOSE: the HUD floats over your desktop and must stay
+   visually silent until addressed, so the rail appears only when you hover the
+   reactor. That does mean there is no permanently visible way out of HUD mode,
+   which is deliberate rather than an oversight — the escape hatches are the
+   ⌥H hotkey, "Toggle Glass HUD" in the View menu, and "Exit Glass HUD" in the
+   menu-bar tray. Please don't make this visible-at-rest to "fix" that. */
 .hud-controls {
   position: fixed;
   right: 230px; /* 26px margin + 190px orb + 14px gap */
@@ -158,7 +233,14 @@ html:not(.hud-mode) .setup-backdrop {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: var(--s-05);
+  padding: var(--s-2) var(--s-1);
+  border-radius: var(--r-pill);
+  background: var(--hud-chip);
+  box-shadow:
+    var(--hud-inner),
+    inset 0 0 0 1px var(--hud-edge),
+    var(--hud-lift);
   opacity: 0;
   transform: translateX(6px);
   transition: opacity 0.2s ease, transform 0.2s ease;
@@ -166,6 +248,8 @@ html:not(.hud-mode) .setup-backdrop {
 
 .hud-orb-cluster:hover .hud-controls,
 .hud-orb-cluster:focus-within .hud-controls,
+.hud-controls:hover,
+/* `.show` is driven by hand-tracking proximity to the reactor corner. */
 .hud-controls.show {
   opacity: 1;
   transform: none;
@@ -177,41 +261,51 @@ html:not(.hud-mode) .setup-backdrop {
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  color: #dbe6f5;
+  color: var(--hud-text-soft);
   background: rgba(22, 30, 47, 0.68);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.14),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.16);
-  transition: color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+    var(--hud-inner),
+    inset 0 0 0 1px var(--hud-edge);
+  transition: color var(--dur-fast) ease, box-shadow var(--dur-fast) ease, background var(--dur-fast) ease;
+}
+
+/* Inside the rail the capsule already provides the container, so the buttons
+   drop their own rings — otherwise you get rings inside a ring. */
+.hud-controls .hud-btn {
+  background: transparent;
+  box-shadow: none;
+}
+
+.hud-controls .hud-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  box-shadow: none;
 }
 
 .hud-btn:hover {
-  transform: translateY(-1px);
   color: var(--cyan-bright);
-  box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb), 0.4);
 }
 
-.hud-btn.danger:hover {
+.hud-controls .hud-btn.danger:hover {
   color: var(--coral);
-  box-shadow: inset 0 0 0 1px rgba(var(--coral-rgb), 0.45);
+  background: rgba(var(--coral-rgb), 0.18);
 }
 
-.hud-btn.wake {
+.hud-controls .hud-btn.wake {
   color: var(--cyan-bright);
-  box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb), 0.4);
+  background: rgba(var(--cyan-rgb), 0.16);
 }
 
-.hud-btn.muted {
+.hud-controls .hud-btn.muted {
   color: var(--amber);
-  box-shadow: inset 0 0 0 1px rgba(var(--amber-rgb), 0.45);
+  background: rgba(var(--amber-rgb), 0.18);
 }
 
-.hud-btn.active {
+.hud-controls .hud-btn.active {
   color: #06222b;
   background: linear-gradient(180deg, var(--cyan-bright), var(--cyan));
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.45),
-    0 0 18px rgba(var(--cyan-rgb), 0.4);
+    0 0 16px rgba(var(--cyan-rgb), 0.45);
 }
 
 /* ===== Slim work stream (top-right) ===== */
@@ -223,8 +317,8 @@ html:not(.hud-mode) .setup-backdrop {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 8px;
-  animation: hud-slide 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) 0.16s backwards;
+  gap: var(--s-2);
+  animation: hud-slide 0.45s var(--ease-out) 0.16s backwards;
 }
 
 .hud-work {
@@ -234,9 +328,9 @@ html:not(.hud-mode) .setup-backdrop {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--s-2);
   scrollbar-width: none;
-  animation: hud-rise 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
+  animation: hud-rise 0.25s var(--ease-out);
 }
 
 .hud-work::-webkit-scrollbar {
@@ -254,76 +348,87 @@ html:not(.hud-mode) .setup-backdrop {
   z-index: 40; /* clickable above the Neural Map canvas */
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--s-2);
   width: 300px;
-  animation: hud-rise 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) 0.16s backwards;
+  animation: hud-rise 0.5s var(--ease-out) 0.16s backwards;
 }
 
 .hud-camera .camera-frame {
   margin: 0;
   aspect-ratio: 4 / 3;
-  border-radius: var(--r-card);
+  border-radius: var(--r-md);
   box-shadow:
-    inset 0 0 0 1px var(--hairline-strong),
-    0 1px 8px rgba(0, 0, 0, 0.2);
+    inset 0 0 0 1px var(--hud-edge),
+    var(--hud-lift);
 }
 
+/* ===== HUD chips (Tasks / Comms toggles) ===== */
 .hud-comms-toggle {
   align-self: flex-start;
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  padding: 6px 12px;
-  border-radius: 999px;
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  font-weight: 500;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: #dbe6f5;
-  background: rgba(22, 30, 47, 0.68);
+  gap: var(--s-2);
+  padding: var(--s-1) var(--s-3);
+  border-radius: var(--r-pill);
+  font-size: var(--t-xs);
+  font-weight: var(--w-semi);
+  letter-spacing: var(--tr-snug);
+  color: var(--hud-text);
+  text-shadow: var(--hud-shadow-text-soft);
+  background: var(--hud-chip);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.14),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.16);
-  transition: color 0.15s ease, box-shadow 0.15s ease;
+    var(--hud-inner),
+    inset 0 0 0 1px var(--hud-edge);
+  transition: color var(--dur-fast) ease, box-shadow var(--dur-fast) ease;
 }
 
 .hud-comms-toggle:hover {
   color: var(--cyan-bright);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.14),
-    inset 0 0 0 1px rgba(var(--cyan-rgb), 0.4);
+    var(--hud-inner),
+    inset 0 0 0 1px rgba(var(--cyan-rgb), 0.45);
 }
 
 .hud-comms-toggle .count {
   display: inline-grid;
   place-items: center;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 5px;
-  border-radius: 999px;
-  font-size: 9px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 var(--s-1);
+  border-radius: var(--r-pill);
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs);
   color: var(--cyan-bright);
-  background: rgba(var(--cyan-rgb), 0.14);
+  background: rgba(var(--cyan-rgb), 0.18);
+  text-shadow: none;
 }
 
 .hud-comms-toggle .chev {
-  transition: transform 0.18s ease;
+  transition: transform var(--dur-fast) ease;
 }
 
 .hud-comms-toggle.open .chev {
   transform: rotate(180deg);
 }
 
+/* ===== Comms =====
+   The bubbles used to float loose on the wallpaper, which read as stray
+   notifications. They now live inside a real pane. */
 .hud-comms {
   max-height: 34vh;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 2px;
+  gap: var(--s-2);
+  padding: var(--s-3);
+  border-radius: var(--r-md);
+  background: linear-gradient(180deg, rgba(18, 26, 44, 0.42), rgba(8, 13, 24, 0.46));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    var(--hud-lift);
   scrollbar-width: none;
-  animation: hud-rise 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
+  animation: hud-rise 0.25s var(--ease-out);
 }
 
 .hud-comms::-webkit-scrollbar {
@@ -333,26 +438,26 @@ html:not(.hud-mode) .setup-backdrop {
 /* Keep the left/right speaker offset readable: Iris hugs the left edge, you
    hug the right, with clear opposite-side indents. */
 .hud-comms .bubble {
-  max-width: 84%;
+  max-width: 86%;
 }
 
 /* ===== HUD glass surfaces =====
    The OS behind a transparent window can't be backdrop-blurred, so readable
    glass here = a light (~60%) tinted fill you can see the desktop through, a
    bright 1px edge highlight to define the pane, and text shadows so text
-   survives worst-case bright wallpapers (per NN/g glassmorphism guidance). */
-/* No big drop shadows on stacked HUD elements: overlapping shadows fuse into a
+   survives worst-case bright wallpapers (per NN/g glassmorphism guidance).
+   No big drop shadows on stacked HUD elements: overlapping shadows fuse into a
    dark plate behind the whole column. A crisp edge + hairline is enough. */
 .hud-mode .wcard {
-  background: linear-gradient(180deg, rgba(26, 36, 57, 0.58), rgba(10, 16, 28, 0.6));
-  border-color: rgba(255, 255, 255, 0.18);
+  background: var(--hud-fill);
+  border-color: var(--hud-edge);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    var(--hud-inner),
     0 1px 6px rgba(0, 0, 0, 0.16);
 }
 
 .hud-mode .wcard.expandable:hover {
-  background: linear-gradient(180deg, rgba(33, 46, 72, 0.7), rgba(13, 20, 34, 0.72));
+  background: var(--hud-fill-strong);
   border-color: rgba(var(--cyan-rgb), 0.45);
 }
 
@@ -361,27 +466,27 @@ html:not(.hud-mode) .setup-backdrop {
 }
 
 .hud-mode .wcard-task {
-  color: #f2f7ff;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.65);
+  color: var(--hud-text);
+  text-shadow: var(--hud-shadow-text);
 }
 
 .hud-mode .wcard-preview {
-  color: #c6d2e4;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  color: var(--hud-text-soft);
+  text-shadow: var(--hud-shadow-text-soft);
 }
 
 .hud-mode .wcard-top code {
-  color: #a7b7cd;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+  color: var(--hud-text-dim);
+  text-shadow: var(--hud-shadow-text-soft);
 }
 
 .hud-mode .badge {
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+  text-shadow: var(--hud-shadow-text-soft);
 }
 
 .hud-mode .step-tool,
 .hud-mode .activity-now {
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+  text-shadow: var(--hud-shadow-text-soft);
 }
 
 .hud-mode .step-detail {
@@ -394,23 +499,29 @@ html:not(.hud-mode) .setup-backdrop {
 }
 
 .hud-mode .bubble {
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  text-shadow: var(--hud-shadow-text-soft);
 }
 
 .hud-mode .bubble.iris {
-  background: rgba(15, 30, 43, 0.6);
+  background: rgba(15, 30, 43, 0.62);
   border-color: rgba(var(--cyan-rgb), 0.32);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 1px 6px rgba(0, 0, 0, 0.14);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
 }
 
 .hud-mode .bubble.self {
-  background: rgba(22, 29, 45, 0.6);
+  background: rgba(24, 31, 48, 0.62);
   border-color: rgba(255, 255, 255, 0.18);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 1px 6px rgba(0, 0, 0, 0.14);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
 }
 
 .hud-mode .bubble .who {
   text-shadow: none;
+}
+
+/* --muted is tuned for the deck's near-black panels; on HUD glass over a
+   bright wallpaper it drops close to illegible. */
+.hud-mode .bubble.self .who {
+  color: var(--hud-text-dim);
 }
 
 /* The open reader/history/chooser use the SAME glass language as the Hermes
@@ -419,17 +530,17 @@ html:not(.hud-mode) .setup-backdrop {
 .hud-mode .reader-card,
 .hud-mode .history-card,
 .hud-mode .match-card {
-  background: linear-gradient(180deg, rgba(26, 36, 57, 0.68), rgba(10, 16, 28, 0.72));
-  border-color: rgba(255, 255, 255, 0.18);
+  background: var(--hud-fill-strong);
+  border-color: var(--hud-edge);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    var(--hud-inner),
     0 30px 90px rgba(0, 0, 0, 0.5);
 }
 
 .hud-mode .reader-title,
 .hud-mode .markdown-body,
 .hud-mode .match-copy strong {
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+  text-shadow: var(--hud-shadow-text-soft);
 }
 
 .hud-mode .markdown-body {
@@ -471,42 +582,44 @@ html:not(.hud-mode) .setup-backdrop {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
+  gap: var(--s-1);
   width: 300px;
   height: fit-content;
   max-height: max(0px, calc(58vh - 408px));
   margin-top: auto;
   margin-bottom: auto;
   overflow: hidden;
-  padding: 10px 14px 9px;
-  border-radius: 14px;
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-md);
   background: rgba(8, 12, 22, 0.94);
   border: 1px solid var(--hairline-strong);
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
-  animation: hud-rise 0.4s cubic-bezier(0.2, 0.8, 0.2, 1);
+  box-shadow: var(--e-3);
+  animation: hud-rise 0.4s var(--ease-out);
 }
 
 .boot.compact .boot-title {
-  font-size: 12.5px;
+  font-size: var(--t-md);
 }
 
 .boot.compact .boot-sub {
-  font-size: 6.5px;
+  font-size: var(--t-2xs);
+  letter-spacing: var(--tr-caps);
+  margin-right: calc(var(--tr-caps) * -1);
 }
 
 .boot.compact .boot-log {
   width: 100%;
-  margin-top: 2px;
-  font-size: 9px;
+  margin-top: var(--s-05);
+  font-size: var(--t-2xs);
 }
 
 .boot.compact .boot-line {
-  gap: 7px;
+  gap: var(--s-2);
   padding: 1.5px 0;
 }
 
 .boot.compact .boot-line .boot-state {
-  font-size: 8px;
+  font-size: var(--t-2xs);
 }
 
 .boot.compact .boot-bar {
@@ -525,7 +638,9 @@ html:not(.hud-mode) .setup-backdrop {
 
 @media (prefers-reduced-motion: reduce) {
   .hud-orb-cluster,
-  .hud-work {
+  .hud-work,
+  .hud-comms,
+  .hud-caption-dot {
     animation: none;
   }
 }

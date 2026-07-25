@@ -1,5 +1,9 @@
 /* =====================================================================
    Orbital Deck layout — LEFT = You · CENTER = Iris · RIGHT = Work
+
+   Hierarchy rule: the orb is the subject. The side columns are RECESSED
+   rails that frame it, not cards that compete with it. Everything
+   atmospheric is tinted by `--accent-rgb` (the live reactor state).
    ===================================================================== */
 
 .deck {
@@ -7,31 +11,40 @@
   display: flex;
   flex-direction: column;
   height: 100vh;
-  padding: 12px 18px 12px;
-  gap: 12px;
+  padding: var(--s-3) var(--s-5);
+  gap: var(--s-3);
   /* The window is transparent; the deck owns its background + rounded frame. */
-  border-radius: 14px;
+  border-radius: var(--r-md);
   overflow: hidden;
-  background:
-    radial-gradient(85% 70% at 50% 30%, rgba(17, 34, 64, 0.5), transparent 70%),
-    linear-gradient(180deg, var(--bg-1) 0%, var(--bg-0) 100%);
-  box-shadow: inset 0 0 0 1px rgba(148, 196, 255, 0.06);
+  /* Flat. Deliberately. This carried two window-sized radial washes (88% and
+     92% wide) plus a --bg-1 -> --bg-0 ramp; all three spanned fewer 8-bit
+     levels than the pixels they covered, which is the definition of a gradient
+     that must band. The rule: if a gradient crosses more pixels than it has
+     code levels to cross them with, it is not a gradient, it is a stack of
+     plateaus with visible edges. The reactor canvas is the room's light; the
+     background stays flat. */
+  background: var(--bg-1);
+  box-shadow: inset 0 0 0 1px rgba(148, 196, 255, 0.07);
+  transition: background var(--accent-ease);
 }
 
-.deck > *:not(.hud-nebula):not(.hud-glow):not(.hud-vignette) {
+.deck > * {
   position: relative;
   z-index: 1;
 }
 
-/* ===== Glass panels ===== */
+/* ===== Surfaces =====
+   Containment comes from FILL, not from outlines. Every surface here used to
+   carry its own 1px border, and they nest three deep — panel, then message
+   bubble, then card — so the deck read as a cage of boxes inside boxes. A
+   surface that is a step lighter than its parent already reads as separate;
+   adding a line around it as well is saying the same thing twice, and the
+   lines are what you notice. Spacing and one step of tone do the work now. */
 .deck-panel {
-  border-radius: var(--r-panel);
-  background: var(--panel);
-  border: 1px solid var(--hairline);
-  box-shadow:
-    inset 0 1px 0 var(--edge-light),
-    var(--shadow-panel);
+  border-radius: var(--r-lg);
+  background: var(--panel-recessed);
   backdrop-filter: blur(26px) saturate(1.25);
+  transition: background var(--accent-ease);
 }
 
 /* ===== Top bar ===== */
@@ -40,15 +53,14 @@
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
   min-height: 42px;
-  padding: 4px 6px 8px;
-  border-bottom: 1px solid var(--hairline);
+  padding: var(--s-1) var(--s-2) var(--s-2);
   -webkit-app-region: drag;
 }
 
 .deck-top-left {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: var(--s-4);
   /* The REAL macOS traffic lights (titleBarStyle: hiddenInset) occupy
      window x 22-74; clear their footprint before the status dots start. */
   padding-left: 66px;
@@ -58,7 +70,7 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 9px;
+  gap: var(--s-2);
 }
 
 /* Only interactive controls opt out of the drag region. */
@@ -74,16 +86,17 @@
 
 .brand-mark {
   font-family: var(--font-display);
-  font-weight: 600;
-  font-size: 17px;
-  letter-spacing: 0.52em;
-  margin-right: -0.52em; /* optically recenter the tracked-out wordmark */
+  font-weight: var(--w-semi);
+  font-size: var(--t-lg);
+  letter-spacing: var(--tr-brand);
+  margin-right: calc(var(--tr-brand) * -1); /* optically recenter the tracked wordmark */
   color: #eaf6ff;
-  text-shadow: 0 0 22px rgba(var(--cyan-rgb), 0.4);
+  text-shadow: 0 0 22px rgba(var(--accent-rgb), 0.45);
+  transition: text-shadow var(--accent-ease);
   user-select: none;
 }
 
-/* Ghost icon buttons (settings / hand) */
+/* Ghost icon buttons (settings / hand / HUD) */
 .theme-toggle {
   display: grid;
   place-items: center;
@@ -93,12 +106,17 @@
   color: var(--text-soft);
   background: rgba(255, 255, 255, 0.03);
   box-shadow: inset 0 0 0 1px var(--hairline);
-  transition: color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease, transform 0.18s ease;
+  transition:
+    color var(--dur-mid) ease,
+    box-shadow var(--dur-mid) ease,
+    background var(--dur-mid) ease,
+    transform var(--dur-fast) ease;
 }
 
 .theme-toggle:hover {
   transform: translateY(-1px);
   color: var(--cyan-bright);
+  background: rgba(255, 255, 255, 0.055);
   box-shadow: inset 0 0 0 1px var(--hairline-strong);
 }
 
@@ -119,7 +137,7 @@
   color: var(--muted);
   background: rgba(255, 255, 255, 0.03);
   box-shadow: inset 0 0 0 1px var(--hairline);
-  transition: color 0.3s ease, box-shadow 0.3s ease;
+  transition: color var(--dur-slow) ease, box-shadow var(--dur-slow) ease;
 }
 
 .link-indicator.on {
@@ -130,23 +148,36 @@
   animation: pulse-dot 2.6s ease-in-out infinite;
 }
 
-/* ===== Status cluster ===== */
+/* ===== Status cluster =====
+   Was three identical free-floating mono labels. Now one seated instrument
+   cluster with hairline dividers, so it reads as a single system readout. */
 .deck-status {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: var(--s-3);
+  padding: var(--s-1) var(--s-3);
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, 0.022);
+  box-shadow: inset 0 0 0 1px var(--hairline);
 }
 
 .status-dot {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: var(--s-2);
   font-family: var(--font-mono);
-  font-size: 9.5px;
-  font-weight: 500;
-  letter-spacing: 0.2em;
+  font-size: var(--t-2xs);
+  font-weight: var(--w-medium);
+  letter-spacing: var(--tr-caps);
   text-transform: uppercase;
   color: var(--muted);
+  transition: color var(--dur-slow) ease;
+}
+
+/* Hairline dividers between channels rather than raw whitespace. */
+.status-dot + .status-dot {
+  padding-left: var(--s-3);
+  border-left: 1px solid var(--hairline);
 }
 
 .status-dot i {
@@ -154,7 +185,13 @@
   height: 7px;
   border-radius: 50%;
   background: #273349;
-  transition: background 0.3s ease, box-shadow 0.3s ease;
+  transition: background var(--dur-slow) ease, box-shadow var(--dur-slow) ease;
+}
+
+/* A live channel brightens its own label, not just its dot. */
+.status-dot.on,
+.status-dot.speaking {
+  color: var(--text-soft);
 }
 
 .status-dot.err i {
@@ -181,8 +218,8 @@
 }
 
 .status-dot.audio.speaking i {
-  background: var(--coral);
-  box-shadow: 0 0 12px rgba(var(--coral-rgb), 0.75);
+  background: var(--amber);
+  box-shadow: 0 0 12px rgba(var(--amber-rgb), 0.75);
   animation: pulse-dot 1.1s ease-in-out infinite;
 }
 
@@ -201,14 +238,14 @@
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(280px, 336px) minmax(0, 1fr) minmax(300px, 356px);
-  gap: 12px;
+  gap: var(--s-3);
 }
 
 /* ===== Left column: You ===== */
 .deck-left {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--s-3);
   min-height: 0;
 }
 
@@ -226,49 +263,50 @@
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 9px;
-  padding: 2px 14px 14px;
+  gap: var(--s-2);
+  padding: var(--s-05) var(--s-4) var(--s-4);
 }
 
 .bubble {
   flex: 0 0 auto;
   max-width: 88%;
-  padding: 9px 13px;
-  border-radius: 14px;
-  font-size: 13px;
-  line-height: 1.55;
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-md);
+  font-size: var(--t-md);
+  line-height: var(--lh-body);
   color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
-  animation: bubble-in 0.28s ease;
+  animation: bubble-in var(--dur-mid) var(--ease-out);
 }
 
 .bubble .who {
   display: block;
-  margin-bottom: 4px;
+  margin-bottom: var(--s-1);
   font-family: var(--font-mono);
-  font-size: 8.5px;
-  font-weight: 600;
-  letter-spacing: 0.22em;
+  font-size: var(--t-2xs);
+  font-weight: var(--w-semi);
+  letter-spacing: var(--tr-caps);
   text-transform: uppercase;
 }
 
+/* Iris speaks in an accent-tinted fill and hugs the left edge. Flat, borderless:
+   the tint alone says who is speaking. */
 .bubble.iris {
   align-self: flex-start;
-  background: rgba(var(--cyan-rgb), 0.07);
-  border: 1px solid rgba(var(--cyan-rgb), 0.13);
-  border-bottom-left-radius: 5px;
+  background: rgba(var(--cyan-rgb), 0.1);
+  border-bottom-left-radius: var(--s-1);
 }
 
 .bubble.iris .who {
-  color: rgba(var(--cyan-rgb), 0.8);
+  color: rgba(var(--cyan-rgb), 0.85);
 }
 
+/* You speak in a neutral fill on the right. */
 .bubble.self {
   align-self: flex-end;
-  background: rgba(255, 255, 255, 0.035);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  border-bottom-right-radius: 5px;
+  background: rgba(255, 255, 255, 0.06);
+  border-bottom-right-radius: var(--s-1);
 }
 
 .bubble.self .who {
@@ -288,9 +326,9 @@
 
 .camera-frame {
   position: relative;
-  margin: 0 12px 12px;
+  margin: 0 var(--s-3) var(--s-3);
   aspect-ratio: 4 / 3;
-  border-radius: var(--r-card);
+  border-radius: var(--r-md);
   overflow: hidden;
   background: #040910;
   box-shadow: inset 0 0 0 1px var(--hairline);
@@ -307,8 +345,9 @@
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: linear-gradient(transparent 62%, rgba(var(--cyan-rgb), 0.07));
+  background: linear-gradient(transparent 62%, rgba(var(--accent-rgb), 0.09));
   box-shadow: inset 0 0 44px rgba(3, 10, 18, 0.7);
+  transition: background var(--accent-ease);
 }
 
 .hand-skeleton {
@@ -350,20 +389,20 @@
 
 .gesture-chip {
   position: absolute;
-  left: 10px;
-  bottom: 10px;
+  left: var(--s-3);
+  bottom: var(--s-3);
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 10px;
-  border-radius: 999px;
+  gap: var(--s-2);
+  padding: var(--s-1) var(--s-3);
+  border-radius: var(--r-pill);
   font-family: var(--font-mono);
-  font-size: 9.5px;
-  font-weight: 500;
-  letter-spacing: 0.08em;
+  font-size: var(--t-2xs);
+  font-weight: var(--w-medium);
+  letter-spacing: var(--tr-label);
   color: #dff6ff;
-  background: rgba(4, 12, 20, 0.66);
-  box-shadow: inset 0 0 0 1px rgba(148, 196, 255, 0.14);
+  background: rgba(4, 12, 20, 0.7);
+  box-shadow: inset 0 0 0 1px rgba(148, 196, 255, 0.16);
   backdrop-filter: blur(8px);
 }
 
@@ -375,7 +414,7 @@
 /* Pinch is the one state you must never be unsure about — loud orange. */
 .gesture-chip.pinch {
   color: #ff9f43;
-  font-weight: 700;
+  font-weight: var(--w-bold);
   opacity: 1;
 }
 .gesture-chip.pinch .dot {
@@ -393,16 +432,20 @@
 
 .cam-status {
   position: absolute;
-  right: 10px;
-  top: 10px;
+  right: var(--s-3);
+  top: var(--s-3);
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--s-2);
+  padding: var(--s-05) var(--s-2);
+  border-radius: var(--r-pill);
   font-family: var(--font-mono);
-  font-size: 8.5px;
-  letter-spacing: 0.16em;
+  font-size: var(--t-2xs);
+  letter-spacing: var(--tr-label);
   color: #cfeeff;
   text-transform: uppercase;
+  background: rgba(4, 12, 20, 0.5);
+  backdrop-filter: blur(6px);
 }
 
 .cam-status i {
@@ -416,24 +459,24 @@
 
 .cam-error {
   position: absolute;
-  inset: auto 10px 42px;
+  inset: auto var(--s-3) 42px;
   z-index: 3;
-  padding: 7px 8px;
-  border-radius: 7px;
+  padding: var(--s-2);
+  border-radius: var(--r-xs);
   color: var(--coral);
-  background: rgba(3, 5, 9, 0.82);
+  background: rgba(3, 5, 9, 0.85);
   box-shadow: inset 0 0 0 1px rgba(var(--coral-rgb), 0.25);
-  font-size: 9px;
-  line-height: 1.4;
+  font-size: var(--t-2xs);
+  line-height: var(--lh-snug);
 }
 
 .camera-off {
-  margin: 0 12px 12px;
-  padding: 18px 14px;
-  border-radius: var(--r-card);
+  margin: 0 var(--s-3) var(--s-3);
+  padding: var(--s-5) var(--s-4);
+  border-radius: var(--r-md);
   text-align: center;
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: var(--t-sm);
+  line-height: var(--lh-body);
   color: var(--muted);
   background: rgba(255, 255, 255, 0.02);
   box-shadow: inset 0 0 0 1px var(--hairline);
@@ -446,13 +489,13 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 14px;
-  padding: 0 0 22px;
+  gap: var(--s-4);
+  padding: 0 0 var(--s-6);
   min-width: 0;
   z-index: 2;
 }
 
-/* --- Orb stage (preserved: same core, ring and radar chrome as before) --- */
+/* --- Orb stage (the core, ring and radar chrome are unchanged) --- */
 .orb-stage {
   width: min(44vh, 400px);
   height: min(44vh, 400px);
@@ -470,6 +513,12 @@
   height: 100%;
 }
 
+/* There is deliberately no plinth under the orb. A blurred elliptical light pool
+   plus a specular floor line used to sit here to stop the orb floating in the
+   gap between the two panels, but a large soft ellipse under the reactor reads
+   as a drop shadow, not as a stage. The reactor is centered and much brighter
+   than the rails, which is enough to make it outrank them. */
+
 /* Orb chrome: rotating tick ring + sweeping radar arc around the core */
 .orb-ring,
 .orb-radar {
@@ -484,7 +533,7 @@
   inset: -3%;
   background: repeating-conic-gradient(
     from 0deg,
-    rgba(var(--orb-accent, 63, 208, 176), 0.32) 0deg 0.7deg,
+    rgba(var(--orb-accent, 34, 190, 205), 0.32) 0deg 0.7deg,
     transparent 0.7deg 6deg
   );
   -webkit-mask: radial-gradient(circle, transparent 72%, #000 73%, #000 77%, transparent 78%);
@@ -496,9 +545,9 @@
   inset: 1%;
   background: conic-gradient(
     from 0deg,
-    rgba(var(--orb-accent, 63, 208, 176), 0) 0deg,
-    rgba(var(--orb-accent, 63, 208, 176), 0.22) 38deg,
-    rgba(var(--orb-accent, 63, 208, 176), 0) 80deg
+    rgba(var(--orb-accent, 34, 190, 205), 0) 0deg,
+    rgba(var(--orb-accent, 34, 190, 205), 0.22) 38deg,
+    rgba(var(--orb-accent, 34, 190, 205), 0) 80deg
   );
   -webkit-mask: radial-gradient(circle, transparent 58%, #000 59%, #000 71%, transparent 72%);
   mask: radial-gradient(circle, transparent 58%, #000 59%, #000 71%, transparent 72%);
@@ -526,16 +575,17 @@
 .caption {
   max-width: 82%;
   text-align: center;
-  font-size: clamp(18px, 2.3vw, 25px);
+  font-size: var(--t-caption);
   font-weight: 450;
-  letter-spacing: -0.01em;
-  line-height: 1.35;
+  letter-spacing: var(--tr-tight);
+  line-height: var(--lh-tight);
   color: var(--text);
   min-height: 1.4em;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  text-wrap: balance;
 }
 
 .caption.dim {
@@ -546,10 +596,10 @@
   display: inline-block;
   width: 2px;
   height: 0.95em;
-  margin-left: 7px;
+  margin-left: var(--s-2);
   vertical-align: -2px;
-  background: var(--cyan);
-  box-shadow: 0 0 8px var(--cyan);
+  background: rgba(var(--accent-rgb), 1);
+  box-shadow: 0 0 8px rgba(var(--accent-rgb), 0.9);
   animation: caret-blink 1s steps(1) infinite;
 }
 
@@ -558,38 +608,42 @@
   50.01%, 100% { opacity: 0; }
 }
 
-/* --- Telemetry readout --- */
+/* --- Telemetry readout ---
+   This IS a genuine instrument readout, so it keeps the tracked mono voice —
+   at the 10px legibility floor, with the labels dimmer than their values so
+   you can scan the numbers. */
 .telemetry {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--s-3);
   font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.16em;
+  font-size: var(--t-2xs);
+  letter-spacing: var(--tr-caps);
   text-transform: uppercase;
   color: var(--text-soft);
-  opacity: 0.5;
-  transition: opacity 0.4s ease;
+  opacity: 0.55;
+  transition: opacity var(--dur-slow) ease;
 }
 
-.telemetry.live { opacity: 0.85; }
+.telemetry.live { opacity: 0.9; }
 
 .telemetry i {
   font-style: normal;
-  color: rgba(var(--cyan-rgb), 0.75);
-  margin-right: 6px;
+  color: rgba(var(--accent-rgb), 0.8);
+  margin-right: var(--s-2);
+  transition: color var(--accent-ease);
 }
 
 .telemetry .sep {
-  opacity: 0.25;
+  opacity: 0.22;
 }
 
 /* --- Transport controls --- */
 .transport {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding-top: 2px;
+  gap: var(--s-4);
+  padding-top: var(--s-05);
 }
 
 /* ===== Quick device pickers (Zoom-style carets) ===== */
@@ -598,7 +652,7 @@
   position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--s-1);
 }
 
 .device-pick {
@@ -617,7 +671,11 @@
   box-shadow:
     inset 0 0 0 1px var(--hairline-strong),
     0 4px 12px rgba(0, 0, 0, 0.4);
-  transition: color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, background 0.15s ease;
+  transition:
+    color var(--dur-fast) ease,
+    box-shadow var(--dur-fast) ease,
+    transform var(--dur-fast) ease,
+    background var(--dur-fast) ease;
 }
 
 .device-pick-trigger:hover,
@@ -637,13 +695,13 @@
   position: fixed;
   z-index: 400;
   width: 260px;
-  padding: 7px;
-  border-radius: 14px;
+  padding: var(--s-2);
+  border-radius: var(--r-md);
   background: linear-gradient(180deg, rgba(16, 28, 48, 0.97), rgba(8, 14, 26, 0.97));
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.07),
     inset 0 0 0 1px rgba(148, 196, 255, 0.16),
-    0 24px 70px rgba(0, 0, 0, 0.65);
+    var(--e-3);
   backdrop-filter: blur(20px) saturate(1.25);
   max-height: 300px;
   overflow-y: auto;
@@ -651,12 +709,12 @@
 
 .device-pick-menu.down {
   transform-origin: top center;
-  animation: device-menu-in 0.16s ease;
+  animation: device-menu-in var(--dur-fast) ease;
 }
 
 .device-pick-menu.side {
   transform-origin: bottom left;
-  animation: device-menu-in 0.16s ease;
+  animation: device-menu-in var(--dur-fast) ease;
 }
 
 @keyframes device-menu-in {
@@ -673,27 +731,27 @@
 .device-pick-head {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 7px 11px 8px;
-  margin-bottom: 4px;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-3) var(--s-2);
+  margin-bottom: var(--s-1);
   border-bottom: 1px solid rgba(148, 196, 255, 0.1);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.16em;
+  font-size: var(--t-2xs);
+  font-weight: var(--w-semi);
+  letter-spacing: var(--tr-caps);
   text-transform: uppercase;
-  color: var(--cyan-soft, #7dd3fc);
+  color: var(--cyan-soft);
 }
 
 .device-pick-item {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: var(--s-2);
   width: 100%;
-  padding: 8px 11px;
-  border-radius: 9px;
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-xs);
   text-align: left;
-  font-size: 12.5px;
-  line-height: 1.3;
+  font-size: var(--t-md);
+  line-height: var(--lh-tight);
   color: var(--text-soft);
   transition: background 0.12s ease, color 0.12s ease;
 }
@@ -728,8 +786,8 @@
 }
 
 .device-pick-empty {
-  padding: 6px 11px 7px;
-  font-size: 11px;
+  padding: var(--s-2) var(--s-3);
+  font-size: var(--t-xs);
   color: var(--text-dim);
   font-style: italic;
 }
@@ -740,6 +798,9 @@
   -webkit-app-region: no-drag;
 }
 
+/* --- Transport buttons ---
+   Real hierarchy: the mic is the primary control and carries accent presence;
+   sleep reads as destructive BEFORE you hover it, not only on hover. */
 .t-btn {
   display: grid;
   place-items: center;
@@ -747,7 +808,11 @@
   color: var(--text-soft);
   background: rgba(255, 255, 255, 0.03);
   box-shadow: inset 0 0 0 1px var(--hairline-strong);
-  transition: transform 0.16s ease, color 0.16s ease, box-shadow 0.2s ease, background 0.2s ease;
+  transition:
+    transform var(--dur-fast) ease,
+    color var(--dur-fast) ease,
+    box-shadow var(--dur-mid) ease,
+    background var(--dur-mid) ease;
 }
 
 .t-btn:hover {
@@ -759,20 +824,54 @@
 }
 
 .t-btn.small {
-  width: 44px;
-  height: 44px;
+  width: 46px;
+  height: 46px;
+}
+
+.t-btn.primary {
+  color: #eafcff;
+  background:
+    radial-gradient(circle at 50% 30%, rgba(var(--accent-rgb), 0.28), rgba(var(--accent-rgb), 0.1) 70%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 0 0 1px rgba(var(--accent-rgb), 0.5),
+    0 6px 24px -6px rgba(var(--accent-rgb), 0.5);
+}
+
+.t-btn.primary:hover {
+  color: #ffffff;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 0 0 1px rgba(var(--accent-rgb), 0.75),
+    0 10px 32px -6px rgba(var(--accent-rgb), 0.7);
 }
 
 .t-btn.muted {
   color: var(--amber);
-  box-shadow: inset 0 0 0 1px rgba(var(--amber-rgb), 0.4);
+  background: rgba(var(--amber-rgb), 0.1);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 0 0 1px rgba(var(--amber-rgb), 0.5);
+}
+
+.t-btn.muted:hover {
+  color: var(--amber);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 0 0 1px rgba(var(--amber-rgb), 0.7),
+    0 8px 26px -8px rgba(var(--amber-rgb), 0.55);
+}
+
+.t-btn.danger {
+  color: rgba(248, 113, 113, 0.75);
+  box-shadow: inset 0 0 0 1px rgba(var(--coral-rgb), 0.24);
 }
 
 .t-btn.danger:hover {
   color: var(--coral);
   box-shadow:
-    inset 0 0 0 1px rgba(var(--coral-rgb), 0.45),
-    0 8px 26px rgba(var(--coral-rgb), 0.14);
+    inset 0 0 0 1px rgba(var(--coral-rgb), 0.5),
+    0 8px 26px -8px rgba(var(--coral-rgb), 0.4);
 }
 
 /* --- Asleep-state wake prompt --- */
@@ -780,17 +879,17 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 13px;
+  gap: var(--s-3);
 }
 
 .wake-say {
   display: inline-flex;
   align-items: center;
-  gap: 9px;
-  padding: 11px 22px;
-  border-radius: 999px;
-  font-size: clamp(15px, 1.8vw, 18px);
-  font-weight: 500;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-6);
+  border-radius: var(--r-pill);
+  font-size: var(--t-wake);
+  font-weight: var(--w-medium);
   color: var(--text);
   background: rgba(var(--cyan-rgb), 0.05);
   box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb), 0.18);
@@ -799,7 +898,7 @@
 
 .wake-say b {
   color: var(--cyan-bright);
-  font-weight: 600;
+  font-weight: var(--w-semi);
 }
 
 .wake-say svg {
@@ -814,11 +913,8 @@
 .wake-keys {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
+  gap: var(--s-3);
+  font-size: var(--t-sm);
   color: var(--muted);
 }
 
@@ -827,25 +923,28 @@
 .wake-keys .combo {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--s-1);
 }
 
 .wake-keys .key {
   display: inline-grid;
   place-items: center;
-  min-width: 21px;
-  height: 21px;
-  padding: 0 5px;
-  border-radius: 6px;
-  font-size: 11.5px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 var(--s-1);
+  border-radius: var(--r-xs);
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
   letter-spacing: 0;
   color: var(--cyan-bright);
   background: rgba(var(--cyan-rgb), 0.09);
-  box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb), 0.24);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 0 0 1px rgba(var(--cyan-rgb), 0.26);
 }
 
 .wake-sep {
-  margin: 0 2px;
+  margin: 0 var(--s-05);
   opacity: 0.4;
 }
 
@@ -861,24 +960,25 @@
   position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 12px 10px;
+  gap: var(--s-2);
+  padding: 0 var(--s-3) var(--s-3);
 }
 
 .session-chip {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: var(--s-2);
   min-width: 0;
-  padding: 5px 11px;
-  border-radius: 999px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.08em;
+  padding: var(--s-1) var(--s-3);
+  border-radius: var(--r-pill);
+  font-size: var(--t-xs);
   color: var(--text-soft);
   background: rgba(var(--cyan-rgb), 0.05);
   box-shadow: inset 0 0 0 1px var(--hairline-strong);
-  transition: color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+  transition:
+    color var(--dur-fast) ease,
+    box-shadow var(--dur-fast) ease,
+    background var(--dur-fast) ease;
 }
 
 .session-chip:hover {
@@ -907,15 +1007,15 @@
   white-space: nowrap;
   max-width: 190px;
   font-family: var(--font-ui);
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.01em;
+  font-size: var(--t-sm);
+  font-weight: var(--w-medium);
+  letter-spacing: 0;
 }
 
 .session-chip .chev {
   flex: 0 0 auto;
   color: var(--muted);
-  transition: transform 0.18s ease;
+  transition: transform var(--dur-fast) ease;
 }
 
 .session-chip.open .chev {
@@ -933,7 +1033,10 @@
   color: var(--text-soft);
   background: rgba(255, 255, 255, 0.03);
   box-shadow: inset 0 0 0 1px var(--hairline);
-  transition: color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+  transition:
+    color var(--dur-fast) ease,
+    box-shadow var(--dur-fast) ease,
+    transform var(--dur-fast) ease;
 }
 
 .session-new:hover {
@@ -944,25 +1047,25 @@
 
 .session-menu {
   position: absolute;
-  left: 12px;
-  right: 12px;
-  top: calc(100% - 4px);
+  left: var(--s-3);
+  right: var(--s-3);
+  top: calc(100% - var(--s-1));
   z-index: 30;
   max-height: 300px;
   overflow-y: auto;
-  padding: 6px;
-  border-radius: 12px;
+  padding: var(--s-2);
+  border-radius: var(--r-md);
   background: #0a1322;
   border: 1px solid var(--hairline-strong);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+  box-shadow: var(--e-3);
   animation: ts-menu-in 0.14s ease;
 }
 
 .session-menu-head {
-  padding: 6px 9px 7px;
+  padding: var(--s-2) var(--s-2) var(--s-2);
   font-family: var(--font-mono);
-  font-size: 8.5px;
-  letter-spacing: 0.22em;
+  font-size: var(--t-2xs);
+  letter-spacing: var(--tr-wide);
   text-transform: uppercase;
   color: var(--muted);
 }
@@ -971,9 +1074,9 @@
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 9px;
-  border-radius: 8px;
+  gap: var(--s-2);
+  padding: var(--s-2);
+  border-radius: var(--r-xs);
   text-align: left;
   color: var(--text-soft);
   transition: background 0.12s ease, color 0.12s ease;
@@ -997,13 +1100,13 @@
   min-width: 0;
   flex: 1;
   display: grid;
-  gap: 2px;
+  gap: var(--s-05);
 }
 
 .session-item-main strong {
-  font-size: 12px;
-  font-weight: 550;
-  letter-spacing: -0.005em;
+  font-size: var(--t-sm);
+  font-weight: var(--w-medium);
+  letter-spacing: var(--tr-snug);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1012,14 +1115,14 @@
 .session-item-main em {
   font-style: normal;
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--t-2xs);
   color: var(--muted);
 }
 
 .session-empty {
-  padding: 12px 10px;
+  padding: var(--s-3) var(--s-3);
   text-align: center;
-  font-size: 11.5px;
+  font-size: var(--t-sm);
   color: var(--muted);
 }
 
@@ -1029,20 +1132,51 @@
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 9px;
-  padding: 2px 12px 12px;
+  gap: var(--s-2);
+  padding: var(--s-05) var(--s-3) var(--s-3);
 }
 
+/* ===== Work cards =====
+   Every card now carries a status-colored rail on its left edge, so you can
+   read the state of the whole stream peripherally without reading a word.
+   (Previously only `working` had a rail, and it was always amber.) */
 .wcard {
   position: relative;
   flex: 0 0 auto;
-  padding: 13px 14px;
-  border-radius: var(--r-card);
-  background: rgba(255, 255, 255, 0.028);
-  border: 1px solid var(--hairline);
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-md);
+  background: rgba(255, 255, 255, 0.04);
   cursor: default;
-  transition: transform 0.16s ease, border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+  transition:
+    transform var(--dur-fast) ease,
+    border-color var(--dur-mid) ease,
+    box-shadow var(--dur-mid) ease,
+    background var(--dur-mid) ease;
   overflow: hidden;
+}
+
+/* The status rail. */
+.wcard::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: linear-gradient(180deg, rgba(148, 196, 255, 0.5), rgba(148, 196, 255, 0.14));
+}
+
+.wcard[data-status="completed"]::before {
+  background: linear-gradient(180deg, rgba(var(--mint-rgb), 0.95), rgba(var(--mint-rgb), 0.3));
+  box-shadow: 0 0 12px rgba(var(--mint-rgb), 0.45);
+}
+
+.wcard[data-status="failed"]::before,
+.wcard[data-status="error"]::before,
+.wcard[data-status="cancelled"]::before,
+.wcard[data-status="canceled"]::before {
+  background: linear-gradient(180deg, rgba(var(--coral-rgb), 0.95), rgba(var(--coral-rgb), 0.3));
+  box-shadow: 0 0 12px rgba(var(--coral-rgb), 0.45);
 }
 
 .wcard.expandable {
@@ -1051,24 +1185,23 @@
 
 .wcard.expandable:hover {
   transform: translateY(-1px);
-  background: rgba(255, 255, 255, 0.045);
-  border-color: rgba(var(--cyan-rgb), 0.28);
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.07),
+    rgba(255, 255, 255, 0.035)
+  );
+  border-color: rgba(var(--cyan-rgb), 0.3);
   box-shadow:
-    0 0 0 1px rgba(var(--cyan-rgb), 0.08),
-    0 14px 36px rgba(0, 0, 0, 0.4);
+    inset 0 1px 0 var(--edge-bright),
+    0 14px 36px rgba(0, 0, 0, 0.42),
+    0 0 0 1px rgba(var(--cyan-rgb), 0.08);
 }
 
 .wcard.working {
-  border-color: rgba(var(--amber-rgb), 0.22);
+  border-color: rgba(var(--amber-rgb), 0.24);
 }
 
 .wcard.working::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 2px;
   background: linear-gradient(180deg, rgba(var(--amber-rgb), 0.95), rgba(var(--amber-rgb), 0.35));
   box-shadow: 0 0 12px rgba(var(--amber-rgb), 0.55);
 }
@@ -1076,42 +1209,50 @@
 .wcard-top {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 9px;
+  gap: var(--s-2);
+  margin-bottom: var(--s-2);
 }
 
 .wcard-top code {
   margin-left: auto;
   font-family: var(--font-mono);
-  font-size: 9.5px;
-  letter-spacing: 0.04em;
+  font-size: var(--t-2xs);
+  letter-spacing: 0;
   color: var(--muted);
+  opacity: 0.8;
 }
 
+/* The task itself is the hero of the card. Clamped so one verbose Hermes goal
+   cannot grow a card tall enough to push the rest of the stream off-screen —
+   the full text is one click away in the reader. */
 .wcard-task {
   margin: 0;
-  font-size: 13.5px;
-  font-weight: 550;
-  line-height: 1.4;
-  letter-spacing: -0.005em;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: var(--t-base);
+  font-weight: var(--w-semi);
+  line-height: var(--lh-snug);
+  letter-spacing: var(--tr-snug);
   color: var(--text);
 }
 
 .wcard-preview {
-  margin-top: 7px;
+  margin-top: var(--s-2);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  font-size: 11.5px;
-  line-height: 1.5;
+  font-size: var(--t-sm);
+  line-height: var(--lh-body);
   color: var(--muted);
 }
 
 .wcard-progress {
-  margin-top: 11px;
+  margin-top: var(--s-3);
   height: 2px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: rgba(var(--amber-rgb), 0.14);
   overflow: hidden;
 }
@@ -1120,7 +1261,7 @@
   display: block;
   height: 100%;
   width: 40%;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: linear-gradient(90deg, rgba(var(--amber-rgb), 0.4), var(--amber));
   box-shadow: 0 0 8px rgba(var(--amber-rgb), 0.6);
   animation: work-progress 1.8s ease-in-out infinite;
@@ -1136,9 +1277,9 @@
 .activity-now {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 10px;
-  font-size: 11.5px;
+  gap: var(--s-2);
+  margin-top: var(--s-3);
+  font-size: var(--t-sm);
   color: var(--text-soft);
 }
 
@@ -1164,11 +1305,11 @@
 }
 
 .activity-notes {
-  margin: 8px 0 0;
-  padding-left: 9px;
-  border-left: 2px solid rgba(var(--cyan-rgb), 0.25);
-  font-size: 11px;
-  line-height: 1.5;
+  margin: var(--s-2) 0 0;
+  padding-left: var(--s-2);
+  border-left: 2px solid rgba(var(--accent-rgb), 0.3);
+  font-size: var(--t-xs);
+  line-height: var(--lh-body);
   font-style: italic;
   color: var(--muted);
   display: -webkit-box;
@@ -1180,9 +1321,9 @@
 .approval-card,
 .interaction-card {
   display: grid;
-  gap: 7px;
-  margin-top: 10px;
-  padding: 10px;
+  gap: var(--s-2);
+  margin-top: var(--s-3);
+  padding: var(--s-3);
   border-radius: var(--r-sm);
   color: var(--text-soft);
   background: rgba(var(--amber-rgb), 0.08);
@@ -1196,22 +1337,22 @@
 
 .interaction-card strong {
   color: var(--violet-soft);
-  font-size: 10px;
-  letter-spacing: 0.09em;
+  font-size: var(--t-2xs);
+  letter-spacing: var(--tr-label);
   text-transform: uppercase;
 }
 
 .interaction-card p {
   margin: 0;
   color: var(--text-soft);
-  font-size: 10px;
-  line-height: 1.45;
+  font-size: var(--t-xs);
+  line-height: var(--lh-snug);
 }
 
 .approval-card strong {
   color: var(--amber);
-  font-size: 10px;
-  letter-spacing: 0.09em;
+  font-size: var(--t-2xs);
+  letter-spacing: var(--tr-label);
   text-transform: uppercase;
 }
 
@@ -1220,13 +1361,14 @@
 .approval-card small {
   margin: 0;
   overflow-wrap: anywhere;
-  font-size: 10px;
-  line-height: 1.45;
+  font-size: var(--t-xs);
+  line-height: var(--lh-snug);
 }
 
 .approval-card code {
   max-height: 58px;
   overflow: auto;
+  font-family: var(--font-mono);
   color: var(--text);
 }
 
@@ -1237,22 +1379,23 @@
 .approval-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: var(--s-1);
 }
 
 .approval-actions button {
-  padding: 5px 7px;
-  border-radius: 5px;
+  padding: var(--s-1) var(--s-2);
+  border-radius: var(--r-xs);
   color: var(--text-soft);
   background: rgba(var(--cyan-rgb), 0.08);
   box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb), 0.18);
-  font-family: var(--font-mono);
-  font-size: 8.5px;
+  font-size: var(--t-2xs);
+  font-weight: var(--w-medium);
+  transition: color var(--dur-fast) ease, background var(--dur-fast) ease;
 }
 
 .approval-actions button:hover:not(:disabled) {
   color: var(--cyan-bright);
-  background: rgba(var(--cyan-rgb), 0.14);
+  background: rgba(var(--cyan-rgb), 0.16);
 }
 
 .approval-actions button.always {
@@ -1268,7 +1411,7 @@
 }
 
 .activity {
-  margin-top: 10px;
+  margin-top: var(--s-3);
 }
 
 /* Full-width strip (not a small pill): a comfortable target for the finger
@@ -1277,32 +1420,27 @@
   display: flex;
   width: 100%;
   align-items: center;
-  gap: 7px;
-  padding: 8px 11px;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-3);
   border-radius: var(--r-sm);
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  font-weight: 500;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  font-size: var(--t-xs);
+  font-weight: var(--w-medium);
+  letter-spacing: 0;
   text-align: left;
   color: var(--text-soft);
-  background: rgba(var(--cyan-rgb), 0.06);
-  box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb), 0.14);
-  transition: background 0.15s ease, color 0.15s ease;
+  background: rgba(var(--cyan-rgb), 0.05);
+  box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb), 0.12);
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
 }
 
 .activity-toggle .chev {
   margin-left: auto;
+  transition: transform var(--dur-fast) ease;
 }
 
 .activity-toggle:hover {
   color: var(--cyan-bright);
   background: rgba(var(--cyan-rgb), 0.12);
-}
-
-.activity-toggle .chev {
-  transition: transform 0.18s ease;
 }
 
 .activity-toggle.open .chev {
@@ -1311,12 +1449,12 @@
 
 .activity-timeline {
   list-style: none;
-  margin: 9px 0 0;
-  padding: 0 2px 0 0;
+  margin: var(--s-2) 0 0;
+  padding: 0 var(--s-05) 0 0;
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  animation: timeline-in 0.2s ease;
+  gap: var(--s-1);
+  animation: timeline-in var(--dur-mid) ease;
   /* Long runs (30+ steps) scroll inside the card instead of elongating it. */
   max-height: 236px;
   overflow-y: auto;
@@ -1330,11 +1468,11 @@
 .activity-step {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 7px 9px;
+  gap: var(--s-2);
+  padding: var(--s-2);
   border-radius: var(--r-sm);
-  background: rgba(255, 255, 255, 0.02);
-  box-shadow: inset 0 0 0 1px rgba(148, 196, 255, 0.06);
+  background: rgba(255, 255, 255, 0.022);
+  box-shadow: inset 0 0 0 1px rgba(148, 196, 255, 0.055);
 }
 
 .activity-step .step-icon {
@@ -1343,7 +1481,7 @@
   place-items: center;
   width: 24px;
   height: 24px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   color: var(--text-soft);
   background: rgba(148, 196, 255, 0.08);
 }
@@ -1373,8 +1511,8 @@
 }
 
 .step-tool {
-  font-size: 11.5px;
-  font-weight: 550;
+  font-size: var(--t-sm);
+  font-weight: var(--w-medium);
   color: var(--text);
   text-transform: capitalize;
 }
@@ -1384,7 +1522,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: var(--t-2xs);
   color: var(--muted);
 }
 
@@ -1392,13 +1530,13 @@
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--s-2);
 }
 
 .step-meta em {
   font-family: var(--font-mono);
   font-style: normal;
-  font-size: 9px;
+  font-size: var(--t-2xs);
   color: var(--muted);
 }
 
@@ -1428,7 +1566,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 2px 8px 0;
+  padding: var(--s-05) var(--s-2) 0;
   min-height: 20px;
   overflow: hidden;
 }
@@ -1437,10 +1575,10 @@
   flex: 0 0 auto;
   white-space: nowrap;
   font-family: var(--font-mono);
-  font-size: 9px;
-  letter-spacing: 0.08em;
+  font-size: var(--t-2xs);
+  letter-spacing: var(--tr-label);
   color: var(--muted);
-  opacity: 0.55;
+  opacity: 0.5;
 }
 
 .deck-foot .build-meta a {

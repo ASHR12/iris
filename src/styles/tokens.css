@@ -1,24 +1,47 @@
 /* =====================================================================
    Iris design tokens — "Deep Space" system
    Dark-only. Electric cyan primary, violet secondary, deep navy-black base.
-   The orb (ReactorCore) keeps its own state palettes and is NOT themed here.
+
+   ONE LIGHT SOURCE: the reactor is the lamp of the room. `--orb-accent` is
+   published from React (App sets it on the deck / HUD root from the live
+   reactor state) and inherits down, so ambient glow, glass edge-light and
+   hairlines are all tinted by whatever Iris is doing right now. Semantic
+   colors (status, errors, text) never move — only the atmosphere does.
    ===================================================================== */
 
 :root {
-  /* Base space */
-  --bg-0: #030509;
-  --bg-1: #05070d;
-  --bg-2: #0a0f1a;
+  /* ===== Base space =====
+     Deliberately NOT near-black. These used to be #030509/#05070d, i.e. code
+     values 3-13, and that is the single root cause of the contour lines this UI
+     had in its dim states. Two things go wrong that low:
+       - 8-bit has no resolution left, so a wide soft gradient has only a couple
+         of levels to cross and must render as huge flat plateaus with hard
+         1-level edges between them.
+       - Below the sRGB toe, luminance is proportional to code value, so ONE code
+         step at value 7 is a ~14% relative brightness jump. At value 21 the same
+         step is ~5%, which is under the threshold where a long straight edge
+         reads as a line.
+     Keeping the darkest surface above ~#0b111c is what actually fixes banding;
+     no amount of noise or extra layers can rescue a 3-13 palette. Anything added
+     here later (vignettes, scrims, overlays) must respect the same floor, or it
+     drags its own region back into the crush zone. */
+  --bg-0: #0b111c;
+  --bg-1: #0e1522;
+  --bg-2: #151d2c;
+  /* Solid fallback for surfaces that must not be transparent. */
+  --bg: var(--bg-0);
 
-  /* Accents */
+  /* ===== Accents ===== */
   --cyan: #22d3ee;
   --cyan-bright: #67e8f9;
+  --cyan-soft: #7dd3fc;
   --cyan-rgb: 34, 211, 238;
   --violet: #8b5cf6;
   --violet-soft: #a78bfa;
+  --violet-bright: #c4b5fd;
   --violet-rgb: 139, 92, 246;
 
-  /* Status */
+  /* ===== Status ===== */
   --amber: #f5b04a;
   --amber-rgb: 245, 176, 74;
   --mint: #2dd2af;
@@ -26,32 +49,171 @@
   --coral: #f87171;
   --coral-rgb: 248, 113, 113;
 
-  /* Text */
+  /* ===== Text ===== */
   --text: #e8f0fa;
   --text-soft: #a9b9cd;
   --muted: #64748e;
+  --text-dim: #4c5872;
 
-  /* Glass surfaces */
-  --panel: rgba(13, 20, 33, 0.52);
-  --panel-strong: rgba(12, 19, 32, 0.86);
-  --panel-solid: #0b1220;
+  /* ===== Reactive accent =====
+     Defaults to the reactor's "online" cyan; React publishes `--orb-accent`
+     per state on the room roots. Everything atmospheric consumes these, never
+     a raw color. See the re-declaration below `:root` — it is load-bearing. */
+  --accent-rgb: var(--orb-accent, 34, 190, 205);
+  --accent-glow: rgba(var(--accent-rgb), 0.5);
+  --accent-edge: rgba(var(--accent-rgb), 0.22);
+  --accent-wash: rgba(var(--accent-rgb), 0.06);
+  /* Slow enough that a state change reads as the room breathing, never a
+     strobe while you are working. */
+  --accent-ease: 1.2s cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* ===== Glass surfaces =====
+     Fills are kept fairly opaque on purpose. `backdrop-filter` AVERAGES what is
+     behind it, which turns the ambient gradients into an even smoother ramp
+     inside the glass than outside it — the panels used to be the worst banding
+     in the app for exactly that reason. The more the fill covers, the smaller
+     the inherited ramp; once it spans less than one code level it is flat and
+     physically cannot band. Lowering these alphas re-introduces contour lines
+     across the panels. */
+  --panel: rgba(29, 40, 58, 0.78);
+  --panel-strong: rgba(26, 36, 53, 0.92);
+  --panel-solid: #1a2333;
+  /* Recessed rail: side panels sit BEHIND the orb in the visual hierarchy — but
+     still above `--bg-1`, or the glass stops reading as a surface at all now
+     that the base tone is no longer near-black. */
+  --panel-recessed: rgba(24, 33, 49, 0.74);
+  --panel-raised: rgba(255, 255, 255, 0.03);
   --hairline: rgba(148, 196, 255, 0.09);
   --hairline-strong: rgba(148, 210, 255, 0.16);
   --edge-light: rgba(255, 255, 255, 0.05);
+  /* Real glass catches a brighter line along its top edge. */
+  --edge-bright: rgba(255, 255, 255, 0.1);
 
-  /* Radii */
-  --r-panel: 18px;
-  --r-card: 14px;
+  /* ===== HUD glass =====
+     The OS behind a transparent window cannot be backdrop-blurred, so
+     readable glass over an unknown wallpaper = a ~60% tinted fill, a bright
+     1px edge to define the pane, and text shadows. One recipe, every island,
+     so the HUD reads as one system instead of scattered popups. */
+  --hud-fill: linear-gradient(180deg, rgba(26, 36, 57, 0.62), rgba(10, 16, 28, 0.66));
+  --hud-fill-strong: linear-gradient(180deg, rgba(26, 36, 57, 0.72), rgba(10, 16, 28, 0.76));
+  --hud-chip: rgba(22, 30, 47, 0.68);
+  --hud-edge: rgba(255, 255, 255, 0.18);
+  --hud-inner: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  --hud-lift: 0 1px 8px rgba(0, 0, 0, 0.2);
+  --hud-text: #f2f7ff;
+  --hud-text-soft: #c6d2e4;
+  --hud-text-dim: #a7b7cd;
+  --hud-shadow-text: 0 1px 3px rgba(0, 0, 0, 0.65);
+  --hud-shadow-text-soft: 0 1px 2px rgba(0, 0, 0, 0.55);
+
+  /* ===== Radii ===== */
+  --r-xs: 6px;
   --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 18px;
+  --r-xl: 22px;
+  --r-pill: 999px;
+  /* Legacy aliases (still referenced widely). */
+  --r-panel: var(--r-lg);
+  --r-card: var(--r-md);
 
-  /* Type */
+  /* ===== Space (4px base) ===== */
+  --s-05: 2px;
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-7: 32px;
+  --s-8: 40px;
+
+  /* ===== Type =====
+     Whole pixels only: half-pixel sizes never land on the hinting grid, which
+     is what made the old UI read permanently soft. Floor is 10px — below that
+     tracked-out uppercase mono stops being legible. */
+  --t-2xs: 10px;
+  --t-xs: 11px;
+  --t-sm: 12px;
+  --t-md: 13px;
+  --t-base: 14px;
+  --t-lg: 16px;
+  --t-xl: 20px;
+  --t-2xl: 24px;
+  --t-3xl: 30px;
+  /* Fluid: the orb caption and the wake prompt scale with the window. */
+  --t-caption: clamp(18px, 2.3vw, 26px);
+  --t-wake: clamp(15px, 1.8vw, 18px);
+
+  /* ===== Weight ===== */
+  --w-normal: 400;
+  --w-medium: 500;
+  --w-semi: 600;
+  --w-bold: 700;
+
+  /* ===== Tracking =====
+     The instrument voice is now RATIONED. Tracked uppercase mono is reserved
+     for genuine readouts (telemetry, run ids, boot log, status); panel
+     headers and chips speak in the UI font so hierarchy survives. */
+  --tr-tight: -0.01em;
+  --tr-snug: -0.005em;
+  --tr-label: 0.08em;
+  --tr-caps: 0.14em;
+  --tr-wide: 0.2em;
+  --tr-brand: 0.5em;
+
+  /* ===== Line height ===== */
+  --lh-tight: 1.25;
+  --lh-snug: 1.4;
+  --lh-body: 1.55;
+  --lh-loose: 1.7;
+
+  /* ===== Font families ===== */
   --font-ui: "Inter Variable", "Inter", system-ui, sans-serif;
   --font-display: "Space Grotesk Variable", "Space Grotesk", var(--font-ui);
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 
-  /* Shadows */
+  /* ===== Elevation =====
+     Four altitudes. Panels get an accent-tinted bloom instead of a pure
+     black drop so surfaces feel lit by the reactor rather than stamped on. */
+  --e-1:
+    inset 0 1px 0 var(--edge-light),
+    0 2px 8px rgba(0, 0, 0, 0.25);
+  --e-2:
+    inset 0 1px 0 var(--edge-bright),
+    0 16px 40px rgba(0, 0, 0, 0.42),
+    0 0 60px -20px rgba(var(--accent-rgb), 0.16);
+  --e-3:
+    inset 0 1px 0 var(--edge-bright),
+    0 24px 64px rgba(0, 0, 0, 0.55);
+  --e-4:
+    inset 0 1px 0 var(--edge-bright),
+    0 40px 110px rgba(0, 0, 0, 0.66);
+  /* Legacy aliases. */
   --shadow-panel: 0 24px 64px rgba(0, 0, 0, 0.5);
   --shadow-float: 0 40px 110px rgba(0, 0, 0, 0.66);
 
+  /* ===== Motion ===== */
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --dur-fast: 0.15s;
+  --dur-mid: 0.24s;
+  --dur-slow: 0.4s;
+
   color-scheme: dark;
+}
+
+/* Re-resolve the accent on each "room root".
+   Custom properties substitute ONCE, on the element carrying the declaration,
+   and then inherit as a fixed computed value. So the `--accent-rgb` above
+   resolves against `:root`, where `--orb-accent` does not exist yet — it locks
+   in the fallback and inheriting it downward would keep the whole UI on default
+   cyan forever, no matter what React publishes.
+   Re-declaring it here forces a fresh substitution on the elements that
+   actually carry `--orb-accent`, so the reactive accent genuinely tracks the
+   reactor. Do not fold this back into `:root`. */
+.deck,
+.hud-shell,
+.boot,
+.orb-stage {
+  --accent-rgb: var(--orb-accent, 34, 190, 205);
 }

@@ -1,18 +1,8 @@
 import { useEffect, useState, type CSSProperties, type RefObject } from "react";
 import { Mic, MicOff, Power } from "lucide-react";
-import ReactorCore from "./ReactorCore";
+import ReactorCore, { ORB_ACCENT } from "./ReactorCore";
 import DevicePicker from "./DevicePicker";
 import type { HandoffTone, ReactorState } from "../types";
-
-// Arc-reactor accent color per state (matches ReactorCore palettes) — drives the
-// surrounding ring/radar so it stays the same color as the orb.
-const ORB_ACCENT: Record<ReactorState, string> = {
-  idle: "120, 170, 150",
-  online: "18, 163, 148",
-  listening: "40, 205, 170",
-  speaking: "238, 122, 92",
-  working: "120, 180, 120",
-};
 
 function Telemetry({
   awake,
@@ -158,7 +148,7 @@ export default function CenterStage({
             {/* Zoom-style split control: mute toggles, the caret picks the mic. */}
             <span className="t-split">
               <button
-                className={`t-btn small ${muted ? "muted" : ""}`}
+                className={`t-btn small ${muted ? "muted" : "primary"}`}
                 onClick={onToggleMute}
                 title={muted ? "Unmute microphone" : "Mute microphone"}
               >
