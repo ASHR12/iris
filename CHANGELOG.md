@@ -7,6 +7,53 @@ and the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Iris is
 pre-1.0, so minor versions may still contain breaking changes to configuration
 and IPC surfaces.
 
+## [0.4.0] — 2026-07-25
+
+The Luminous Instrument redesign. The interface is rebuilt on flat surfaces and a
+real token system, which also eliminates the colour banding that dark UIs
+normally suffer from.
+
+### Changed
+
+- **The UI is rebuilt on flat surfaces.** The deck, HUD, and overlays no longer
+  use stacked gradient washes. Depth now comes from one step of fill tone plus
+  spacing rather than from washes and outlines, and nested 1px borders are gone
+  from panels, bubbles, and cards — edges are kept only for floating menus.
+- **The palette is lifted off near-black**, from `#030509` to `#0b111c`. This is
+  the core fix for contour lines: below the sRGB toe, brightness is proportional
+  to code value, so one code step at value 7 is a ~14% brightness jump while at
+  value 21 it is ~5% and stops reading as an edge.
+- **Tokens are retuned** into proper type, space, radius, and elevation scales,
+  and the reactive accent now tracks the orb state so ambient light follows what
+  Iris is doing.
+- **Light only exists while the reactor runs.** The canvas halo carried a fixed
+  alpha floor, so a sleeping orb still emitted a glow disc wider than its drawn
+  ring, which the asleep filter turned into a grey smudge. The halo is now gated
+  on how far energy sits above rest, keyed off a single shared constant, with
+  stops rebalanced so the awake look is unchanged.
+- **View → Toggle Full Screen** is replaced by **Toggle Glass HUD**. The old item
+  was a no-op on this frameless window; the HUD now has a menu-bar exit.
+
+### Fixed
+
+- **Colour banding in dark areas.** The visible contour lines were 8-bit
+  quantization, not a rendering bug. A soft gradient spread across ~900px has
+  fewer code levels than pixels to cross, so it renders as wide flat plateaus
+  with hard 1-level edges. It only showed in dim states because the aurora and
+  glow were dimmed there, leaving the near-flat base ramp as the only structure
+  on screen. The six-wash drifting aurora, the full-window vignette, and the
+  window-sized deck and boot gradients are now flat fills.
+- **Phantom depth around the orb.** The dark radial scrim behind the HUD orb and
+  the plinth under every orb stage are gone. Both were soft washes standing in
+  for depth, and on a flat dark surface they read as shadow rather than light.
+
+### Added
+
+- **"Dark UI without colour banding"** in the README — a full writeup of the
+  cause and the five rules Iris follows, since the problem is general to dark
+  interfaces and the analysis transfers to any project.
+- A Cursor rule scoped to `src/styles` that enforces those rules for future work.
+
 ## [0.3.0] — 2026-07-25
 
 The all-day release. Iris gains a searchable knowledge graph, survives a full
@@ -144,5 +191,6 @@ First public release.
 - macOS packaging and production launch support.
 - README showcase with demo video and screenshots.
 
+[0.4.0]: https://github.com/ASHR12/iris/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ASHR12/iris/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ASHR12/iris/releases/tag/v0.2.0
