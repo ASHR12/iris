@@ -1,8 +1,14 @@
+import { createRequire } from "node:module";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { viteStaticCopy } from "vite-plugin-static-copy";
 
+const { version } = createRequire(import.meta.url)("./package.json");
+
 export default defineConfig({
+  // Single source of truth for the build badge, so releases never ship a stale
+  // version string in the footer.
+  define: { __APP_VERSION__: JSON.stringify(version) },
   // Relative base so the built index.html resolves assets when Electron loads it
   // from the filesystem (file://) in production / packaged builds.
   base: "./",

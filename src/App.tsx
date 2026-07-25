@@ -1586,7 +1586,7 @@ export default function App() {
 
         <footer className="deck-foot">
           <span className="build-meta">
-            IRIS · build 0.2.0 · by Ashutosh Shrivastava ·{" "}
+            IRIS · build {__APP_VERSION__} · by Ashutosh Shrivastava ·{" "}
             <a href="https://x.com/ai_for_success" target="_blank" rel="noreferrer">
               X
             </a>{" "}
