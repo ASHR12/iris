@@ -13,16 +13,30 @@ contextBridge.exposeInMainWorld("iris", {
   getHermesHistory: () => ipcRenderer.invoke("hermes:history"),
   listHermesSessions: () => ipcRenderer.invoke("hermes:sessions"),
   createHermesSession: () => ipcRenderer.invoke("hermes:create-session"),
+  approveHermesAction: (runId, choice) =>
+    ipcRenderer.invoke("hermes:approve", { run_id: runId, choice }),
+  respondHermesInteraction: (payload) =>
+    ipcRenderer.invoke("hermes:interaction-response", payload),
+  loadBrain: () => ipcRenderer.invoke("brain:load"),
+  readBrainNote: (relPath) => ipcRenderer.invoke("brain:read", relPath),
+  searchBrain: (query, topK) => ipcRenderer.invoke("brain:search", query, topK),
+  filterBrain: (query) => ipcRenderer.invoke("brain:filter", query),
+  syncBrainIndex: (payload) => ipcRenderer.invoke("brain:sync-index", payload),
+  onBrainChanged: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on("brain:changed", handler);
+    return () => ipcRenderer.removeListener("brain:changed", handler);
+  },
+  openExternal: (url) => ipcRenderer.invoke("app:open-external", url),
   toggleHud: () => ipcRenderer.invoke("hud:toggle"),
   setHudInteractive: (on) => ipcRenderer.send("hud:interactive", Boolean(on)),
-  windowControl: (action) => ipcRenderer.send("win:control", action),
   onHudMode: (callback) => {
     const handler = (_event, payload) => callback(payload);
     ipcRenderer.on("hud:mode", handler);
     return () => ipcRenderer.removeListener("hud:mode", handler);
   },
   onWakeRequest: (callback) => {
-    const handler = () => callback();
+    const handler = (_event, payload) => callback(payload || {});
     ipcRenderer.on("iris:wake", handler);
     return () => ipcRenderer.removeListener("iris:wake", handler);
   },
@@ -30,6 +44,11 @@ contextBridge.exposeInMainWorld("iris", {
     const handler = () => callback();
     ipcRenderer.on("iris:sleep", handler);
     return () => ipcRenderer.removeListener("iris:sleep", handler);
+  },
+  onAutoSleep: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on("iris:auto-sleep", handler);
+    return () => ipcRenderer.removeListener("iris:auto-sleep", handler);
   },
   sendCommand: (command) => ipcRenderer.invoke("sidecar:command", command),
   sendUiContext: (context) => ipcRenderer.send("iris:ui-context", context),

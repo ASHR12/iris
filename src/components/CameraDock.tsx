@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Camera } from "lucide-react";
+import DevicePicker from "./DevicePicker";
 import type { HandState } from "../hooks/useHandControl";
 
 const HAND_CONNECTIONS = [
@@ -44,14 +45,20 @@ export default function CameraDock({
   handControl,
   hand,
   stream,
+  error,
   actionLabel,
   actionTone,
+  cameraDevice,
+  onPickCameraDevice,
 }: {
   handControl: boolean;
   hand: HandState;
   stream: MediaStream | null;
+  error?: string | null;
   actionLabel: string;
   actionTone: string;
+  cameraDevice: string;
+  onPickCameraDevice: (id: string) => void;
 }) {
   // Owns its own srcObject assignment so the feed survives remounts (e.g.
   // returning from HUD mode re-creates this video element).
@@ -65,12 +72,22 @@ export default function CameraDock({
         <Camera size={13} />
         <span>Camera / Gesture</span>
         {!handControl ? <span className="head-state">off</span> : null}
+        {/* Right-aligned + opens downward: the menu overlays the camera feed
+            itself, never the conversation text above the panel. */}
+        <DevicePicker
+          kind="videoinput"
+          value={cameraDevice}
+          onSelect={onPickCameraDevice}
+          title="Select a camera"
+          align="right"
+        />
       </div>
       {handControl ? (
         <div className="camera-frame">
           <video ref={videoRef} autoPlay playsInline muted />
           <div className="cam-scan" />
           <HandSkeleton hands={hand.hands} />
+          {error ? <span className="cam-error">{error}</span> : null}
           <span className="cam-status">
             <i />
             {hand.present ? "tracking" : "no hand"}

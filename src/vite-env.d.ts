@@ -1,6 +1,13 @@
 /// <reference types="vite/client" />
 
+declare const __APP_VERSION__: string;
+
 type SidecarMode = "none" | "camera" | "screen";
+
+type IrisWakeRequest = {
+  source?: string;
+  detail?: string;
+};
 
 type SidecarEvent = {
   type: string;
@@ -24,24 +31,44 @@ type IrisUiAction = {
     | "close_history"
     | "close_all_overlays"
     | "show_task_steps"
-    | "hide_task_steps";
+    | "hide_task_steps"
+    | "open_brain_graph"
+    | "close_brain_graph"
+    | "focus_brain_node"
+    | "filter_brain_graph"
+    | "open_brain_note"
+    | "close_brain_note"
+    | "show_full_brain_graph"
+    | "enter_hud_mode"
+    | "exit_hud_mode";
   target_id?: string;
   query?: string;
 };
 
 type IrisConfig = {
   geminiApiKey: string;
+  geminiApiKeyConfigured: boolean;
   geminiModel: string;
   geminiVoice: string;
   hermesUrl: string;
   hermesKey: string;
+  hermesKeyConfigured: boolean;
   hermesBin: string;
   hermesHome: string;
   hermesSession: string;
+  brainPath: string;
+  brainSemantic: boolean;
+  brainAutoIndex: boolean;
   userName: string;
   loadTestData: boolean;
   wakeWord: boolean;
+  wakeSensitivity: string;
+  showWakeDiagnostics: boolean;
   sounds: boolean;
+  autoSleepSeconds: string;
+  autoWakeOnHermes: boolean;
+  micDevice: string;
+  cameraDevice: string;
   configured: boolean;
   voices: string[];
   models: string[];
@@ -54,6 +81,7 @@ type IrisTestResult = { ok: boolean; error?: string; health?: Record<string, unk
 
 type HermesHistoryTask = {
   id: string;
+  sessionId?: string;
   task: string;
   status: string;
   output?: string;
@@ -65,6 +93,22 @@ type HermesHistoryTask = {
     status: "running" | "done" | "error";
     ts: number;
   }>;
+  approval?: {
+    command?: string;
+    reason?: string;
+    choices: Array<"once" | "session" | "always" | "deny">;
+    requestedAt: number;
+  } | null;
+  interaction?: {
+    id: string;
+    type: "clarify" | "approval" | "sudo" | "secret";
+    question: string;
+    choices: string[];
+    command?: string;
+    envVar?: string;
+    allowCustom: boolean;
+    secret: boolean;
+  } | null;
 };
 
 type HermesHistoryResult = {
@@ -85,6 +129,64 @@ type HermesSessionInfo = {
 
 type HermesSessionsResult = { ok: boolean; sessions: HermesSessionInfo[]; error?: string };
 
+type BrainNode = {
+  id: string;
+  title: string;
+  folder: string;
+  degree: number;
+};
+
+type BrainLink = { source: string; target: string };
+
+type BrainGraphResult = {
+  ok: boolean;
+  root?: string;
+  nodes?: BrainNode[];
+  links?: BrainLink[];
+  error?: string;
+};
+
+type BrainNoteResult = {
+  ok: boolean;
+  meta?: Record<string, string>;
+  body?: string;
+  error?: string;
+};
+
+type BrainIndexSyncResult = {
+  ok: boolean;
+  total?: number;
+  chunks?: number;
+  embedded?: number;
+  reused?: number;
+  pruned?: number;
+  ms?: number;
+  model?: string;
+  location?: string;
+  error?: string;
+};
+
+type BrainFilterResult = {
+  ok: boolean;
+  mode?: "hybrid" | "lexical";
+  results?: Array<{ path: string; title: string; folder: string }>;
+  error?: string;
+};
+
+type BrainSearchResult = {
+  ok: boolean;
+  mode?: "hybrid" | "lexical";
+  results?: Array<{
+    path: string;
+    title: string;
+    folder: string;
+    snippet: string;
+    sources: string[];
+    confident: boolean;
+  }>;
+  error?: string;
+};
+
 type IrisApi = {
   startSidecar: (options?: { mode?: SidecarMode }) => Promise<{ running: boolean; pid: number | null }>;
   stopSidecar: () => Promise<{ running: boolean; pid: number | null }>;
@@ -103,13 +205,33 @@ type IrisApi = {
   getHermesHistory: () => Promise<HermesHistoryResult>;
   listHermesSessions: () => Promise<HermesSessionsResult>;
   createHermesSession: () => Promise<{ ok: boolean; id?: string; error?: string }>;
+  approveHermesAction: (
+    runId: string,
+    choice: "once" | "session" | "always" | "deny",
+  ) => Promise<{ status: string; error?: string }>;
+  respondHermesInteraction: (payload: {
+    run_id: string;
+    interaction_id: string;
+    interaction_type: "clarify" | "approval" | "sudo" | "secret";
+    value?: string;
+    choice?: "once" | "session" | "always" | "deny";
+  }) => Promise<{ status: string; error?: string }>;
+  loadBrain: () => Promise<BrainGraphResult>;
+  readBrainNote: (relPath: string) => Promise<BrainNoteResult>;
+  searchBrain: (query: string, topK?: number) => Promise<BrainSearchResult>;
+  filterBrain: (query: string) => Promise<BrainFilterResult>;
+  syncBrainIndex: (payload?: { vault?: string; key?: string }) => Promise<BrainIndexSyncResult>;
+  onBrainChanged: (callback: () => void) => () => void;
+  openExternal: (url: string) => Promise<void>;
   toggleHud: () => Promise<{ mode: "deck" | "hud" }>;
   setHudInteractive: (on: boolean) => void;
-  windowControl: (action: "close" | "minimize") => void;
   onHudMode: (callback: (payload: { mode: "deck" | "hud" }) => void) => () => void;
-  onWakeRequest: (callback: () => void) => () => void;
+  onWakeRequest: (callback: (request: IrisWakeRequest) => void) => () => void;
   onSleepRequest: (callback: () => void) => () => void;
-  sendCommand: (command: Record<string, unknown>) => Promise<void>;
+  onAutoSleep: (callback: () => void) => () => void;
+  sendCommand: (
+    command: Record<string, unknown>,
+  ) => Promise<{ ok: boolean; reason?: string }>;
   sendUiContext: (context: Record<string, unknown>) => void;
   sendAudioChunk: (chunk: ArrayBuffer) => void;
   notifyBootDone: () => void;

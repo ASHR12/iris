@@ -6,6 +6,16 @@ export function isActiveTask(task: TaskCard): boolean {
   return !TERMINAL.has(task.status.toLowerCase());
 }
 
+export function tasksForSession(
+  tasks: TaskCard[],
+  sessionId: string | null,
+  showAll = false,
+): TaskCard[] {
+  if (showAll) return tasks;
+  if (!sessionId) return [];
+  return tasks.filter((task) => task.sessionId === sessionId);
+}
+
 export function taskKeyFor(task: string): string {
   return `starting:${task.toLowerCase().trim()}`;
 }

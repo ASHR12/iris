@@ -179,11 +179,61 @@
 }
 
 /* --- Hand control reticles --- */
+.wake-reason-pill {
+  position: fixed;
+  left: 50%;
+  bottom: 52px;
+  z-index: 90;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 11px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  pointer-events: none;
+  color: var(--cyan-bright);
+  background: rgba(4, 12, 24, 0.86);
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--cyan-rgb), 0.28),
+    0 0 22px rgba(var(--cyan-rgb), 0.15);
+  backdrop-filter: blur(14px);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  animation: wake-reason-in 0.22s ease both;
+}
+
+.wake-reason-pill.asleep {
+  color: var(--muted);
+  background: rgba(4, 12, 24, 0.7);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.16);
+}
+
+.wake-reason-pill.asleep i {
+  background: var(--muted);
+  box-shadow: 0 0 7px rgba(148, 163, 184, 0.45);
+}
+
+.wake-reason-pill i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--cyan);
+  box-shadow: 0 0 9px var(--cyan);
+}
+
+@keyframes wake-reason-in {
+  from { opacity: 0; transform: translate(-50%, 5px) scale(0.96); }
+  to { opacity: 1; transform: translate(-50%, 0) scale(1); }
+}
+
 .hand-reticle {
   position: fixed;
   top: 0;
   left: 0;
-  z-index: 60;
+  /* The gesture cursor must remain visible over every interactive surface,
+     including Hermes prompts (72) and device menus (400). */
+  z-index: 1000;
   width: 0;
   height: 0;
   pointer-events: none;
@@ -196,8 +246,10 @@
   height: 54px;
   margin: -27px 0 0 -27px;
   border-radius: 50%;
-  border: 2px solid rgba(var(--cyan-rgb), 0.8);
-  box-shadow: 0 0 18px rgba(var(--cyan-rgb), 0.5);
+  /* Idle (no recognized gesture) is deliberately MUTED — a quiet gray
+     ghost — so a real POINT's bright cyan can never be confused with it. */
+  border: 2px solid rgba(148, 163, 184, 0.42);
+  box-shadow: 0 0 10px rgba(148, 163, 184, 0.2);
   transition: width 0.12s ease, height 0.12s ease, border-color 0.12s ease, margin 0.12s ease;
 }
 
@@ -207,14 +259,24 @@
   height: 8px;
   margin: -4px 0 0 -4px;
   border-radius: 50%;
-  background: #ffffff;
-  box-shadow: 0 0 12px rgba(var(--cyan-rgb), 0.9);
+  background: rgba(203, 213, 225, 0.75);
+  box-shadow: 0 0 8px rgba(148, 163, 184, 0.5);
 }
 
 /* Pointing — cyan (primary cursor) */
 .hand-reticle.pointing .hand-ring {
   border-color: rgba(var(--cyan-rgb), 0.9);
   box-shadow: 0 0 20px rgba(var(--cyan-rgb), 0.55);
+}
+
+.hand-reticle.pointing .hand-dot,
+.hand-reticle.open .hand-dot,
+.hand-reticle.fist .hand-dot {
+  background: #ffffff;
+}
+
+.hand-reticle.pointing .hand-dot {
+  box-shadow: 0 0 12px rgba(var(--cyan-rgb), 0.9);
 }
 
 /* Dwell charge: the ring contracts onto the target for the hold duration so
@@ -246,6 +308,159 @@
 
 .hand-reticle.open .hand-dot {
   box-shadow: 0 0 12px rgba(var(--violet-rgb), 0.95);
+}
+
+/* ===== Napping (token-saving auto-sleep) ===== */
+/* The reactor becomes a sleeping creature: a slow ~5.5s breath with little
+   z's drifting up and away. Deliberately MOONLIT VIOLET — a warm night tint,
+   clearly different from the gray "switched off" look of a manual sleep, so
+   you can tell "she dozed off on purpose" from "I turned her off". */
+.orb-stage.napping {
+  animation: nap-breathe 5.5s ease-in-out infinite;
+}
+
+@keyframes nap-breathe {
+  0%, 100% {
+    transform: scale(0.985);
+    filter: sepia(0.85) hue-rotate(205deg) saturate(1.7) brightness(0.52);
+  }
+  50% {
+    transform: scale(1.02);
+    filter: sepia(0.7) hue-rotate(205deg) saturate(1.8) brightness(0.78);
+  }
+}
+
+.nap-zzz {
+  position: absolute;
+  top: 16%;
+  right: 12%;
+  pointer-events: none;
+}
+
+.nap-zzz i {
+  position: absolute;
+  font-family: var(--font-display, var(--font-mono));
+  font-style: normal;
+  font-weight: 700;
+  color: rgba(var(--violet-rgb), 0.95);
+  text-shadow: 0 0 14px rgba(var(--violet-rgb), 0.65);
+  opacity: 0;
+  animation: nap-z 4.8s ease-out infinite;
+}
+
+.nap-zzz i:nth-child(1) {
+  font-size: 13px;
+  animation-delay: 0s;
+}
+
+.nap-zzz i:nth-child(2) {
+  font-size: 17px;
+  animation-delay: 1.6s;
+}
+
+.nap-zzz i:nth-child(3) {
+  font-size: 21px;
+  animation-delay: 3.2s;
+}
+
+@keyframes nap-z {
+  0% {
+    opacity: 0;
+    transform: translate(0, 0) scale(0.6) rotate(-10deg);
+  }
+  12% {
+    opacity: 0.9;
+  }
+  60% {
+    opacity: 0.45;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(30px, -64px) scale(1.2) rotate(12deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .orb-stage.napping {
+    animation: none;
+    filter: sepia(0.75) hue-rotate(205deg) saturate(1.7) brightness(0.6);
+  }
+  .nap-zzz {
+    display: none;
+  }
+}
+
+/* Pinch — loud ORANGE (grab: drag a node or the canvas). Deliberately
+   unmistakable: orange ring + dot + a PINCH tag under the cursor, so you
+   always know the instant the system thinks you are grabbing. */
+.hand-reticle.pinch .hand-ring {
+  width: 30px;
+  height: 30px;
+  margin: -15px 0 0 -15px;
+  border: 3.5px solid #ff9f43;
+  box-shadow:
+    0 0 26px rgba(255, 159, 67, 0.9),
+    inset 0 0 10px rgba(255, 159, 67, 0.4);
+  animation: pinch-pop 0.16s ease-out;
+}
+
+.hand-reticle.pinch .hand-dot {
+  width: 11px;
+  height: 11px;
+  margin: -5.5px 0 0 -5.5px;
+  background: #ff9f43;
+  box-shadow: 0 0 16px rgba(255, 159, 67, 1);
+}
+
+/* Gesture tag under every reticle — the same logic for all states, color-
+   matched to the ring: POINT/HOLD cyan, PALM violet, FIST amber. PINCH is
+   the loud one (solid orange) because grabbing must never be ambiguous. */
+.hand-gesture-label {
+  position: absolute;
+  top: 22px;
+  left: 0;
+  transform: translateX(-50%);
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  white-space: nowrap;
+  background: rgba(10, 16, 28, 0.78);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
+
+.hand-gesture-label.pointing {
+  color: var(--cyan-bright);
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--cyan-rgb), 0.45),
+    0 0 10px rgba(var(--cyan-rgb), 0.35);
+}
+
+.hand-gesture-label.open {
+  color: #c4b5fd;
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--violet-rgb), 0.5),
+    0 0 10px rgba(var(--violet-rgb), 0.35);
+}
+
+.hand-gesture-label.fist {
+  color: var(--amber);
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--amber-rgb), 0.5),
+    0 0 10px rgba(var(--amber-rgb), 0.4);
+}
+
+.hand-gesture-label.pinch {
+  color: #1a0e00;
+  background: #ff9f43;
+  box-shadow: 0 0 14px rgba(255, 159, 67, 0.8);
+}
+
+@keyframes pinch-pop {
+  from { transform: scale(1.5); opacity: 0.4; }
+  to { transform: scale(1); opacity: 1; }
 }
 
 /* Closed fist — amber (close) */

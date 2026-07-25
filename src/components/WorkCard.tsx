@@ -59,6 +59,7 @@ export default function WorkCard({
   onToggleSteps,
   onFocus,
   onOpen,
+  onApprove,
 }: {
   task: TaskCard;
   accepted?: boolean;
@@ -66,6 +67,7 @@ export default function WorkCard({
   onToggleSteps?: () => void;
   onFocus: () => void;
   onOpen: () => void;
+  onApprove?: (choice: "once" | "session" | "always" | "deny") => void;
 }) {
   const [localStepsOpen, setLocalStepsOpen] = useState(false);
   const showSteps = onToggleSteps ? stepsOpen : localStepsOpen;
@@ -106,6 +108,47 @@ export default function WorkCard({
       ) : null}
 
       {active && task.notes ? <p className="activity-notes">{task.notes.slice(-180)}</p> : null}
+
+      {task.interaction ? (
+        <div className="interaction-card" onClick={(event) => event.stopPropagation()}>
+          <strong>
+            {task.interaction.secret ? "Secure input required" : "Waiting for your answer"}
+          </strong>
+          <p>
+            {task.interaction.secret
+              ? "Use the secure Iris prompt to continue."
+              : task.interaction.question}
+          </p>
+        </div>
+      ) : null}
+
+      {task.approval ? (
+        <div className="approval-card" onClick={(event) => event.stopPropagation()}>
+          <strong>Approval required</strong>
+          {task.approval.command ? <code>{task.approval.command}</code> : null}
+          {task.approval.reason ? <p>{task.approval.reason}</p> : null}
+          <div className="approval-actions">
+            {task.approval.choices.map((choice) => (
+              <button
+                key={choice}
+                type="button"
+                className={choice === "deny" ? "deny" : choice === "always" ? "always" : ""}
+                disabled={task.approval?.resolving}
+                onClick={() => onApprove?.(choice)}
+              >
+                {choice === "once"
+                  ? "Allow once"
+                  : choice === "session"
+                    ? "This session"
+                    : choice === "always"
+                      ? "Always allow"
+                      : "Deny"}
+              </button>
+            ))}
+          </div>
+          {task.approval.error ? <small>{task.approval.error}</small> : null}
+        </div>
+      ) : null}
 
       {steps.length > 0 ? (
         <div className="activity" onClick={(event) => event.stopPropagation()}>

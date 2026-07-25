@@ -1,46 +1,136 @@
 // ===== Hermes dispatch gate =====
-// Gemini sometimes dispatched without asking, or "confirmed" itself in the same
-// breath. This state machine makes that impossible at the tool level: a submit
-// only succeeds after (1) propose staged the brief, (2) the model finished the
-// turn where it read the brief back, and (3) the USER actually spoke again.
 //
-// Stages: awaiting_readback -> (model turn ends) -> awaiting_user
-//         awaiting_user     -> (user speaks)     -> confirmable
+// A submit is bound to one immutable proposal, one Hermes transcript, and an
+// actual user turn after the read-back. Gemini interprets the meaning of that
+// turn and expresses affirmative intent by calling submit_hermes_task; this
+// gate enforces ordering and identity, not a hard-coded confirmation vocabulary.
 
-const PROPOSAL_TTL_MS = 5 * 60 * 1000;
+import crypto from "node:crypto";
 
-let proposal = null; // { task, urgency, stage, proposedAt }
+export const PROPOSAL_TTL_MS = 5 * 60 * 1000;
 
-export function proposeHermesTask(task, urgency = "normal") {
+const VALID_URGENCY = new Set(["low", "normal", "high"]);
+
+let proposal = null;
+
+function expire(now = Date.now()) {
+  if (proposal && now - proposal.proposedAt > PROPOSAL_TTL_MS) proposal = null;
+}
+
+function replaceProposal(updates) {
+  proposal = Object.freeze({ ...proposal, ...updates });
+  return proposal;
+}
+
+export function proposeHermesTask(task, urgency = "normal", options = {}) {
   const cleanTask = String(task || "").trim();
-  if (!cleanTask) return { ok: false };
-  proposal = { task: cleanTask, urgency, stage: "awaiting_readback", proposedAt: Date.now() };
-  return { ok: true, task: cleanTask };
+  if (!cleanTask) return { ok: false, reason: "empty_task" };
+  const cleanUrgency = VALID_URGENCY.has(String(urgency)) ? String(urgency) : "normal";
+  const sessionId = String(options.sessionId || "").trim();
+  proposal = Object.freeze({
+    id: crypto.randomUUID(),
+    task: cleanTask,
+    urgency: cleanUrgency,
+    sessionId,
+    stage: "awaiting_readback",
+    proposedAt: Number(options.now) || Date.now(),
+    userResponse: "",
+    userTurnObserved: false,
+  });
+  return { ok: true, proposal };
 }
 
-// The model finished speaking (turnComplete) or was interrupted mid-speech —
-// either way the read-back reached the user.
+/** Advance only after the model completed the read-back turn. */
 export function markModelTurnComplete() {
-  if (proposal?.stage === "awaiting_readback") proposal.stage = "awaiting_user";
+  if (proposal?.stage !== "awaiting_readback") return;
+  replaceProposal({ stage: "awaiting_user" });
 }
 
-export function markUserSpoke() {
-  if (proposal?.stage === "awaiting_user") proposal.stage = "confirmable";
+/**
+ * A barge-in does not prove that the complete brief was heard. The next model
+ * turn must stage/read a fresh proposal before submission can succeed.
+ */
+export function markModelTurnInterrupted() {
+  if (proposal?.stage === "awaiting_readback") replaceProposal({ stage: "readback_interrupted" });
+}
+
+/**
+ * Record that a real user turn followed the read-back. The transcript is kept
+ * for observability only; Gemini owns the semantic affirmative/decline/revise
+ * decision through its next tool call.
+ */
+export function recordUserResponse(text, options = {}) {
+  if (!proposal || !["awaiting_readback", "awaiting_user"].includes(proposal.stage)) {
+    return { ok: false, reason: "not_awaiting_user" };
+  }
+  if (proposal.stage === "awaiting_readback" && !options.allowDuringReadback) {
+    return { ok: false, reason: "readback_in_progress" };
+  }
+  const userResponse = String(text || "").trim();
+  if (!userResponse) return { ok: false, reason: "empty_response" };
+  replaceProposal({ userResponse, userTurnObserved: true });
+  return { ok: true, userTurnObserved: true, stage: proposal.stage };
+}
+
+// Backward-compatible name for the live-transcription caller.
+export function markUserSpoke(text, options = {}) {
+  return recordUserResponse(text, options);
 }
 
 export function resetHermesGate() {
   proposal = null;
 }
 
-/**
- * Try to consume the staged proposal for an actual submit.
- * Returns { ok: true, proposal } and clears the stage on success, or
- * { ok: false, reason: "no_proposal" | "not_confirmed" }.
- */
-export function claimConfirmedProposal(now = Date.now()) {
-  if (proposal && now - proposal.proposedAt > PROPOSAL_TTL_MS) proposal = null;
+/** A proposal is staged and still waiting for a secure terminal decision. */
+export function hasPendingProposal(now = Date.now()) {
+  expire(now);
+  return Boolean(
+    proposal &&
+      ["awaiting_readback", "awaiting_user"].includes(proposal.stage),
+  );
+}
+
+export function getHermesProposal(now = Date.now()) {
+  expire(now);
+  return proposal ? { ...proposal } : null;
+}
+
+/** Discard a staged proposal after Gemini interprets the user's intent as decline. */
+export function discardHermesProposal(options = {}) {
+  const now = options.now ?? Date.now();
+  expire(now);
   if (!proposal) return { ok: false, reason: "no_proposal" };
-  if (proposal.stage !== "confirmable") return { ok: false, reason: "not_confirmed" };
+  if (!options.proposalId || options.proposalId !== proposal.id) {
+    return { ok: false, reason: "proposal_mismatch" };
+  }
+  if (proposal.sessionId && options.sessionId !== proposal.sessionId) {
+    return { ok: false, reason: "session_mismatch" };
+  }
+  const discarded = proposal;
+  proposal = null;
+  return { ok: true, proposal: discarded };
+}
+
+/**
+ * Consume the exact staged proposal. `proposalId` and `sessionId` bind the
+ * model's submit call to what the user heard and to the selected Hermes thread.
+ */
+export function claimConfirmedProposal(options = {}) {
+  const now = typeof options === "number" ? options : options.now ?? Date.now();
+  expire(now);
+  if (!proposal) return { ok: false, reason: "no_proposal" };
+  if (!options.proposalId || options.proposalId !== proposal.id) {
+    return { ok: false, reason: "proposal_mismatch" };
+  }
+  if (proposal.sessionId && options.sessionId !== proposal.sessionId) {
+    return { ok: false, reason: "session_mismatch" };
+  }
+  if (proposal.stage === "readback_interrupted") {
+    return { ok: false, reason: "readback_interrupted" };
+  }
+  if (proposal.stage !== "awaiting_user" || !proposal.userTurnObserved) {
+    return { ok: false, reason: "no_user_turn" };
+  }
   const claimed = proposal;
   proposal = null;
   return { ok: true, proposal: claimed };

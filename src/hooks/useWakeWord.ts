@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { MicVAD } from "@ricky0123/vad-web";
 import * as ort from "onnxruntime-web";
 
 // Local "Hey Iris" wake word. Ports the livekit-wakeword / openWakeWord inference
@@ -13,10 +14,21 @@ const EMB_WINDOW = 76; // mel frames per embedding
 const EMB_STRIDE = 8; // mel frames between embeddings
 const N_EMB = 16; // classifier input length
 const PREDICT_INTERVAL_MS = 200;
-// Balanced default (model's eval-optimal): high enough to reject random words,
-// low enough for a clear "Hey Iris". 0.10 caused false wakes; 0.18 missed too much.
-const DEFAULT_THRESHOLD = 0.15;
+// Balanced default: the model is trained on synthetic voices, so real speech
+// tends to produce ONE brief score spike per utterance — a wake must fire on
+// a single hot frame, instantly. The Settings "sensitivity" select passes a
+// different threshold in (relaxed/strict).
+const DEFAULT_THRESHOLD = 0.12;
+// False-wake guard that can never block clear speech: an adaptive noise
+// floor. A rolling average of recent scores estimates how "hot" the room is;
+// the effective firing bar is raised only while that background level is
+// elevated (TV, music, chatter) and decays back within seconds of quiet.
+// In a quiet room the bar IS the configured threshold — nothing extra.
+const NOISE_ALPHA = 0.05; // ~4s memory at 5 predictions/sec
+const NOISE_MULTIPLIER = 3.5; // spike must stand this far above the background
+const FLOOR_CAP_FACTOR = 2.2; // the bar can never exceed threshold * this
 const COOLDOWN_MS = 2500;
+const SPEECH_CONFIRM_WINDOW_MS = 1500;
 
 let ortConfigured = false;
 function configureOrt() {
@@ -61,8 +73,15 @@ function getSessions(): Promise<WakeSessions> {
 
 export function useWakeWord(
   enabled: boolean,
-  onWake: () => void,
+  onWake: (diagnostic: {
+    score: number;
+    floor: number;
+    threshold: number;
+    speechConfirmed: boolean;
+  }) => void,
   onError?: (message: string) => void,
+  threshold: number = DEFAULT_THRESHOLD,
+  micDeviceId = "",
 ) {
   const onWakeRef = useRef(onWake);
   const onErrorRef = useRef(onError);
@@ -76,7 +95,8 @@ export function useWakeWord(
     let stream: MediaStream | null = null;
     let audioCtx: AudioContext | null = null;
     let source: MediaStreamAudioSourceNode | null = null;
-    let processor: ScriptProcessorNode | null = null;
+    let processor: AudioWorkletNode | ScriptProcessorNode | null = null;
+    let speechVad: MicVAD | null = null;
     let timer: number | null = null;
 
     let mel: ort.InferenceSession | null = null;
@@ -89,6 +109,36 @@ export function useWakeWord(
     let lastWakeAt = 0;
     let peakScore = 0;
     let lastPeakLogAt = 0;
+    let noiseEma = 0;
+    let speechActive = false;
+    let lastSpeechConfirmedAt = 0;
+    let pendingWake:
+      | { score: number; floor: number; threshold: number; at: number }
+      | null = null;
+
+    function fireWake(candidate: {
+      score: number;
+      floor: number;
+      threshold: number;
+    }) {
+      const now = performance.now();
+      if (now - lastWakeAt <= COOLDOWN_MS) return;
+      lastWakeAt = now;
+      pendingWake = null;
+      console.log(
+        `[wakeword] ✅ WAKE — phrase ${candidate.score.toFixed(3)}, speech confirmed`,
+      );
+      onWakeRef.current({ ...candidate, speechConfirmed: true });
+    }
+
+    function confirmPendingWake() {
+      const now = performance.now();
+      if (pendingWake && now - pendingWake.at <= SPEECH_CONFIRM_WINDOW_MS) {
+        fireWake(pendingWake);
+      } else if (pendingWake) {
+        pendingWake = null;
+      }
+    }
 
     async function predict() {
       if (busy || cancelled || !mel || !emb || !cls || filled < WINDOW_SAMPLES) return;
@@ -129,24 +179,46 @@ export function useWakeWord(
         // Logging so you can see it working in the DevTools console:
         // - a live peak score once per second, and
         // - any "near miss" frame that gets reasonably close to the threshold.
+        // Effective firing bar: the configured threshold, lifted only while
+        // the recent background has been scoring hot (noisy room), capped so
+        // it can never run away and permanently deafen the detector.
+        const floor = Math.min(
+          threshold * FLOOR_CAP_FACTOR,
+          Math.max(threshold, noiseEma * NOISE_MULTIPLIER),
+        );
+
         const now = performance.now();
         peakScore = Math.max(peakScore, score);
         if (now - lastPeakLogAt >= 1000) {
-          console.log(`[wakeword] listening… peak score ${peakScore.toFixed(3)} (fires at ${DEFAULT_THRESHOLD})`);
+          const floorNote = floor > threshold + 0.001 ? ` (noisy room — bar raised to ${floor.toFixed(3)})` : "";
+          console.log(`[wakeword] listening… peak score ${peakScore.toFixed(3)} (fires at ${threshold})${floorNote}`);
           peakScore = 0;
           lastPeakLogAt = now;
         }
-        if (score >= 0.05 && score < DEFAULT_THRESHOLD) {
-          console.log(`[wakeword] near miss: ${score.toFixed(3)}`);
+        if (score >= 0.05 && score < floor) {
+          console.log(`[wakeword] near miss: ${score.toFixed(3)} (bar ${floor.toFixed(3)})`);
         }
 
-        // Fire on the first frame that clears the threshold (cooldown prevents
-        // rapid double-fires from the same utterance).
-        if (score >= DEFAULT_THRESHOLD && now - lastWakeAt > COOLDOWN_MS) {
-          lastWakeAt = now;
-          console.log(`[wakeword] ✅ WAKE — "Hey Iris" detected (score ${score.toFixed(3)})`);
-          onWakeRef.current();
+        // The phrase model can spike on non-speech noise. Wake only when the
+        // independent Silero model confirms human speech in the same window.
+        if (score >= floor && now - lastWakeAt > COOLDOWN_MS) {
+          const candidate = { score, floor, threshold, at: now };
+          const recentlyConfirmed =
+            speechActive ||
+            now - lastSpeechConfirmedAt <= SPEECH_CONFIRM_WINDOW_MS;
+          if (recentlyConfirmed) {
+            fireWake(candidate);
+          } else {
+            pendingWake = candidate;
+            console.log(
+              `[wakeword] phrase candidate ${score.toFixed(3)} awaiting speech confirmation`,
+            );
+          }
         }
+
+        // Update the background estimate AFTER the decision, clamped at the
+        // threshold so genuine wake spikes never inflate the noise floor.
+        noiseEma += NOISE_ALPHA * (Math.min(score, threshold) - noiseEma);
       } catch (error) {
         // Best-effort: a single failed frame shouldn't kill the listener.
         console.error("[wakeword] predict failed", error);
@@ -165,10 +237,22 @@ export function useWakeWord(
         if (cancelled) return;
         console.log("[wakeword] models ready, requesting microphone…");
 
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-          video: false,
-        });
+        const audioBase = { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+        if (micDeviceId) {
+          // Chosen mic wins when present ("exact"); unplugged falls through
+          // to the system default so wake listening never silently dies.
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({
+              audio: { ...audioBase, deviceId: { exact: micDeviceId } },
+              video: false,
+            });
+          } catch {
+            console.warn("[wakeword] selected mic unavailable — using system default");
+          }
+        }
+        if (!stream) {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: audioBase, video: false });
+        }
         if (cancelled) {
           stream.getTracks().forEach((track) => track.stop());
           return;
@@ -176,12 +260,13 @@ export function useWakeWord(
 
         audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
         if (audioCtx.state === "suspended") await audioCtx.resume();
+        if (cancelled) {
+          stream.getTracks().forEach((track) => track.stop());
+          await audioCtx.close().catch(() => undefined);
+          return;
+        }
         source = audioCtx.createMediaStreamSource(stream);
-        processor = audioCtx.createScriptProcessor(2048, 1, 1);
-
-        processor.onaudioprocess = (event) => {
-          const input = event.inputBuffer.getChannelData(0);
-          event.outputBuffer.getChannelData(0).fill(0); // never echo mic to speakers
+        const consume = (input: Float32Array) => {
           const n = input.length;
           if (n >= ring.length) {
             ring.set(input.subarray(n - ring.length));
@@ -192,12 +277,66 @@ export function useWakeWord(
             filled = Math.min(ring.length, filled + n);
           }
         };
+        try {
+          await audioCtx.audioWorklet.addModule(
+            `${import.meta.env.BASE_URL}audio/iris-pcm-capture-worklet.js`,
+          );
+          const worklet = new AudioWorkletNode(audioCtx, "iris-pcm-capture");
+          worklet.port.onmessage = (event: MessageEvent<Float32Array>) => consume(event.data);
+          processor = worklet;
+        } catch {
+          const fallback = audioCtx.createScriptProcessor(2048, 1, 1);
+          fallback.onaudioprocess = (event) => {
+            event.outputBuffer.getChannelData(0).fill(0);
+            consume(event.inputBuffer.getChannelData(0));
+          };
+          processor = fallback;
+        }
+        if (cancelled) {
+          processor.disconnect();
+          stream.getTracks().forEach((track) => track.stop());
+          await audioCtx.close().catch(() => undefined);
+          return;
+        }
 
         source.connect(processor);
         processor.connect(audioCtx.destination);
+        const vadAssetPath = new URL(
+          `${import.meta.env.BASE_URL}vad-assets/`,
+          window.location.href,
+        ).href;
+        speechVad = await MicVAD.new({
+          model: "v5",
+          startOnLoad: false,
+          audioContext: audioCtx,
+          getStream: async () => stream!,
+          pauseStream: async () => undefined,
+          resumeStream: async () => stream!,
+          baseAssetPath: vadAssetPath,
+          onnxWASMBasePath: vadAssetPath,
+          onSpeechRealStart: () => {
+            if (cancelled) return;
+            speechActive = true;
+            lastSpeechConfirmedAt = performance.now();
+            confirmPendingWake();
+          },
+          onSpeechEnd: () => {
+            speechActive = false;
+            lastSpeechConfirmedAt = performance.now();
+          },
+          onVADMisfire: () => {
+            speechActive = false;
+          },
+        });
+        await speechVad.start();
+        if (cancelled) {
+          await speechVad.destroy();
+          speechVad = null;
+          return;
+        }
         timer = window.setInterval(predict, PREDICT_INTERVAL_MS);
         console.log(
-          `[wakeword] 🎙️ listening for "Hey Iris" @ ${audioCtx.sampleRate}Hz — say it to test (watch scores below)`,
+          `[wakeword] 🎙️ phrase + speech confirmation ready @ ${audioCtx.sampleRate}Hz`,
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -213,15 +352,20 @@ export function useWakeWord(
       console.log("[wakeword] stopped listening");
       if (timer !== null) window.clearInterval(timer);
       try {
+        if (processor instanceof AudioWorkletNode) processor.port.onmessage = null;
+        else if (processor) processor.onaudioprocess = null;
         processor?.disconnect();
         source?.disconnect();
       } catch {
         // best-effort
       }
+      const vad = speechVad;
+      speechVad = null;
+      void vad?.destroy().catch(() => undefined);
       stream?.getTracks().forEach((track) => track.stop());
       audioCtx?.close().catch(() => undefined);
       // NOTE: ONNX sessions are cached module-level and intentionally NOT released
       // here, so re-arming after sleep is instant.
     };
-  }, [enabled]);
+  }, [enabled, threshold, micDeviceId]);
 }

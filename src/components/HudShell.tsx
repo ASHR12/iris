@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type RefObject } from "react";
-import { ChevronDown, Hand, Maximize2, MessageSquare, Mic, MicOff, Power, Terminal } from "lucide-react";
+import { BrainCircuit, ChevronDown, Hand, Maximize2, MessageSquare, Mic, MicOff, Power, Terminal } from "lucide-react";
 import ReactorCore from "./ReactorCore";
 import WorkCard from "./WorkCard";
 import { HandSkeleton } from "./CameraDock";
@@ -20,11 +20,13 @@ function HudCamera({
   hand,
   actionLabel,
   actionTone,
+  error,
 }: {
   stream: MediaStream | null;
   hand: HandState;
   actionLabel: string;
   actionTone: string;
+  error?: string | null;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
@@ -38,6 +40,7 @@ function HudCamera({
         <video ref={videoRef} autoPlay playsInline muted />
         <div className="cam-scan" />
         <HandSkeleton hands={hand.hands} />
+        {error ? <span className="cam-error">{error}</span> : null}
         <span className="cam-status">
           <i />
           {hand.present ? "tracking" : "no hand"}
@@ -70,7 +73,7 @@ export default function HudShell({
   awake,
   caption,
   captionDim,
-  wakeWordEnabled,
+  captionCompact,
   muted,
   onToggleMute,
   onWake,
@@ -83,14 +86,20 @@ export default function HudShell({
   onToggleSteps,
   onFocusTask,
   onOpenTask,
+  onApproveTask,
   transcript,
   commsScrollRef,
   handControl,
   onToggleHand,
   hand,
   handStream,
+  handError,
   handActionLabel,
   handActionTone,
+  brainAvailable,
+  brainOpen,
+  onOpenBrain,
+  autoSlept,
 }: {
   reactorState: ReactorState;
   inputLevelRef: { current: number };
@@ -104,7 +113,7 @@ export default function HudShell({
   awake: boolean;
   caption: string;
   captionDim: boolean;
-  wakeWordEnabled: boolean;
+  captionCompact: boolean;
   muted: boolean;
   onToggleMute: () => void;
   onWake: () => void;
@@ -117,14 +126,23 @@ export default function HudShell({
   onToggleSteps: (id: string) => void;
   onFocusTask: (id: string) => void;
   onOpenTask: (task: TaskCard) => void;
+  onApproveTask: (
+    task: TaskCard,
+    choice: "once" | "session" | "always" | "deny",
+  ) => void;
   transcript: TranscriptLine[];
   commsScrollRef: RefObject<HTMLDivElement | null>;
   handControl: boolean;
   onToggleHand: () => void;
   hand: HandState;
   handStream: MediaStream | null;
+  handError?: string | null;
   handActionLabel: string;
   handActionTone: string;
+  brainAvailable: boolean;
+  brainOpen: boolean;
+  onOpenBrain: () => void;
+  autoSlept: boolean;
 }) {
   // Show the full stream (state caps at 20); the column has a fixed max height
   // and palm-scrolls like Comms.
@@ -135,6 +153,34 @@ export default function HudShell({
   // HUD, so they start open but can be tucked away the same way.
   const [commsOpen, setCommsOpen] = useState(false);
   const [workOpen, setWorkOpen] = useState(true);
+
+  // The Neural Map wants the whole sky: opening it tucks the task panel away
+  // (the chip stays for bringing it back); closing the map leaves it as-is.
+  useEffect(() => {
+    if (brainOpen) setWorkOpen(false);
+  }, [brainOpen]);
+
+  // The control column reveals for the hand only when it is actually NEAR
+  // the reactor corner (cluster + the column to its left) — a hand merely
+  // being on camera should not pop UI open across the screen.
+  const clusterRef = useRef<HTMLDivElement | null>(null);
+  const handNearOrb = (() => {
+    if (!hand.present) return false;
+    const rect = clusterRef.current?.getBoundingClientRect();
+    if (!rect) return false;
+    const points = hand.hands.length
+      ? hand.hands.map((item) => item.point)
+      : hand.point
+        ? [hand.point]
+        : [];
+    return points.some(
+      (point) =>
+        point.x >= rect.left - 220 &&
+        point.x <= rect.right + 60 &&
+        point.y >= rect.top - 120 &&
+        point.y <= rect.bottom + 80,
+    );
+  })();
 
   return (
     <div className={`hud-shell ${awake ? "awake" : "asleep"}`}>
@@ -163,6 +209,7 @@ export default function HudShell({
                   onToggleSteps={() => onToggleSteps(task.id)}
                   onFocus={() => onFocusTask(task.id)}
                   onOpen={() => onOpenTask(task)}
+                  onApprove={(choice) => onApproveTask(task, choice)}
                 />
               ))}
             </div>
@@ -206,17 +253,20 @@ export default function HudShell({
             hand={hand}
             actionLabel={handActionLabel}
             actionTone={handActionTone}
+            error={handError}
           />
         ) : null}
       </div>
 
       {/* Orb cluster, bottom-right */}
-      <div className="hud-orb-cluster hud-hit">
-        <div className={`hud-caption ${captionDim ? "dim" : ""}`}>
-          {awake ? caption : wakeWordEnabled ? "Say “Hey Iris”" : "Iris is asleep"}
+      <div className="hud-orb-cluster hud-hit" ref={clusterRef}>
+        {/* One source of truth: App's caption already covers awake states,
+            asleep hints, and the token-saving nap (with/without Hermes). */}
+        <div className={`hud-caption ${captionDim ? "dim" : ""} ${!awake || captionCompact ? "hint" : ""}`}>
+          {caption}
         </div>
         <div
-          className="orb-stage hud-orb"
+          className={`orb-stage hud-orb ${autoSlept && !awake ? "napping" : ""}`}
           ref={orbStageRef}
           style={{ "--orb-accent": ORB_ACCENT[reactorState] } as CSSProperties}
         >
@@ -230,11 +280,18 @@ export default function HudShell({
             wakeKey={wakeKey}
             rippleKey={rippleKey}
           />
+          {autoSlept && !awake ? (
+            <span className="nap-zzz" aria-hidden="true">
+              <i>z</i>
+              <i>z</i>
+              <i>z</i>
+            </span>
+          ) : null}
           {orbFlash ? (
             <span key={orbFlash.id} className={`orb-flash ${orbFlash.tone}`} onAnimationEnd={onOrbFlashEnd} />
           ) : null}
         </div>
-        <div className={`hud-controls ${hand.present ? "show" : ""}`}>
+        <div className={`hud-controls ${handNearOrb ? "show" : ""}`}>
           {awake ? (
             <>
               <button
@@ -253,6 +310,15 @@ export default function HudShell({
               <Power size={14} />
             </button>
           )}
+          {brainAvailable ? (
+            <button
+              className={`hud-btn ${brainOpen ? "active" : ""}`}
+              onClick={onOpenBrain}
+              title={brainOpen ? "Close the Neural Map" : "Neural Map — say 'show your brain'"}
+            >
+              <BrainCircuit size={14} />
+            </button>
+          ) : null}
           <button
             className={`hud-btn ${handControl ? "active" : ""}`}
             onClick={onToggleHand}
@@ -260,7 +326,7 @@ export default function HudShell({
           >
             <Hand size={14} />
           </button>
-          <button className="hud-btn" onClick={onExitHud} title="Back to deck (⌥Space)">
+          <button className="hud-btn" onClick={onExitHud} title="Back to deck (⌥H)">
             <Maximize2 size={14} />
           </button>
         </div>

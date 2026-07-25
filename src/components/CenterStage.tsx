@@ -1,6 +1,7 @@
 import { useEffect, useState, type CSSProperties, type RefObject } from "react";
 import { Mic, MicOff, Power } from "lucide-react";
 import ReactorCore from "./ReactorCore";
+import DevicePicker from "./DevicePicker";
 import type { HandoffTone, ReactorState } from "../types";
 
 // Arc-reactor accent color per state (matches ReactorCore palettes) — drives the
@@ -82,6 +83,10 @@ export default function CenterStage({
   onToggleMute,
   onSleep,
   wakeWordEnabled,
+  autoSlept,
+  hermesWorking,
+  micDevice,
+  onPickMicDevice,
 }: {
   reactorState: ReactorState;
   inputLevelRef: { current: number };
@@ -103,11 +108,15 @@ export default function CenterStage({
   onToggleMute: () => void;
   onSleep: () => void;
   wakeWordEnabled: boolean;
+  autoSlept: boolean;
+  hermesWorking: boolean;
+  micDevice: string;
+  onPickMicDevice: (id: string) => void;
 }) {
   return (
     <div className="deck-center">
       <div
-        className="orb-stage"
+        className={`orb-stage ${autoSlept && !awake ? "napping" : ""}`}
         ref={orbStageRef}
         style={{ "--orb-accent": ORB_ACCENT[reactorState] } as CSSProperties}
       >
@@ -121,6 +130,13 @@ export default function CenterStage({
           wakeKey={wakeKey}
           rippleKey={rippleKey}
         />
+        {autoSlept && !awake ? (
+          <span className="nap-zzz" aria-hidden="true">
+            <i>z</i>
+            <i>z</i>
+            <i>z</i>
+          </span>
+        ) : null}
         {orbFlash ? (
           <span key={orbFlash.id} className={`orb-flash ${orbFlash.tone}`} onAnimationEnd={onOrbFlashEnd} />
         ) : null}
@@ -139,13 +155,22 @@ export default function CenterStage({
             <span className="caption-caret" />
           </div>
           <div className="transport">
-            <button
-              className={`t-btn small ${muted ? "muted" : ""}`}
-              onClick={onToggleMute}
-              title={muted ? "Unmute microphone" : "Mute microphone"}
-            >
-              {muted ? <MicOff size={18} /> : <Mic size={18} />}
-            </button>
+            {/* Zoom-style split control: mute toggles, the caret picks the mic. */}
+            <span className="t-split">
+              <button
+                className={`t-btn small ${muted ? "muted" : ""}`}
+                onClick={onToggleMute}
+                title={muted ? "Unmute microphone" : "Mute microphone"}
+              >
+                {muted ? <MicOff size={18} /> : <Mic size={18} />}
+              </button>
+              <DevicePicker
+                kind="audioinput"
+                value={micDevice}
+                onSelect={onPickMicDevice}
+                title="Select a microphone"
+              />
+            </span>
             <button className="t-btn small danger" onClick={onSleep} title="Sleep (S)">
               <Power size={18} />
             </button>
@@ -153,7 +178,15 @@ export default function CenterStage({
         </>
       ) : (
         <div className="wake-prompt">
-          {wakeWordEnabled ? (
+          {autoSlept ? (
+            <div className="wake-say">
+              {hermesWorking
+                ? "On standby — Hermes is working; I'll wake when it's done"
+                : wakeWordEnabled
+                  ? "On standby, saving tokens — say “Hey Iris”"
+                  : "On standby, saving tokens"}
+            </div>
+          ) : wakeWordEnabled ? (
             <div className="wake-say">
               <Mic size={15} />
               Say <b>“Hey Iris”</b>
@@ -162,10 +195,18 @@ export default function CenterStage({
             <div className="wake-say">Iris is asleep</div>
           )}
           <div className="wake-keys">
-            {wakeWordEnabled ? "or press " : "press "}
-            <span className="key">W</span> wake
+            <span>{wakeWordEnabled ? "or press" : "press"}</span>
+            <span className="combo">
+              <span className="key">⌥</span>
+              <span className="key">W</span>
+            </span>
+            <span>wake</span>
             <span className="wake-sep">·</span>
-            <span className="key">S</span> sleep
+            <span className="combo">
+              <span className="key">⌥</span>
+              <span className="key">S</span>
+            </span>
+            <span>sleep</span>
           </div>
         </div>
       )}

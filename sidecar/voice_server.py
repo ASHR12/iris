@@ -17,6 +17,11 @@ from hermes_client import HermesClient, HermesError
 from hermes_process import HermesProcessManager
 from protocol import emit, emit_log
 
+# LEGACY REFERENCE ONLY. The production app is Electron-native and enforces an
+# immutable two-step Hermes dispatch gate. This prototype is intentionally
+# fenced behind IRIS_ENABLE_LEGACY_SIDECAR=1 so it cannot silently provide a
+# weaker security contract.
+
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
 SEND_SAMPLE_RATE = 16000
@@ -61,12 +66,10 @@ You are Iris, the realtime voice front-end for the user. Your brain and hands
 are Hermes, an autonomous agent that can use the terminal, files, web search,
 browsing, code, and automations. You are calm, futuristic, and extremely concise.
 
-CORE RULE: Be decisive. Do NOT interrogate the user. When the user asks for
-almost anything actionable (find a deal, research X, build Y, check Z, fix this,
-book, summarize, look something up, automate something), immediately call
-submit_hermes_task and pass the request through verbatim or lightly cleaned up.
-Hermes is smart and will figure out the website, the source, the tools, and the
-details on its own. It is Hermes's job to resolve ambiguity, not yours.
+LEGACY SAFETY RULE: Never call submit_hermes_task until you have read the exact
+brief back, asked whether to send it, ended your turn, and the user explicitly
+confirmed in a later turn. This prototype does not have the production app's
+code-enforced proposal gate and must not be used as a secure runtime.
 
 Do NOT ask "which website", "what budget", "what do you mean", or similar
 clarifying questions unless the request is truly impossible to act on at all
@@ -636,6 +639,13 @@ class AudioLoop:
 
 
 def main() -> None:
+    if os.environ.get("IRIS_ENABLE_LEGACY_SIDECAR") != "1":
+        print(
+            "The Python sidecar is a legacy reference and is disabled by default. "
+            "Use the Electron app, or set IRIS_ENABLE_LEGACY_SIDECAR=1 for explicit prototype testing.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=["camera", "screen", "none"], default=DEFAULT_MODE)
     parser.add_argument("--model", default=os.environ.get("GEMINI_LIVE_MODEL", DEFAULT_MODEL))

@@ -20,6 +20,7 @@ export default function WorkStream({
   onToggleSteps,
   onFocusTask,
   onOpenTask,
+  onApproveTask,
 }: {
   tasks: TaskCard[];
   sortedTasks: TaskCard[];
@@ -35,6 +36,10 @@ export default function WorkStream({
   onToggleSteps: (id: string) => void;
   onFocusTask: (id: string) => void;
   onOpenTask: (task: TaskCard) => void;
+  onApproveTask: (
+    task: TaskCard,
+    choice: "once" | "session" | "always" | "deny",
+  ) => void;
 }) {
   return (
     <aside className="deck-panel deck-right">
@@ -81,6 +86,7 @@ export default function WorkStream({
               onToggleSteps={() => onToggleSteps(task.id)}
               onFocus={() => onFocusTask(task.id)}
               onOpen={() => onOpenTask(task)}
+              onApprove={(choice) => onApproveTask(task, choice)}
             />
           ))
         )}

@@ -32,6 +32,11 @@ function play(tones: ToneSpec[]) {
     master.gain.value = MASTER_GAIN;
     master.connect(ac.destination);
 
+    let remaining = tones.length;
+    if (!remaining) {
+      master.disconnect();
+      return;
+    }
     for (const tone of tones) {
       const { freq, at = 0, dur = 0.28, type = "sine", peak = 0.5, glideTo } = tone;
       const osc = ac.createOscillator();
@@ -49,6 +54,15 @@ function play(tones: ToneSpec[]) {
       gain.connect(master);
       osc.start(now + at);
       osc.stop(now + at + dur + 0.05);
+      osc.onended = () => {
+        try {
+          osc.disconnect();
+          gain.disconnect();
+        } finally {
+          remaining -= 1;
+          if (remaining === 0) master.disconnect();
+        }
+      };
     }
   } catch {
     // Sound is decoration; never let it break anything.

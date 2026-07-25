@@ -6,6 +6,7 @@ import {
   findTaskMatches,
   readString,
   readStatusObject,
+  tasksForSession,
   taskKeyFor,
 } from "./lib/tasks";
 import { makeUiTestData } from "./lib/uiTestData";
@@ -27,8 +28,12 @@ import HandReticles from "./components/HandReticles";
 import BootSequence from "./components/BootSequence";
 import SetupPanel from "./components/SetupPanel";
 import HudShell from "./components/HudShell";
+import BrainGraph, { type BrainGraphState, type BrainVoiceCommand } from "./components/BrainGraph";
+import ApprovalPrompt from "./components/ApprovalPrompt";
+import HermesInteractionPrompt from "./components/HermesInteractionPrompt";
 
 const MAX_LOGS = 80;
+const MAX_TASKS_TOTAL = 100;
 // Point-and-hold duration before the finger pointer "clicks" what it's over.
 const DWELL_MS = 300;
 
@@ -38,6 +43,8 @@ export default function App() {
   const [geminiStatus, setGeminiStatus] = useState("offline");
   const [hermesStatus, setHermesStatus] = useState("offline");
   const [audioState, setAudioState] = useState("idle");
+  const [webSearching, setWebSearching] = useState(false);
+  const [hermesSummarizing, setHermesSummarizing] = useState(false);
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
   const [, setLogs] = useState<LogLine[]>([]);
   const [tasks, setTasks] = useState<TaskCard[]>([]);
@@ -54,11 +61,52 @@ export default function App() {
   const [fullConfig, setFullConfig] = useState<IrisConfig | null>(null);
   const [setup, setSetup] = useState<{ mode: "onboarding" | "settings" } | null>(null);
   const [wakeWordEnabled, setWakeWordEnabled] = useState(false);
+  const [wakeSensitivity, setWakeSensitivity] = useState("balanced");
+  const [showWakeDiagnostics, setShowWakeDiagnostics] = useState(false);
+  const showWakeDiagnosticsRef = useRef(false);
+  showWakeDiagnosticsRef.current = showWakeDiagnostics;
+  const [wakeDiagnosticVisible, setWakeDiagnosticVisible] = useState(false);
+  const [wakeStarting, setWakeStarting] = useState(false);
+  const [wakeReason, setWakeReason] = useState<{
+    label: string;
+    detail?: string;
+  } | null>(null);
+  const startPromiseRef = useRef<Promise<void> | null>(null);
+  const wakeDiagnosticTimerRef = useRef<number | null>(null);
+  // True when the idle timer (not the user) put Iris to sleep.
+  const [autoSlept, setAutoSlept] = useState(false);
   const [hermesSession, setHermesSession] = useState<string | null>(null);
+  const hermesSessionRef = useRef<string | null>(null);
+  hermesSessionRef.current = hermesSession;
+  const sessionTasks = useMemo(
+    () => tasksForSession(tasks, hermesSession, testDataEnabled),
+    [hermesSession, tasks, testDataEnabled],
+  );
   const [uiMode, setUiMode] = useState<"deck" | "hud">("deck");
+  const uiModeRef = useRef<"deck" | "hud">("deck");
+  uiModeRef.current = uiMode;
+  // Neural Map (the brain graph) — HUD-only overlay.
+  const [brainOpen, setBrainOpen] = useState(false);
+  const brainOpenRef = useRef(false);
+  brainOpenRef.current = brainOpen;
+  const prevBrainOpenRef = useRef(false);
+  const [brainCommand, setBrainCommand] = useState<BrainVoiceCommand | null>(null);
+  const brainSeqRef = useRef(0);
+  const [brainState, setBrainState] = useState<BrainGraphState | null>(null);
   const [bootActive, setBootActive] = useState(false);
   const [bootClosing, setBootClosing] = useState(false);
   const bootStartRef = useRef(0);
+  const demoTimersRef = useRef<Set<number>>(new Set());
+  // True while the current session is a RESUME of a previous conversation.
+  const resumingRef = useRef(false);
+
+  useEffect(
+    () => () => {
+      demoTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+      demoTimersRef.current.clear();
+    },
+    [],
+  );
 
   // Orb micro-expressions + sound cues.
   const [orbThinking, setOrbThinking] = useState(false);
@@ -82,9 +130,49 @@ export default function App() {
     );
   }
 
-  const audio = useAudioPipeline(hasBridge, pushLog);
+  function showWakeReason(source = "manual", detail = "") {
+    const label =
+      {
+        wake_word: "HEY IRIS",
+        hermes_result: "HERMES RESULT",
+        hermes_input: "HERMES INPUT",
+        hermes_approval: "HERMES APPROVAL",
+        hotkey: "⌥W",
+        tray: "TRAY",
+        neural_map: "NEURAL MAP",
+        manual: "MANUAL",
+      }[source] || source.replace(/[_-]+/g, " ").toUpperCase();
+    setWakeReason({
+      label,
+      detail: source === "wake_word" ? detail : undefined,
+    });
+    pushLog("info", `Wake source: ${label}${detail ? ` — ${detail}` : ""}`);
+    if (!showWakeDiagnosticsRef.current) {
+      setWakeDiagnosticVisible(false);
+      return;
+    }
+    setWakeDiagnosticVisible(true);
+    if (wakeDiagnosticTimerRef.current) {
+      window.clearTimeout(wakeDiagnosticTimerRef.current);
+    }
+    wakeDiagnosticTimerRef.current = window.setTimeout(() => {
+      wakeDiagnosticTimerRef.current = null;
+      setWakeDiagnosticVisible(false);
+    }, 6000);
+  }
+
+  useEffect(
+    () => () => {
+      if (wakeDiagnosticTimerRef.current) {
+        window.clearTimeout(wakeDiagnosticTimerRef.current);
+      }
+    },
+    [],
+  );
+
+  const audio = useAudioPipeline(hasBridge, pushLog, fullConfig?.micDevice || "");
   const { pulses, removePulse, orbFlash, clearOrbFlash, acceptedIds } = useHandoffFx(
-    tasks,
+    sessionTasks,
     orbStageRef,
     workScrollRef,
     {
@@ -203,6 +291,11 @@ export default function App() {
     const config = await window.iris.saveConfig({ IRIS_HERMES_SESSION: clean });
     setFullConfig(config);
     setHermesSession(config.hermesSession);
+    setExpandedTaskId(null);
+    setReaderStepsOpen(false);
+    setFocusedTaskId(null);
+    setTaskChooser(null);
+    setShowHistory(false);
     setTasks((current) => current.filter((task) => !task.id.startsWith("history:")));
     pushLog("info", `Hermes chat session: ${config.hermesSession}`);
     await restoreHermesHistory();
@@ -226,12 +319,20 @@ export default function App() {
     try {
       const history = await window.iris.getHermesHistory();
       if (!history.ok || !history.tasks?.length) return;
-      const restoredTasks = history.tasks;
+      const targetSession = history.sessions?.[0] || hermesSessionRef.current || undefined;
+      const restoredTasks = history.tasks.map((task) => ({
+        ...task,
+        sessionId: task.sessionId || targetSession,
+      }));
       setTasks((current) => {
-        const seen = new Set(current.map((task) => task.task.toLowerCase().trim()));
+        const seen = new Set(
+          current
+            .filter((task) => task.sessionId === targetSession)
+            .map((task) => task.task.toLowerCase().trim()),
+        );
         const restored = restoredTasks.filter((task) => !seen.has(task.task.toLowerCase().trim()));
         if (!restored.length) return current;
-        return [...current, ...restored].slice(0, 20);
+        return [...current, ...restored].slice(0, MAX_TASKS_TOTAL);
       });
       pushLog("info", `Restored ${restoredTasks.length} past Hermes runs from this session.`);
     } catch {
@@ -244,6 +345,8 @@ export default function App() {
     window.iris.getConfig().then((config) => {
       setFullConfig(config);
       setWakeWordEnabled(config.wakeWord);
+      setWakeSensitivity(config.wakeSensitivity || "balanced");
+      setShowWakeDiagnostics(config.showWakeDiagnostics);
       if (!config.configured) setSetup({ mode: "onboarding" });
     });
   }, [hasBridge]);
@@ -274,21 +377,42 @@ export default function App() {
         modeTimerRef.current = window.setTimeout(() => setModeTransition(null), 600);
       }
     });
-    const offWake = window.iris.onWakeRequest(() => {
-      if (!sidecarRunning) start();
+    const offWake = window.iris.onWakeRequest((request) => {
+      if (!sidecarRunning) {
+        start(request.source || "manual", request.detail || "");
+      }
     });
     const offSleep = window.iris.onSleepRequest(() => {
       if (sidecarRunning) stop();
     });
+    // Idle auto-sleep: main closed the Gemini session; tear down the mic and
+    // playback here but KEEP the camera/hand-control — you may be silently
+    // reading the map or the HUD while Iris naps. She auto-wakes for Hermes.
+    const offAutoSleep = window.iris.onAutoSleep(() => {
+      setAutoSlept(true);
+      sessionStartRef.current = null;
+      void audio.stopCapture();
+      audio.flushPlayback();
+      // In the normal deck, release the GPU/camera during standby. HUD and an
+      // open Neural Map intentionally retain gesture control.
+      if (uiModeRef.current === "deck" && !brainOpenRef.current) setHandControl(false);
+    });
     return () => {
+      if (modeTimerRef.current) {
+        window.clearTimeout(modeTimerRef.current);
+        modeTimerRef.current = null;
+      }
       offMode();
       offWake();
       offSleep();
+      offAutoSleep();
     };
   }, [hasBridge, sidecarRunning]);
 
   useEffect(() => {
     document.documentElement.classList.toggle("hud-mode", uiMode === "hud");
+    // The Neural Map is HUD-only; leaving HUD dismisses it.
+    if (uiMode !== "hud") setBrainOpen(false);
   }, [uiMode]);
 
   // Click-through management: in HUD mode the window ignores the mouse except
@@ -305,10 +429,16 @@ export default function App() {
       raf = requestAnimationFrame(() => {
         raf = 0;
         const el = document.elementFromPoint(event.clientX, event.clientY);
+        const brainNodeAt = (
+          window as unknown as { __brainNodeAt?: (x: number, y: number) => boolean }
+        ).__brainNodeAt;
         const next = Boolean(
           el?.closest?.(
             ".hud-hit, .reader-backdrop, .history-backdrop, .match-backdrop, .setup-backdrop, .boot",
-          ),
+          ) ||
+            // Neural Map: the canvas is click-through except directly over a
+            // node — the desktop stays usable while the map is up.
+            brainNodeAt?.(event.clientX, event.clientY),
         );
         if (next !== interactive) {
           interactive = next;
@@ -326,13 +456,29 @@ export default function App() {
   }, [hasBridge, uiMode]);
 
   // Local "Hey Iris" wake word: only listens while asleep; a detection wakes Iris
-  // exactly like pressing W. Fully on-device, opt-in via Settings.
+  // exactly like pressing ⌥W. Fully on-device, opt-in via Settings.
+  // Sensitivity -> score threshold: relaxed wakes easily (quiet rooms / soft
+  // voices), strict needs a loud clear phrase. The adaptive noise floor in
+  // the hook handles noisy rooms automatically at every level.
+  const wakeThreshold =
+    wakeSensitivity === "relaxed"
+      ? 0.2
+      : wakeSensitivity === "strict"
+        ? 0.4
+        : 0.3;
   useWakeWord(
-    hasBridge && wakeWordEnabled && !sidecarRunning,
-    () => {
-      if (!sidecarRunning) start();
+    hasBridge && wakeWordEnabled && !sidecarRunning && !wakeStarting,
+    ({ score, floor, speechConfirmed }) => {
+      if (!sidecarRunning) {
+        start(
+          "wake_word",
+          `CONF ${(score * 100).toFixed(1)}% · BAR ${(floor * 100).toFixed(1)}% · VOICE ${speechConfirmed ? "YES" : "NO"}`,
+        );
+      }
     },
     (message) => pushLog("error", `Wake word: ${message}`),
+    wakeThreshold,
+    fullConfig?.micDevice || "",
   );
 
   async function openSettings() {
@@ -342,20 +488,45 @@ export default function App() {
     setSetup({ mode: "settings" });
   }
 
+  // Quick device switch (the Zoom-style carets on the main screen). Persists
+  // immediately; the live mic hot-swaps without touching the Gemini session,
+  // and the camera/wake-word listeners restart on their own via hook deps.
+  async function pickDevice(key: "IRIS_MIC_DEVICE" | "IRIS_CAMERA_DEVICE", id: string) {
+    if (!hasBridge) return;
+    const updated = await window.iris.saveConfig({ [key]: id });
+    setFullConfig(updated);
+    if (key === "IRIS_MIC_DEVICE" && sidecarRunning) {
+      await audio.stopCapture();
+      await audio.startCapture(id);
+      pushLog("info", "Microphone switched — live.");
+    }
+  }
+
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
-      if (event.metaKey || event.ctrlKey || event.altKey || event.repeat) return;
+      // Alt is OUR modifier (⌥W wake, ⌥S sleep) — only reject meta/ctrl
+      // chords and key repeat here.
+      if (event.metaKey || event.ctrlKey || event.repeat) return;
       const target = event.target as HTMLElement | null;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
 
-      const key = event.key.toLowerCase();
-      if (key === "w" && !sidecarRunning) {
+      // Wake/sleep require the Option modifier so ordinary typing can never
+      // toggle Iris. Match on event.code — on macOS Option+letter mutates
+      // event.key into a special character (⌥W -> "∑").
+      if (event.altKey && event.code === "KeyW" && !sidecarRunning) {
         event.preventDefault();
-        start();
-      } else if (key === "s" && sidecarRunning) {
+        start("hotkey");
+        return;
+      }
+      if (event.altKey && event.code === "KeyS" && sidecarRunning) {
         event.preventDefault();
         stop();
-      } else if (key === "d" && testDataEnabled) {
+        return;
+      }
+      if (event.altKey) return; // other ⌥ chords are not ours
+
+      const key = event.key.toLowerCase();
+      if (key === "d" && testDataEnabled) {
         event.preventDefault();
         loadUiTestData();
       } else if (key === "g" && testDataEnabled) {
@@ -376,20 +547,32 @@ export default function App() {
   }, [transcript]);
 
   const working = useMemo(
-    () => tasks.some((task) => !TERMINAL.has(task.status.toLowerCase())) && tasks.length > 0,
-    [tasks],
+    () =>
+      sessionTasks.some((task) => !TERMINAL.has(task.status.toLowerCase())) &&
+      sessionTasks.length > 0,
+    [sessionTasks],
   );
 
   const booting = sidecarRunning && geminiStatus !== "connected";
 
   // Keep the boot sequence on screen for a minimum time so it plays as an
   // intentional intro instead of a sub-second flicker (Gemini connects fast).
+  // Trigger it ONLY on the power-ON edge: during power-off the connection
+  // status drops before the sidecar flag does, and that gap used to re-arm
+  // the boot screen right as Iris was shutting down.
+  const wasRunningRef = useRef(false);
   useEffect(() => {
-    if (!booting) return;
+    const wasRunning = wasRunningRef.current;
+    wasRunningRef.current = sidecarRunning;
+    if (!sidecarRunning || wasRunning) return;
+    if (geminiStatus === "connected") return; // instant resume — skip the intro
+    // Resumed conversations (auto-wake for Hermes, quick re-wakes) continue
+    // where they left off — the boot ceremony is for cold starts only.
+    if (resumingRef.current) return;
     bootStartRef.current = Date.now();
     setBootClosing(false);
     setBootActive(true);
-  }, [booting]);
+  }, [sidecarRunning, geminiStatus]);
 
   useEffect(() => {
     if (booting || !bootActive) return;
@@ -415,17 +598,25 @@ export default function App() {
   const reactorState: ReactorState = useMemo(() => {
     if (!sidecarRunning) return "idle";
     if (audioState === "speaking") return "speaking";
+    if (webSearching || hermesSummarizing) return "working";
     if (audioState === "listening") return "listening";
     if (working) return "working";
     if (geminiStatus === "connected") return "online";
     return "idle";
-  }, [audioState, geminiStatus, sidecarRunning, working]);
+  }, [audioState, geminiStatus, sidecarRunning, webSearching, hermesSummarizing, working]);
 
   function handleSidecarEvent(event: SidecarEvent) {
     if (event.type === "sidecar_status") {
+      // Main flags resumed sessions (context intact) so the boot ceremony
+      // only plays for genuine cold starts. Read BEFORE flipping running.
+      if ("resuming" in event) resumingRef.current = Boolean((event as { resuming?: unknown }).resuming);
       const status = readStatusObject(event.status);
       setSidecarRunning(Boolean(status.running));
       setSidecarPid(typeof status.pid === "number" ? status.pid : null);
+      if (!status.running) {
+        setWebSearching(false);
+        setHermesSummarizing(false);
+      }
       return;
     }
 
@@ -446,7 +637,14 @@ export default function App() {
     }
 
     if (event.type === "audio_state") {
-      setAudioState(readString(event.state, "idle"));
+      const state = readString(event.state, "idle");
+      setAudioState(state);
+      if (state === "speaking") setHermesSummarizing(false);
+      return;
+    }
+
+    if (event.type === "google_search") {
+      setWebSearching(readString(event.state) === "searching");
       return;
     }
 
@@ -476,6 +674,11 @@ export default function App() {
         const placeholderId = taskKeyFor(task);
         const next: TaskCard = {
           id: runId,
+          sessionId:
+            readString(event.session_id) ||
+            existing?.sessionId ||
+            hermesSessionRef.current ||
+            undefined,
           task,
           status,
           output: output || existing?.output,
@@ -483,11 +686,13 @@ export default function App() {
           updatedAt: eventTime(event),
           steps: existing?.steps,
           notes: existing?.notes,
+          approval: existing?.approval,
+          interaction: existing?.interaction,
         };
         return [
           next,
           ...current.filter((item) => item.id !== runId && item.id !== placeholderId),
-        ].slice(0, 20);
+        ].slice(0, MAX_TASKS_TOTAL);
       });
       return;
     }
@@ -496,7 +701,10 @@ export default function App() {
       const runId = readString(event.run_id);
       if (!runId) return;
       const kind = readString(event.event);
-      if ((kind === "approval.requested" || kind === "approval.required") && soundsRef.current) {
+      const approvalRequested =
+        kind === "approval.request" || kind === "approval.requested" || kind === "approval.required";
+      const approvalResolved = kind === "approval.responded" || kind === "approval.resolved";
+      if (approvalRequested && soundsRef.current) {
         uiSounds.approval();
       }
       const tool = readString(event.tool);
@@ -514,7 +722,22 @@ export default function App() {
         let steps = task.steps ? [...task.steps] : [];
         let notes = task.notes ?? "";
 
-        if (kind === "tool.started" && tool) {
+        let approval = task.approval;
+        if (approvalRequested) {
+          const rawChoices = Array.isArray(event.choices) ? event.choices : [];
+          const choices = rawChoices.filter(
+            (choice): choice is "once" | "session" | "always" | "deny" =>
+              choice === "once" || choice === "session" || choice === "always" || choice === "deny",
+          );
+          approval = {
+            command: readString(event.command) || tool || undefined,
+            reason: readString(event.reason) || preview || undefined,
+            choices: choices.length ? choices : ["once", "session", "always", "deny"],
+            requestedAt: ts,
+          };
+        } else if (approvalResolved) {
+          approval = null;
+        } else if (kind === "tool.started" && tool) {
           steps = [
             ...steps,
             { id: crypto.randomUUID(), tool, preview: preview || undefined, status: "running" as const, ts },
@@ -530,19 +753,126 @@ export default function App() {
           notes = (notes + delta).slice(-600);
         } else if (kind === "reasoning.available" && text) {
           notes = text.slice(-600);
-        } else {
+        } else if (!approvalRequested && !approvalResolved) {
           return current;
         }
 
         const next = [...current];
-        next[index] = { ...task, steps, notes };
+        next[index] = { ...task, steps, notes, approval };
         return next;
       });
       return;
     }
 
     if (event.type === "hermes_completion") {
-      pushLog("info", `Hermes returned: ${readString(event.task, "task complete")}`, eventTime(event));
+      setHermesSummarizing(true);
+      const task = readString(event.task, "Hermes task");
+      const runId = readString(event.run_id) || taskKeyFor(task);
+      const output = readString(event.output);
+      const status = readString(event.status, "completed");
+      const updatedAt = eventTime(event);
+      setTasks((current) => {
+        const existing = current.find((item) => item.id === runId);
+        const completed: TaskCard = {
+          id: runId,
+          sessionId:
+            readString(event.session_id) ||
+            existing?.sessionId ||
+            hermesSessionRef.current ||
+            undefined,
+          task,
+          status,
+          output: output || existing?.output,
+          error: existing?.error,
+          updatedAt,
+          steps: existing?.steps,
+          notes: existing?.notes,
+          approval: null,
+          interaction: null,
+        };
+        return [
+          completed,
+          ...current.filter(
+            (item) =>
+              item.id !== runId &&
+              item.id !== taskKeyFor(task),
+          ),
+        ].slice(0, MAX_TASKS_TOTAL);
+      });
+      pushLog("info", `Hermes returned: ${task}`, updatedAt);
+      return;
+    }
+
+    if (event.type === "hermes_interaction") {
+      const runId = readString(event.run_id);
+      if (!runId) return;
+      const action = readString(event.action);
+      if (action === "request") {
+        const raw =
+          event.interaction && typeof event.interaction === "object"
+            ? (event.interaction as Record<string, unknown>)
+            : {};
+        const type = readString(raw.type);
+        if (type !== "clarify" && type !== "approval" && type !== "sudo" && type !== "secret") {
+          return;
+        }
+        const interaction = {
+          id: readString(raw.id),
+          type,
+          question: readString(raw.question, "Hermes needs your input."),
+          choices: Array.isArray(raw.choices) ? raw.choices.map(String).slice(0, 8) : [],
+          command: readString(raw.command) || undefined,
+          envVar: readString(raw.envVar) || undefined,
+          allowCustom: raw.allowCustom !== false,
+          secret: raw.secret === true,
+        } as const;
+        if (soundsRef.current) uiSounds.approval();
+        setTasks((current) =>
+          current.map((task) =>
+            task.id === runId ? { ...task, status: type === "approval" ? "waiting_for_approval" : "waiting_for_input", interaction } : task,
+          ),
+        );
+      } else if (action === "resolved") {
+        setTasks((current) =>
+          current.map((task) =>
+            task.id === runId ? { ...task, interaction: null, status: "running" } : task,
+          ),
+        );
+      } else if (action === "voice_preview") {
+        const value = readString(event.value);
+        setTasks((current) =>
+          current.map((task) =>
+            task.id === runId && task.interaction
+              ? {
+                  ...task,
+                  interaction: {
+                    ...task.interaction,
+                    voiceValue: value,
+                    voiceSubmitting: true,
+                    resolving: true,
+                    error: undefined,
+                  },
+                }
+              : task,
+          ),
+        );
+      } else if (action === "response_error") {
+        setTasks((current) =>
+          current.map((task) =>
+            task.id === runId && task.interaction
+              ? {
+                  ...task,
+                  interaction: {
+                    ...task.interaction,
+                    voiceSubmitting: false,
+                    resolving: false,
+                    error: readString(event.error, "Could not send the voice response."),
+                  },
+                }
+              : task,
+          ),
+        );
+      }
       return;
     }
 
@@ -561,21 +891,45 @@ export default function App() {
     }
   }
 
-  async function start() {
-    if (!hasBridge) {
-      pushLog("error", "Electron bridge unavailable. Launch with `npm run dev`.");
-      return;
+  async function start(wakeSource = "manual", wakeDetail = "") {
+    if (startPromiseRef.current) return startPromiseRef.current;
+    const operation = (async () => {
+      if (!hasBridge) {
+        pushLog("error", "Electron bridge unavailable. Launch with `npm run dev`.");
+        return;
+      }
+      setWakeStarting(true);
+      setAutoSlept(false);
+      try {
+        const status = await window.iris.startSidecar({ mode: "none" });
+        if (!status.running) throw new Error("Gemini Live did not start.");
+        setSidecarRunning(true);
+        setSidecarPid(status.pid);
+        sessionStartRef.current = Date.now();
+        showWakeReason(wakeSource, wakeDetail);
+        await audio.startCapture();
+        setHandControl(true);
+      } catch (error) {
+        await audio.stopCapture();
+        setSidecarRunning(false);
+        setSidecarPid(null);
+        sessionStartRef.current = null;
+        pushLog("error", `Wake failed: ${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+        setWakeStarting(false);
+      }
+    })();
+    startPromiseRef.current = operation;
+    try {
+      await operation;
+    } finally {
+      if (startPromiseRef.current === operation) startPromiseRef.current = null;
     }
-    const status = await window.iris.startSidecar({ mode: "none" });
-    setSidecarRunning(status.running);
-    setSidecarPid(status.pid);
-    sessionStartRef.current = Date.now();
-    await audio.startCapture();
-    setHandControl(true);
   }
 
   async function stop() {
     if (!hasBridge) return;
+    setAutoSlept(false);
     await audio.stopCapture();
     audio.flushPlayback();
     await window.iris.stopSidecar();
@@ -586,6 +940,96 @@ export default function App() {
     sessionStartRef.current = null;
   }
 
+  async function resolveTaskApproval(
+    task: TaskCard,
+    choice: "once" | "session" | "always" | "deny",
+  ) {
+    if (!hasBridge || !task.approval || task.approval.resolving) return;
+    setTasks((current) =>
+      current.map((item) =>
+        item.id === task.id && item.approval
+          ? { ...item, approval: { ...item.approval, resolving: true, error: undefined } }
+          : item,
+      ),
+    );
+    try {
+      const result = await window.iris.approveHermesAction(task.id, choice);
+      if (result.status === "resolved") {
+        setTasks((current) =>
+          current.map((item) => (item.id === task.id ? { ...item, approval: null } : item)),
+        );
+      } else {
+        throw new Error(result.error || "Hermes did not accept the approval response.");
+      }
+    } catch (error) {
+      setTasks((current) =>
+        current.map((item) =>
+          item.id === task.id && item.approval
+            ? {
+                ...item,
+                approval: {
+                  ...item.approval,
+                  resolving: false,
+                  error: error instanceof Error ? error.message : String(error),
+                },
+              }
+            : item,
+        ),
+      );
+    }
+  }
+
+  async function resolveHermesInteraction(
+    task: TaskCard,
+    value: string,
+    choice?: "once" | "session" | "always" | "deny",
+  ) {
+    const interaction = task.interaction;
+    if (!hasBridge || !interaction || interaction.resolving) return;
+    setTasks((current) =>
+      current.map((item) =>
+        item.id === task.id && item.interaction
+          ? {
+              ...item,
+              interaction: { ...item.interaction, resolving: true, error: undefined },
+            }
+          : item,
+      ),
+    );
+    try {
+      const result = await window.iris.respondHermesInteraction({
+        run_id: task.id,
+        interaction_id: interaction.id,
+        interaction_type: interaction.type,
+        value,
+        choice,
+      });
+      if (result.status !== "resolved") {
+        throw new Error(result.error || "Hermes did not accept the response.");
+      }
+      setTasks((current) =>
+        current.map((item) =>
+          item.id === task.id ? { ...item, interaction: null, status: "running" } : item,
+        ),
+      );
+    } catch (error) {
+      setTasks((current) =>
+        current.map((item) =>
+          item.id === task.id && item.interaction
+            ? {
+                ...item,
+                interaction: {
+                  ...item.interaction,
+                  resolving: false,
+                  error: error instanceof Error ? error.message : String(error),
+                },
+              }
+            : item,
+        ),
+      );
+    }
+  }
+
   function dotState(value: string, goodValues: string[]) {
     if (!sidecarRunning) return "off";
     if (value === "error") return "err";
@@ -593,12 +1037,15 @@ export default function App() {
   }
 
   const expandedTask = useMemo(
-    () => tasks.find((task) => task.id === expandedTaskId) ?? null,
-    [tasks, expandedTaskId],
+    () => sessionTasks.find((task) => task.id === expandedTaskId) ?? null,
+    [sessionTasks, expandedTaskId],
   );
   const dwellRef = useRef<{ el: HTMLElement; startedAt: number; fired: boolean } | null>(null);
 
-  const { state: hand, error: handError, stream: handStream } = useHandControl(handControl);
+  const { state: hand, error: handError, stream: handStream } = useHandControl(
+    handControl,
+    fullConfig?.cameraDevice || "",
+  );
   const liveHandRef = useRef<HandState | null>(hand);
   liveHandRef.current = hand;
 
@@ -623,7 +1070,9 @@ export default function App() {
     const stepsArea = el?.closest<HTMLElement>(".activity, .reader-steps");
     const actionable = stepsArea
       ? stepsArea.querySelector<HTMLElement>(".activity-toggle")
-      : el?.closest<HTMLElement>('button, a, [data-task-id], [role="button"]') ?? null;
+      : el?.closest<HTMLElement>(
+          'button, a, input, textarea, [data-task-id], [role="button"]',
+        ) ?? null;
     if (!actionable) {
       dwellRef.current = null;
       return;
@@ -642,7 +1091,7 @@ export default function App() {
       dwellRef.current.fired = true;
       actionable.click();
     }
-  }, [handControl, hand.present, hand.point?.x, hand.point?.y, hand.pointing, tasks]);
+  }, [handControl, hand.present, hand.point?.x, hand.point?.y, hand.pointing, sessionTasks]);
 
   // Open-palm hold-to-scroll: scrolls whichever scrollable region is under the
   // hand — an expanded steps timeline inside a card, the Comms/Work columns
@@ -652,7 +1101,7 @@ export default function App() {
   useEffect(() => {
     let raf = 0;
     const SCROLLABLES =
-      ".activity-timeline, .hud-comms, .comms-scroll, .work-scroll, .hud-work, .history-grid";
+      ".activity-timeline, .hud-comms, .comms-scroll, .work-scroll, .hud-work, .history-grid, .brain-note-body, .brain-links-list, .hermes-interaction-prompt";
     const loop = () => {
       const h = liveHandRef.current;
       if (handControl && h?.openPalm && h.point && !expandedTaskId) {
@@ -678,6 +1127,7 @@ export default function App() {
 
   const handAction = useMemo(() => {
     if (!hand.present) return { label: "Show your hand", tone: "idle" };
+    if (hand.hands.some((item) => item.pinch)) return { label: "PINCH · grab", tone: "pinch" };
     if (hand.hands.filter((item) => item.openPalm).length >= 2) return { label: "Two palms · resize", tone: "open" };
     if (hand.fist) return { label: "Closed_Fist · close", tone: "fist" };
     if (hand.openPalm) return { label: "Open_Palm · scroll", tone: "open" };
@@ -696,12 +1146,22 @@ export default function App() {
 
   const sortedTasks = useMemo(() => {
     const isActive = (task: TaskCard) => !TERMINAL.has(task.status.toLowerCase());
-    return [...tasks].sort((a, b) => {
+    return [...sessionTasks].sort((a, b) => {
       const activeDelta = Number(isActive(b)) - Number(isActive(a));
       if (activeDelta !== 0) return activeDelta;
       return b.updatedAt - a.updatedAt;
     });
-  }, [tasks]);
+  }, [sessionTasks]);
+
+  const pendingApprovalTask = useMemo(
+    () =>
+      sortedTasks.find((task) => Boolean(task.approval) && !task.interaction) ?? null,
+    [sortedTasks],
+  );
+  const pendingInteractionTask = useMemo(
+    () => sortedTasks.find((task) => Boolean(task.interaction)) ?? null,
+    [sortedTasks],
+  );
 
   const latestResultTask = useMemo(
     () => sortedTasks.find((task) => Boolean(task.output || task.error)) ?? null,
@@ -722,6 +1182,17 @@ export default function App() {
     setTaskChooser({ query: query || "task", matches: matches.map((match) => match.task) });
   }
 
+  // The Neural Map is voice + gesture native: opening it brings up the mic
+  // (wake) and the gesture camera automatically when they're not already on.
+  useEffect(() => {
+    const wasOpen = prevBrainOpenRef.current;
+    prevBrainOpenRef.current = brainOpen;
+    if (!brainOpen || wasOpen) return;
+    if (!sidecarRunning) void start("neural_map"); // start() also enables the camera
+    else if (!handControl) setHandControl(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [brainOpen]);
+
   useEffect(() => {
     if (!hasBridge) return;
     window.iris.sendUiContext({
@@ -735,6 +1206,18 @@ export default function App() {
         status: task.status,
       })) ?? [],
       showHistory,
+      brainOpen,
+      // While the map is open Gemini can see what exists and what's in focus,
+      // so "focus on X" / "open it" resolve against real titles.
+      brainNodes: brainOpen ? brainState?.nodeTitles ?? [] : undefined,
+      brainFocusedNote: brainOpen ? brainState?.focusedTitle ?? null : null,
+      brainOpenNote: brainOpen ? brainState?.openNoteTitle ?? null : null,
+      // Isolation ("local graph") filter: which note the map is filtered to
+      // and the connected notes currently visible around it.
+      brainIsolatedNote: brainOpen ? brainState?.isolatedTitle ?? null : null,
+      brainIsolationNeighbors: brainOpen ? brainState?.isolationNeighbors ?? null : null,
+      brainFilterQuery: brainOpen ? brainState?.filterQuery ?? null : null,
+      brainFilterMatches: brainOpen ? brainState?.filterMatches ?? null : null,
       tasks: sortedTasks.map((task) => ({
         id: task.id,
         task: task.task,
@@ -742,17 +1225,23 @@ export default function App() {
         hasResult: Boolean(task.output || task.error),
         stepCount: task.steps?.length ?? 0,
         stepsOpen: Boolean(stepsOpenIds[task.id]),
+        interactionType: task.interaction?.secret ? "secure_ui" : task.interaction?.type ?? null,
+        waitingForInput: Boolean(task.interaction || task.approval),
         updatedAt: task.updatedAt,
       })),
     });
-  }, [hasBridge, expandedTaskId, focusedTaskId, latestResultTask?.id, showHistory, sortedTasks, stepsOpenIds, taskChooser]);
+  }, [hasBridge, expandedTaskId, focusedTaskId, latestResultTask?.id, showHistory, brainOpen, brainState, sortedTasks, stepsOpenIds, taskChooser]);
 
   useEffect(() => {
     if (!hasBridge) return;
     return window.iris.onUiAction(({ action, target_id, query }) => {
-      const taskById = target_id ? tasks.find((task) => task.id === target_id) : null;
-      const currentTask = expandedTaskId ? tasks.find((task) => task.id === expandedTaskId) : null;
-      const focusedTask = focusedTaskId ? tasks.find((task) => task.id === focusedTaskId) : null;
+      const taskById = target_id ? sessionTasks.find((task) => task.id === target_id) : null;
+      const currentTask = expandedTaskId
+        ? sessionTasks.find((task) => task.id === expandedTaskId)
+        : null;
+      const focusedTask = focusedTaskId
+        ? sessionTasks.find((task) => task.id === focusedTaskId)
+        : null;
       const fallbackTask = currentTask || focusedTask || latestResultTask;
 
       if (action === "open_task") {
@@ -787,6 +1276,55 @@ export default function App() {
         closeReader();
         setShowHistory(false);
         setTaskChooser(null);
+        setBrainOpen(false);
+        return;
+      }
+      if (action === "enter_hud_mode") {
+        if (uiMode !== "hud") window.iris.toggleHud();
+        return;
+      }
+      if (action === "exit_hud_mode") {
+        if (uiMode === "hud") window.iris.toggleHud();
+        return;
+      }
+      if (action === "open_brain_graph") {
+        // HUD-only feature: entering HUD automatically is part of the wow.
+        if (uiMode !== "hud") window.iris.toggleHud();
+        setBrainOpen(true);
+        return;
+      }
+      if (action === "close_brain_graph") {
+        setBrainOpen(false);
+        return;
+      }
+      if (
+        action === "focus_brain_node" ||
+        action === "filter_brain_graph" ||
+        action === "open_brain_note" ||
+        action === "close_brain_note" ||
+        action === "show_full_brain_graph"
+      ) {
+        // Focus/filter/open auto-open the map; the command executes once the
+        // graph is mounted and its data is ready (BrainGraph tracks the seq).
+        if (action === "focus_brain_node" || action === "filter_brain_graph" || action === "open_brain_note") {
+          if (uiMode !== "hud") window.iris.toggleHud();
+          setBrainOpen(true);
+        }
+        brainSeqRef.current += 1;
+        setBrainCommand({
+          seq: brainSeqRef.current,
+          kind:
+            action === "focus_brain_node"
+              ? "focus"
+              : action === "filter_brain_graph"
+                ? "filter"
+                : action === "open_brain_note"
+                  ? "open"
+                  : action === "close_brain_note"
+                    ? "close"
+                    : "showAll",
+          query: query || undefined,
+        });
         return;
       }
       if (action === "show_task_steps" || action === "hide_task_steps") {
@@ -795,7 +1333,9 @@ export default function App() {
         // latest result. The old order preferred the running task over the
         // card being viewed, which targeted the wrong card by voice.
         const byQuery = !taskById && query ? findTaskMatches(sortedTasks, query)[0]?.task ?? null : null;
-        const activeTask = tasks.find((task) => !TERMINAL.has(task.status.toLowerCase()));
+        const activeTask = sessionTasks.find(
+          (task) => !TERMINAL.has(task.status.toLowerCase()),
+        );
         const target = taskById || byQuery || currentTask || focusedTask || activeTask || latestResultTask;
         if (!target) return;
         // Steps for the card being read open INSIDE the reader, not on the
@@ -808,22 +1348,47 @@ export default function App() {
         return;
       }
     });
-  }, [hasBridge, tasks, sortedTasks, expandedTaskId, focusedTaskId, latestResultTask]);
+  }, [
+    hasBridge,
+    sessionTasks,
+    sortedTasks,
+    expandedTaskId,
+    focusedTaskId,
+    latestResultTask,
+    uiMode,
+  ]);
 
+  // `compact` marks short status pills (Listening…, Speaking…) that render
+  // whisper-sized in the HUD; real conversation captions stay full size.
   const caption = useMemo(() => {
     if (!sidecarRunning)
       return {
-        text: wakeWordEnabled ? "Say “Hey Iris” or press W to wake" : "Press W to wake Iris",
+        // Mention Hermes waking her ONLY when a task is actually running —
+        // otherwise it's just a quiet nap.
+        text: autoSlept
+          ? working
+            ? "On standby — Hermes is working; I'll wake when it's done"
+            : wakeWordEnabled
+              ? "On standby, saving tokens — say “Hey Iris”"
+              : "On standby, saving tokens — press ⌥W to wake"
+          : wakeWordEnabled
+            ? "Say “Hey Iris” or press ⌥W to wake"
+            : "Press ⌥W to wake Iris",
         dim: true,
+        compact: true,
       };
-    if (audioState === "speaking") return { text: "Speaking…", dim: false };
-    if (audioState === "listening") return { text: "Listening…", dim: false };
-    if (working) return { text: "Working on it…", dim: false };
+    if (hermesSummarizing)
+      return { text: "Hermes is back — Iris is summarizing…", dim: false, compact: true };
+    if (audioState === "speaking") return { text: "Speaking…", dim: false, compact: true };
+    if (webSearching) return { text: "Searching Google…", dim: false, compact: true };
+    if (orbThinking) return { text: "Thinking…", dim: false, compact: true };
+    if (audioState === "listening") return { text: "Listening…", dim: false, compact: true };
+    if (working) return { text: "Working on it…", dim: false, compact: true };
     const last = transcript[transcript.length - 1];
-    if (last) return { text: last.text, dim: false };
-    if (geminiStatus === "connected") return { text: "How can I help?", dim: true };
-    return { text: "Connecting…", dim: true };
-  }, [sidecarRunning, audioState, working, transcript, geminiStatus, wakeWordEnabled]);
+    if (last) return { text: last.text, dim: false, compact: false };
+    if (geminiStatus === "connected") return { text: "How can I help?", dim: true, compact: true };
+    return { text: "Connecting…", dim: true, compact: true };
+  }, [sidecarRunning, webSearching, hermesSummarizing, audioState, orbThinking, working, transcript, geminiStatus, wakeWordEnabled, autoSlept]);
 
   function openTask(task: TaskCard) {
     if (!(task.output || task.error)) return;
@@ -844,9 +1409,13 @@ export default function App() {
     const id = `demo-${crypto.randomUUID().slice(0, 8)}`;
     const task = `Research the latest AI agent frameworks (${new Date().toLocaleTimeString()}).`;
     setTasks((current) =>
-      [{ id, task, status: "working", updatedAt: Date.now() }, ...current].slice(0, 20),
+      [{ id, task, status: "working", updatedAt: Date.now() }, ...current].slice(
+        0,
+        MAX_TASKS_TOTAL,
+      ),
     );
-    window.setTimeout(() => {
+    const timer = window.setTimeout(() => {
+      demoTimersRef.current.delete(timer);
       setTasks((current) =>
         current.map((item) =>
           item.id === id
@@ -861,6 +1430,7 @@ export default function App() {
         ),
       );
     }, 2800);
+    demoTimersRef.current.add(timer);
   }
 
   function loadUiTestData() {
@@ -896,7 +1466,7 @@ export default function App() {
           awake={sidecarRunning}
           caption={caption.text}
           captionDim={caption.dim}
-          wakeWordEnabled={wakeWordEnabled}
+          captionCompact={caption.compact}
           muted={audio.muted}
           onToggleMute={audio.toggleMute}
           onWake={start}
@@ -909,14 +1479,20 @@ export default function App() {
           onToggleSteps={toggleTaskSteps}
           onFocusTask={setFocusedTaskId}
           onOpenTask={openTask}
+          onApproveTask={(task, choice) => void resolveTaskApproval(task, choice)}
           transcript={transcript}
           commsScrollRef={commsScrollRef}
           handControl={handControl}
           onToggleHand={() => setHandControl((current) => !current)}
           hand={hand}
           handStream={handStream}
+          handError={handError}
           handActionLabel={handAction.label}
           handActionTone={handAction.tone}
+          brainAvailable={Boolean(fullConfig?.brainPath)}
+          brainOpen={brainOpen}
+          onOpenBrain={() => setBrainOpen((current) => !current)}
+          autoSlept={autoSlept}
         />
       ) : (
       <div
@@ -952,8 +1528,11 @@ export default function App() {
               handControl={handControl}
               hand={hand}
               stream={handStream}
+              error={handError}
               actionLabel={handAction.label}
               actionTone={handAction.tone}
+              cameraDevice={fullConfig?.cameraDevice || ""}
+              onPickCameraDevice={(id) => void pickDevice("IRIS_CAMERA_DEVICE", id)}
             />
           </div>
 
@@ -971,7 +1550,7 @@ export default function App() {
             awake={sidecarRunning}
             geminiStatus={geminiStatus}
             hermesStatus={hermesStatus}
-            runs={tasks.length}
+            runs={sessionTasks.length}
             sessionStartRef={sessionStartRef}
             caption={caption.text}
             captionDim={caption.dim}
@@ -979,11 +1558,15 @@ export default function App() {
             onToggleMute={audio.toggleMute}
             onSleep={stop}
             wakeWordEnabled={wakeWordEnabled}
+            autoSlept={autoSlept}
+            hermesWorking={working}
+            micDevice={fullConfig?.micDevice || ""}
+            onPickMicDevice={(id) => void pickDevice("IRIS_MIC_DEVICE", id)}
           />
 
           {/* RIGHT — Work */}
           <WorkStream
-            tasks={tasks}
+            tasks={sessionTasks}
             sortedTasks={sortedTasks}
             scrollRef={workScrollRef}
             acceptedIds={acceptedIds}
@@ -997,12 +1580,13 @@ export default function App() {
             onToggleSteps={toggleTaskSteps}
             onFocusTask={setFocusedTaskId}
             onOpenTask={openTask}
+            onApproveTask={(task, choice) => void resolveTaskApproval(task, choice)}
           />
         </div>
 
         <footer className="deck-foot">
           <span className="build-meta">
-            IRIS · build 0.2.0 · by Ashutosh Shrivastava ·{" "}
+            IRIS · build {__APP_VERSION__} · by Ashutosh Shrivastava ·{" "}
             <a href="https://x.com/ai_for_success" target="_blank" rel="noreferrer">
               X
             </a>{" "}
@@ -1014,6 +1598,16 @@ export default function App() {
         </footer>
       </div>
       )}
+
+      {uiMode === "hud" && brainOpen ? (
+        <BrainGraph
+          hand={handControl ? hand : null}
+          active={!expandedTask}
+          onClose={() => setBrainOpen(false)}
+          voiceCommand={brainCommand}
+          onGraphState={setBrainState}
+        />
+      ) : null}
 
       {expandedTask ? (
         <ReaderOverlay
@@ -1049,13 +1643,50 @@ export default function App() {
             setFullConfig(config);
             setTestDataEnabled(config.loadTestData);
             setWakeWordEnabled(config.wakeWord);
+            setWakeSensitivity(config.wakeSensitivity || "balanced");
+            setShowWakeDiagnostics(config.showWakeDiagnostics);
+            if (!config.showWakeDiagnostics) setWakeDiagnosticVisible(false);
             setSoundsEnabled(config.sounds);
           }}
           onStart={() => {
-            if (!sidecarRunning) start();
+            if (!sidecarRunning) start("manual");
           }}
           onRunWizard={() => setSetup({ mode: "onboarding" })}
+          lastWakeDiagnostic={
+            wakeReason
+              ? `${wakeReason.label}${wakeReason.detail ? ` · ${wakeReason.detail}` : ""}`
+              : null
+          }
         />
+      ) : null}
+
+      {pendingApprovalTask ? (
+        <ApprovalPrompt
+          task={pendingApprovalTask}
+          onResolve={(choice) => void resolveTaskApproval(pendingApprovalTask, choice)}
+        />
+      ) : null}
+
+      {pendingInteractionTask ? (
+        <HermesInteractionPrompt
+          task={pendingInteractionTask}
+          onResolve={(value, choice) =>
+            void resolveHermesInteraction(pendingInteractionTask, value, choice)
+          }
+        />
+      ) : null}
+
+      {wakeReason && wakeDiagnosticVisible ? (
+        <div
+          className={`wake-reason-pill ${sidecarRunning ? "active" : "asleep"}`}
+          role="status"
+        >
+          <i />
+          <span>
+            {sidecarRunning ? "WOKE" : "LAST WAKE"} · {wakeReason.label}
+            {wakeReason.detail ? ` · ${wakeReason.detail}` : ""}
+          </span>
+        </div>
       ) : null}
 
       <HandoffLayer pulses={pulses} onPulseEnd={removePulse} />

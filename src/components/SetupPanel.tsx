@@ -24,10 +24,17 @@ type Draft = {
   API_SERVER_KEY: string;
   HERMES_BIN: string;
   HERMES_HOME: string;
+  IRIS_BRAIN_PATH: string;
+  IRIS_BRAIN_SEMANTIC: string;
+  IRIS_BRAIN_AUTO_INDEX: string;
   IRIS_USER_NAME: string;
   IRIS_LOAD_TEST_DATA: string;
   IRIS_WAKE_WORD: string;
+  IRIS_WAKE_SENSITIVITY: string;
+  IRIS_SHOW_WAKE_DIAGNOSTICS: string;
   IRIS_SOUNDS: string;
+  IRIS_AUTO_SLEEP_SECONDS: string;
+  IRIS_AUTO_WAKE_ON_HERMES: string;
 };
 
 const WIZARD_STEPS = ["welcome", "gemini", "hermes", "you", "permissions", "finish"] as const;
@@ -39,6 +46,7 @@ export default function SetupPanel({
   onSaved,
   onStart,
   onRunWizard,
+  lastWakeDiagnostic,
 }: {
   mode: Mode;
   config: IrisConfig;
@@ -46,6 +54,7 @@ export default function SetupPanel({
   onSaved: (config: IrisConfig) => void;
   onStart?: () => void;
   onRunWizard?: () => void;
+  lastWakeDiagnostic?: string | null;
 }) {
   const [draft, setDraft] = useState<Draft>({
     GEMINI_API_KEY: config.geminiApiKey,
@@ -55,15 +64,23 @@ export default function SetupPanel({
     API_SERVER_KEY: config.hermesKey,
     HERMES_BIN: config.hermesBin,
     HERMES_HOME: config.hermesHome,
+    IRIS_BRAIN_PATH: config.brainPath,
+    IRIS_BRAIN_SEMANTIC: config.brainSemantic ? "true" : "false",
+    IRIS_BRAIN_AUTO_INDEX: config.brainAutoIndex ? "true" : "false",
     IRIS_USER_NAME: config.userName,
     IRIS_LOAD_TEST_DATA: config.loadTestData ? "true" : "false",
     IRIS_WAKE_WORD: config.wakeWord ? "true" : "false",
+    IRIS_WAKE_SENSITIVITY: config.wakeSensitivity || "balanced",
+    IRIS_SHOW_WAKE_DIAGNOSTICS: config.showWakeDiagnostics ? "true" : "false",
     IRIS_SOUNDS: config.sounds ? "true" : "false",
+    IRIS_AUTO_SLEEP_SECONDS: config.autoSleepSeconds || "30",
+    IRIS_AUTO_WAKE_ON_HERMES: config.autoWakeOnHermes ? "true" : "false",
   });
   const [step, setStep] = useState(0);
   const [gemini, setGemini] = useState<TestState>({ status: "idle" });
   const [hermes, setHermes] = useState<TestState>({ status: "idle" });
   const [preview, setPreview] = useState<TestState>({ status: "idle" });
+  const [brainIndex, setBrainIndex] = useState<TestState>({ status: "idle" });
   const [mic, setMic] = useState<PermState>("idle");
   const [cam, setCam] = useState<PermState>("idle");
   const [saving, setSaving] = useState(false);
@@ -75,6 +92,7 @@ export default function SetupPanel({
   useEffect(() => {
     if (!navigator.permissions?.query) return;
     let cancelled = false;
+    const watched: PermissionStatus[] = [];
     const toState = (state: PermissionState): PermState =>
       state === "granted" ? "granted" : state === "denied" ? "denied" : "idle";
 
@@ -82,8 +100,11 @@ export default function SetupPanel({
       try {
         const status = await navigator.permissions.query({ name: name as PermissionName });
         if (cancelled) return;
+        watched.push(status);
         setter(toState(status.state));
-        status.onchange = () => setter(toState(status.state));
+        status.onchange = () => {
+          if (!cancelled) setter(toState(status.state));
+        };
       } catch {
         // Some platforms don't support querying these names; leave as idle.
       }
@@ -93,6 +114,9 @@ export default function SetupPanel({
     watch("camera", setCam);
     return () => {
       cancelled = true;
+      watched.forEach((status) => {
+        status.onchange = null;
+      });
     };
   }, []);
 
@@ -112,6 +136,22 @@ export default function SetupPanel({
       result.health && typeof result.health.version === "string" ? ` · v${result.health.version}` : "";
     setHermes(
       result.ok ? { status: "ok", message: `Reachable${version}.` } : { status: "error", message: result.error },
+    );
+  }
+
+  async function buildBrainIndex() {
+    setBrainIndex({ status: "testing" });
+    const result = await window.iris.syncBrainIndex({
+      vault: draft.IRIS_BRAIN_PATH.trim(),
+      key: draft.GEMINI_API_KEY.trim(),
+    });
+    setBrainIndex(
+      result.ok
+        ? {
+            status: "ok",
+            message: `${result.total} notes / ${result.chunks ?? result.total} chunks · ${result.embedded} embedded · ${result.reused} reused · ${((result.ms ?? 0) / 1000).toFixed(1)}s`,
+          }
+        : { status: "error", message: result.error },
     );
   }
 
@@ -158,7 +198,7 @@ export default function SetupPanel({
     onStart?.();
   }
 
-  const keyReady = draft.GEMINI_API_KEY.trim().length > 0;
+  const keyReady = draft.GEMINI_API_KEY.trim().length > 0 || config.geminiApiKeyConfigured;
 
   // ---- Section renderers (shared between wizard steps and settings) ----
   const geminiSection = (
@@ -168,7 +208,7 @@ export default function SetupPanel({
         <input
           type="password"
           value={draft.GEMINI_API_KEY}
-          placeholder="AI… paste your key"
+          placeholder={config.geminiApiKeyConfigured ? "Saved locally — enter to replace" : "AI… paste your key"}
           onChange={(event) => {
             set("GEMINI_API_KEY", event.target.value);
             setGemini({ status: "idle" });
@@ -181,7 +221,7 @@ export default function SetupPanel({
           <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">
             Google AI Studio
           </a>
-          , then paste the whole thing. Stored locally only.
+          , then paste the whole thing. Saved keys are never returned to the UI.
         </small>
       </label>
       <div className="setup-actions">
@@ -215,8 +255,13 @@ export default function SetupPanel({
       <label className="setup-field">
         <span>API key</span>
         <input
+          type="password"
           value={draft.API_SERVER_KEY}
-          placeholder="iris-local-dev"
+          placeholder={
+            config.hermesKeyConfigured
+              ? "Saved locally — enter to replace"
+              : "paste output of: openssl rand -hex 32"
+          }
           onChange={(event) => {
             set("API_SERVER_KEY", event.target.value);
             setHermes({ status: "idle" });
@@ -224,8 +269,9 @@ export default function SetupPanel({
           spellCheck={false}
         />
         <small className="setup-note">
-          Must match <code>API_SERVER_KEY</code> in Hermes's own <code>~/.hermes/.env</code>. Default for local dev is{" "}
-          <code>iris-local-dev</code>.
+          Must match <code>API_SERVER_KEY</code> in Hermes's own <code>~/.hermes/.env</code>. Hermes requires a strong
+          secret (16+ characters) and refuses to start its API with a weak one — generate yours with{" "}
+          <code>openssl rand -hex 32</code>.
         </small>
       </label>
       <div className="setup-actions">
@@ -246,6 +292,70 @@ export default function SetupPanel({
         <small className="setup-note">
           Folder where Hermes keeps its data and memory (<code>memories/USER.md</code>, <code>MEMORY.md</code>) — Iris
           reads these so it knows your context. Leave blank to use <code>~/.hermes</code>.
+        </small>
+      </label>
+      <label className="setup-field">
+        <span>Hermes brain vault (optional)</span>
+        <input
+          value={draft.IRIS_BRAIN_PATH}
+          placeholder="/path/to/obsidian-vault"
+          onChange={(event) => set("IRIS_BRAIN_PATH", event.target.value)}
+          spellCheck={false}
+        />
+        <small className="setup-note">
+          An Obsidian vault of markdown notes that acts as your shared brain. When set, saying{" "}
+          <code>show your brain</code> in HUD mode renders it as a living knowledge graph (the Neural Map).
+          Read-only — Iris never edits the vault.
+        </small>
+      </label>
+      <label className="setup-field">
+        <span>Semantic brain search</span>
+        <ThemedSelect
+          ariaLabel="Semantic brain search"
+          value={draft.IRIS_BRAIN_SEMANTIC}
+          options={[
+            { value: "true", label: "On — meaning + keywords (Gemini embeddings)" },
+            { value: "false", label: "Off — keywords only, fully local" },
+          ]}
+          onChange={(value) => set("IRIS_BRAIN_SEMANTIC", value)}
+        />
+        <small className="setup-note">
+          On: note excerpts are embedded once via the Gemini API (cached under <code>~/.iris/brain-index</code>, never
+          inside the vault or any repo) so voice search understands meaning, not just words. Off: search still works,
+          keyword-only, and nothing ever leaves your machine.
+        </small>
+      </label>
+      <div className="setup-actions">
+        <button
+          className="setup-btn"
+          onClick={buildBrainIndex}
+          disabled={brainIndex.status === "testing" || !draft.IRIS_BRAIN_PATH.trim()}
+        >
+          {brainIndex.status === "testing" ? <Loader2 size={14} className="spin" /> : null}
+          {brainIndex.status === "testing" ? "Indexing…" : "Build index now"}
+        </button>
+        <TestBadge state={brainIndex} okLabel="Indexed" />
+      </div>
+      <small className="setup-note">
+        Builds the semantic index on demand. Incremental: the first run embeds every note; after that only notes whose
+        content changed are re-embedded, so re-running is instant and free. (If Hermes syncs your vault, its brain skill
+        can run the same indexer automatically after each sync.)
+      </small>
+      <label className="setup-field">
+        <span>Auto-index on launch</span>
+        <ThemedSelect
+          ariaLabel="Auto-index on launch"
+          value={draft.IRIS_BRAIN_AUTO_INDEX}
+          options={[
+            { value: "false", label: "Off — index only when I run it (default)" },
+            { value: "true", label: "On — keep the index fresh automatically" },
+          ]}
+          onChange={(value) => set("IRIS_BRAIN_AUTO_INDEX", value)}
+        />
+        <small className="setup-note">
+          On: every time Iris starts (or the Neural Map opens), new or edited notes are embedded in the background —
+          convenient, but it makes Gemini API calls without you pressing anything. Unchanged notes are never re-sent, so
+          a quiet vault costs zero calls; still, leave this off if you want API usage only on your explicit action.
         </small>
       </label>
       <label className="setup-field">
@@ -356,8 +466,79 @@ export default function SetupPanel({
           onChange={(value) => set("IRIS_WAKE_WORD", value)}
         />
         <small className="setup-note">
-          When on, Iris listens locally for “Hey Iris” and wakes hands-free (same as pressing W). Runs fully on-device —
+          When on, Iris listens locally for “Hey Iris” and wakes hands-free (same as pressing ⌥W). Runs fully on-device —
           no audio leaves your machine. Needs microphone permission.
+        </small>
+      </label>
+      <label className="setup-field">
+        <span>Wake word sensitivity</span>
+        <ThemedSelect
+          ariaLabel="Wake word sensitivity"
+          value={draft.IRIS_WAKE_SENSITIVITY}
+          options={[
+            { value: "balanced", label: "Balanced (30%) — recommended" },
+            { value: "relaxed", label: "Relaxed (20%) — wakes easily" },
+            { value: "strict", label: "Strict (40%) — needs a loud, clear phrase" },
+          ]}
+          onChange={(value) => set("IRIS_WAKE_SENSITIVITY", value)}
+        />
+        <small className="setup-note">
+          If Iris misses your voice, choose Relaxed; if she still wakes too easily, choose Strict. Every level wakes
+          instantly on a clear phrase and automatically demands a stronger score while the room has been noisy (TV,
+          music, chatter). A separate on-device speech check must also confirm a human voice.
+        </small>
+      </label>
+      <label className="setup-field">
+        <span>Wake diagnostics overlay</span>
+        <ThemedSelect
+          ariaLabel="Wake diagnostics overlay"
+          value={draft.IRIS_SHOW_WAKE_DIAGNOSTICS}
+          options={[
+            { value: "false", label: "Off — keep wake details in Settings" },
+            { value: "true", label: "On — show for 6 seconds after waking" },
+          ]}
+          onChange={(value) => set("IRIS_SHOW_WAKE_DIAGNOSTICS", value)}
+        />
+        <small className="setup-note">
+          {lastWakeDiagnostic
+            ? `Last wake: ${lastWakeDiagnostic}`
+            : "No wake has been recorded in this app session."}
+        </small>
+      </label>
+      <label className="setup-field">
+        <span>Auto-standby when quiet</span>
+        <ThemedSelect
+          ariaLabel="Auto-standby when quiet"
+          value={draft.IRIS_AUTO_SLEEP_SECONDS}
+          options={[
+            { value: "0", label: "Off — stay connected (costs tokens while idle)" },
+            { value: "30", label: "After 30 seconds of silence (recommended)" },
+            { value: "60", label: "After 1 minute" },
+            { value: "120", label: "After 2 minutes" },
+            { value: "300", label: "After 5 minutes" },
+          ]}
+          onChange={(value) => set("IRIS_AUTO_SLEEP_SECONDS", value)}
+        />
+        <small className="setup-note">
+          An idle Gemini Live session streams silence at ~25 tokens/sec and re-bills accumulated audio on every turn.
+          Standby closes the session when nobody's talking and resumes the same conversation when you return — Iris
+          quietly renews the resume token in the background, so even an overnight nap wakes into the same chat.
+        </small>
+      </label>
+      <label className="setup-field">
+        <span>Auto-wake for Hermes results</span>
+        <ThemedSelect
+          ariaLabel="Auto-wake for Hermes results"
+          value={draft.IRIS_AUTO_WAKE_ON_HERMES}
+          options={[
+            { value: "true", label: "On — announce results even while asleep (recommended)" },
+            { value: "false", label: "Off — results wait until I wake Iris" },
+          ]}
+          onChange={(value) => set("IRIS_AUTO_WAKE_ON_HERMES", value)}
+        />
+        <small className="setup-note">
+          Hand a task to Hermes, go quiet, let Iris drop to standby — when the result lands she wakes, announces it,
+          and returns to standby if you have nothing else.
         </small>
       </label>
       <label className="setup-field">
@@ -380,7 +561,10 @@ export default function SetupPanel({
   );
 
   const permissionsSection = (
-    <Section title="Permissions" hint="Iris needs your mic to hear you. Camera is optional (hand gestures).">
+    <Section
+      title="Permissions"
+      hint="Iris needs your mic to hear you. Camera is optional (hand gestures). Pick devices from the main screen — the carets next to the mic button and on the camera panel."
+    >
       <div className="setup-perms">
         <PermRow
           icon={<Mic size={16} />}
@@ -470,7 +654,7 @@ export default function SetupPanel({
     body = (
       <div className="setup-welcome">
         <h2>You're all set</h2>
-        <p>Iris will save your settings and wake up. Press W any time to wake, S to sleep.</p>
+        <p>Iris will save your settings and wake up. Press ⌥W any time to wake, ⌥S to sleep, ⌥H for the Glass HUD.</p>
         <ul className="setup-summary">
           <li>
             Gemini key {gemini.status === "ok" ? <Check size={13} className="ok" /> : keyReady ? "added" : "missing"}

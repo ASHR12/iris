@@ -49,35 +49,9 @@
   display: flex;
   align-items: center;
   gap: 16px;
-  padding-left: 6px;
-}
-
-/* Custom window controls (native traffic lights don't exist on the
-   transparent frameless window). */
-.win-controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  -webkit-app-region: no-drag;
-}
-
-.win-dot {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.14);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
-  transition: background 0.15s ease, box-shadow 0.15s ease;
-}
-
-.win-dot.close:hover {
-  background: #f16a5d;
-  box-shadow: 0 0 10px rgba(241, 106, 93, 0.5);
-}
-
-.win-dot.min:hover {
-  background: #f5b04a;
-  box-shadow: 0 0 10px rgba(var(--amber-rgb), 0.5);
+  /* The REAL macOS traffic lights (titleBarStyle: hiddenInset) occupy
+     window x 22-74; clear their footprint before the status dots start. */
+  padding-left: 66px;
 }
 
 .deck-top-right {
@@ -398,6 +372,17 @@
 .gesture-chip.open .dot { background: var(--violet-soft); }
 .gesture-chip.fist .dot { background: var(--amber); }
 
+/* Pinch is the one state you must never be unsure about — loud orange. */
+.gesture-chip.pinch {
+  color: #ff9f43;
+  font-weight: 700;
+  opacity: 1;
+}
+.gesture-chip.pinch .dot {
+  background: #ff9f43;
+  box-shadow: 0 0 10px #ff9f43;
+}
+
 .gesture-chip .dot {
   width: 6px;
   height: 6px;
@@ -427,6 +412,19 @@
   background: var(--cyan);
   box-shadow: 0 0 8px var(--cyan);
   animation: pulse-dot 1.6s ease-in-out infinite;
+}
+
+.cam-error {
+  position: absolute;
+  inset: auto 10px 42px;
+  z-index: 3;
+  padding: 7px 8px;
+  border-radius: 7px;
+  color: var(--coral);
+  background: rgba(3, 5, 9, 0.82);
+  box-shadow: inset 0 0 0 1px rgba(var(--coral-rgb), 0.25);
+  font-size: 9px;
+  line-height: 1.4;
 }
 
 .camera-off {
@@ -594,6 +592,154 @@
   padding-top: 2px;
 }
 
+/* ===== Quick device pickers (Zoom-style carets) ===== */
+/* Mic caret sits cleanly beside the mute button — no overlap. */
+.t-split {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.device-pick {
+  position: relative;
+  display: inline-flex;
+}
+
+.device-pick-trigger {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  color: var(--text-soft);
+  background: rgba(16, 26, 44, 0.92);
+  box-shadow:
+    inset 0 0 0 1px var(--hairline-strong),
+    0 4px 12px rgba(0, 0, 0, 0.4);
+  transition: color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, background 0.15s ease;
+}
+
+.device-pick-trigger:hover,
+.device-pick-trigger.open {
+  color: var(--cyan-bright);
+  background: rgba(var(--cyan-rgb), 0.1);
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--cyan-rgb), 0.45),
+    0 4px 14px rgba(var(--cyan-rgb), 0.25);
+}
+
+.device-pick-trigger.open {
+  transform: rotate(180deg);
+}
+
+.device-pick-menu {
+  position: fixed;
+  z-index: 400;
+  width: 260px;
+  padding: 7px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(16, 28, 48, 0.97), rgba(8, 14, 26, 0.97));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    inset 0 0 0 1px rgba(148, 196, 255, 0.16),
+    0 24px 70px rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(20px) saturate(1.25);
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.device-pick-menu.down {
+  transform-origin: top center;
+  animation: device-menu-in 0.16s ease;
+}
+
+.device-pick-menu.side {
+  transform-origin: bottom left;
+  animation: device-menu-in 0.16s ease;
+}
+
+@keyframes device-menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(0);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.device-pick-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 11px 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid rgba(148, 196, 255, 0.1);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--cyan-soft, #7dd3fc);
+}
+
+.device-pick-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 11px;
+  border-radius: 9px;
+  text-align: left;
+  font-size: 12.5px;
+  line-height: 1.3;
+  color: var(--text-soft);
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.device-pick-item:hover {
+  background: rgba(148, 196, 255, 0.1);
+  color: var(--text);
+}
+
+.device-pick-item.active {
+  color: var(--cyan-bright);
+  background: rgba(var(--cyan-rgb), 0.07);
+}
+
+.device-pick-item.missing {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.device-pick-check {
+  display: inline-flex;
+  width: 15px;
+  justify-content: center;
+  flex: none;
+  color: var(--cyan-bright);
+}
+
+.device-pick-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.device-pick-empty {
+  padding: 6px 11px 7px;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+/* Camera panel header: picker rides the right edge. */
+.col-head .device-pick {
+  margin-left: auto;
+  -webkit-app-region: no-drag;
+}
+
 .t-btn {
   display: grid;
   place-items: center;
@@ -668,7 +814,7 @@
 .wake-keys {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 10px;
   font-family: var(--font-mono);
   font-size: 9.5px;
   letter-spacing: 0.18em;
@@ -676,19 +822,30 @@
   color: var(--muted);
 }
 
+/* A chord renders as separate keycaps (⌥ + W) so it reads like the actual
+   keys under your fingers. */
+.wake-keys .combo {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .wake-keys .key {
   display: inline-grid;
   place-items: center;
-  min-width: 18px;
-  height: 18px;
-  border-radius: 5px;
-  font-size: 10px;
+  min-width: 21px;
+  height: 21px;
+  padding: 0 5px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  letter-spacing: 0;
   color: var(--cyan-bright);
   background: rgba(var(--cyan-rgb), 0.09);
-  box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb), 0.2);
+  box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb), 0.24);
 }
 
 .wake-sep {
+  margin: 0 2px;
   opacity: 0.4;
 }
 
@@ -1018,6 +1175,96 @@
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+.approval-card,
+.interaction-card {
+  display: grid;
+  gap: 7px;
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: var(--r-sm);
+  color: var(--text-soft);
+  background: rgba(var(--amber-rgb), 0.08);
+  box-shadow: inset 0 0 0 1px rgba(var(--amber-rgb), 0.28);
+}
+
+.interaction-card {
+  background: rgba(var(--violet-rgb), 0.08);
+  box-shadow: inset 0 0 0 1px rgba(var(--violet-rgb), 0.28);
+}
+
+.interaction-card strong {
+  color: var(--violet-soft);
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.interaction-card p {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.approval-card strong {
+  color: var(--amber);
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.approval-card code,
+.approval-card p,
+.approval-card small {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.approval-card code {
+  max-height: 58px;
+  overflow: auto;
+  color: var(--text);
+}
+
+.approval-card small {
+  color: var(--coral);
+}
+
+.approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.approval-actions button {
+  padding: 5px 7px;
+  border-radius: 5px;
+  color: var(--text-soft);
+  background: rgba(var(--cyan-rgb), 0.08);
+  box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb), 0.18);
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+}
+
+.approval-actions button:hover:not(:disabled) {
+  color: var(--cyan-bright);
+  background: rgba(var(--cyan-rgb), 0.14);
+}
+
+.approval-actions button.always {
+  color: var(--amber);
+}
+
+.approval-actions button.deny {
+  color: var(--coral);
+}
+
+.approval-actions button:disabled {
+  opacity: 0.5;
 }
 
 .activity {
