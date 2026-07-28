@@ -7,6 +7,62 @@ and the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Iris is
 pre-1.0, so minor versions may still contain breaking changes to configuration
 and IPC surfaces.
 
+## [Unreleased]
+
+### Added
+
+- **Conversation memory that spans the whole day.** A Live session only retains
+  the last few minutes of speech, so Iris now summarizes each conversation into
+  `~/.iris/journal/YYYY-MM-DD.md` — one section per wake-to-sleep cycle, closed
+  with a short digest written in Iris's own voice. Today's digests are injected
+  at connect, so "what did we decide this morning?" needs no lookup. Everything
+  stays on the machine; only the one-shot summarization call leaves it.
+- **`search_conversation` tool** for anything older than today, or for detail the
+  digests omit. Search is a local scan over digest lines — roughly 0.06 ms per
+  query, with no index to maintain and no network round trip.
+- **Session lifecycle log** at `~/.iris/session-log.jsonl`, recording connects,
+  resumes, rejected resume handles, refresh takeovers, and digest writes. There
+  was previously no history of any of this once the log panel scrolled away.
+- **Conversation memory setting** in Settings, plus `IRIS_CONVERSATION_JOURNAL`,
+  `IRIS_JOURNAL_RAW_DAYS`, `IRIS_JOURNAL_DIGEST_DAYS`, `IRIS_DIGEST_MODEL`, and
+  `IRIS_SESSION_LOG`. Raw spoken lines age out after 7 days, digests after 90.
+
+### Changed
+
+- **The Live context window is now compressed** at 40000 tokens down to 16000,
+  which stops per-turn cost compounding across an all-day session and removes
+  the 15-minute ceiling on audio-only sessions. The numbers are sized against
+  the ~5.5k-token incompressible floor of tool schemas, instructions, and the
+  `USER`/`MEMORY` snapshot: an earlier 16384/8192 attempt left too little room
+  for a Google Search result to land, which is why it was reverted. Verified
+  live — after a forced compression, a grounded search still returns a real
+  figure.
+- **Waking no longer waits on background handle renewal.** A standby refresh
+  could hold the wake for tens of seconds while it connected and polled. A wake
+  now yields to it for at most 1.5 s, then closes its socket and takes over. The
+  refresh itself nudges immediately instead of after 4 s, cutting its worst case
+  from ~27 s to ~16 s.
+- **The microphone opens in parallel with the Gemini connect** rather than after
+  it. In series, the device's own startup delay landed after "I'm back", so the
+  first thing said on waking went into a microphone that was not listening yet.
+- **`GoAway` is handled proactively.** When the server warns that a long-lived
+  connection is about to be recycled, Iris now rotates it early during a silent
+  moment instead of being cut off wherever the drop happens to fall. A busy
+  connection is left alone for the existing reconnect path.
+- **Gesture control is a remembered preference.** The camera no longer switches
+  itself on at wake, in HUD mode, or when the Neural Map opens; it is off until
+  you turn it on, and it stays however you left it (`IRIS_GESTURE_CONTROL`).
+
+### Fixed
+
+- **Farewells no longer guess the time of day.** Iris has no clock, so "go to
+  sleep" could be answered with "good night" at three in the afternoon. The
+  `go_to_sleep` tool response, the sleep rule, and the session-start greeting now
+  agree on time-neutral wording.
+- **Markdown no longer leaks into Hermes card previews.** The two-line preview in
+  the side panel rendered `**bold**` and `##` literally while the opened reader
+  showed it correctly. Previews are now flattened to prose.
+
 ## [0.4.0] — 2026-07-25
 
 The Luminous Instrument redesign. The interface is rebuilt on flat surfaces and a

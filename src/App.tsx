@@ -84,12 +84,8 @@ export default function App() {
     [hermesSession, tasks, testDataEnabled],
   );
   const [uiMode, setUiMode] = useState<"deck" | "hud">("deck");
-  const uiModeRef = useRef<"deck" | "hud">("deck");
-  uiModeRef.current = uiMode;
   // Neural Map (the brain graph) — HUD-only overlay.
   const [brainOpen, setBrainOpen] = useState(false);
-  const brainOpenRef = useRef(false);
-  brainOpenRef.current = brainOpen;
   const prevBrainOpenRef = useRef(false);
   const [brainCommand, setBrainCommand] = useState<BrainVoiceCommand | null>(null);
   const brainSeqRef = useRef(0);
@@ -348,6 +344,7 @@ export default function App() {
       setWakeWordEnabled(config.wakeWord);
       setWakeSensitivity(config.wakeSensitivity || "balanced");
       setShowWakeDiagnostics(config.showWakeDiagnostics);
+      setHandControl(config.gestureControl);
       if (!config.configured) setSetup({ mode: "onboarding" });
     });
   }, [hasBridge]);
@@ -386,17 +383,13 @@ export default function App() {
     const offSleep = window.iris.onSleepRequest(() => {
       if (sidecarRunning) stop();
     });
-    // Idle auto-sleep: main closed the Gemini session; tear down the mic and
-    // playback here but KEEP the camera/hand-control — you may be silently
-    // reading the map or the HUD while Iris naps. She auto-wakes for Hermes.
+    // Idle auto-sleep: main closed the Gemini session, so tear down the mic and
+    // playback. The camera follows its own switch and is untouched here.
     const offAutoSleep = window.iris.onAutoSleep(() => {
       setAutoSlept(true);
       sessionStartRef.current = null;
       void audio.stopCapture();
       audio.flushPlayback();
-      // In the normal deck, release the GPU/camera during standby. HUD and an
-      // open Neural Map intentionally retain gesture control.
-      if (uiModeRef.current === "deck" && !brainOpenRef.current) setHandControl(false);
     });
     return () => {
       if (modeTimerRef.current) {
@@ -501,6 +494,20 @@ export default function App() {
       await audio.startCapture(id);
       pushLog("info", "Microphone switched — live.");
     }
+  }
+
+  // Gesture control is an input device, not session state: this toggle is the
+  // only thing that moves it, and the choice is remembered across restarts.
+  // Waking, sleeping, and opening the Neural Map all leave the camera as-is.
+  async function toggleHandControl() {
+    const next = !handControl;
+    setHandControl(next);
+    pushLog("info", next ? "Gesture camera on." : "Gesture camera off.");
+    if (!hasBridge) return;
+    const updated = await window.iris.saveConfig({
+      IRIS_GESTURE_CONTROL: next ? "true" : "false",
+    });
+    setFullConfig(updated);
   }
 
   useEffect(() => {
@@ -901,6 +908,14 @@ export default function App() {
       }
       setWakeStarting(true);
       setAutoSlept(false);
+      // Open the mic alongside the Gemini connect rather than after it. The
+      // device itself takes a few hundred ms to come up, and in series that
+      // delay landed after "I'm back" — so the first thing said on waking went
+      // into a microphone that was not listening yet.
+      let captureError: unknown = null;
+      const capture = audio.startCapture().catch((error: unknown) => {
+        captureError = error;
+      });
       try {
         const status = await window.iris.startSidecar({ mode: "none" });
         if (!status.running) throw new Error("Gemini Live did not start.");
@@ -908,9 +923,10 @@ export default function App() {
         setSidecarPid(status.pid);
         sessionStartRef.current = Date.now();
         showWakeReason(wakeSource, wakeDetail);
-        await audio.startCapture();
-        setHandControl(true);
+        await capture;
+        if (captureError) throw captureError;
       } catch (error) {
+        await capture;
         await audio.stopCapture();
         setSidecarRunning(false);
         setSidecarPid(null);
@@ -937,7 +953,6 @@ export default function App() {
     setGeminiStatus("offline");
     setHermesStatus("offline");
     setAudioState("idle");
-    setHandControl(false);
     sessionStartRef.current = null;
   }
 
@@ -1183,14 +1198,14 @@ export default function App() {
     setTaskChooser({ query: query || "task", matches: matches.map((match) => match.task) });
   }
 
-  // The Neural Map is voice + gesture native: opening it brings up the mic
-  // (wake) and the gesture camera automatically when they're not already on.
+  // The Neural Map is voice native: opening it wakes Iris when she is asleep.
+  // The camera is left alone — gesture control is a manual switch, so the map
+  // opens with whatever the user chose.
   useEffect(() => {
     const wasOpen = prevBrainOpenRef.current;
     prevBrainOpenRef.current = brainOpen;
     if (!brainOpen || wasOpen) return;
-    if (!sidecarRunning) void start("neural_map"); // start() also enables the camera
-    else if (!handControl) setHandControl(true);
+    if (!sidecarRunning) void start("neural_map");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [brainOpen]);
 
@@ -1484,7 +1499,7 @@ export default function App() {
           transcript={transcript}
           commsScrollRef={commsScrollRef}
           handControl={handControl}
-          onToggleHand={() => setHandControl((current) => !current)}
+          onToggleHand={() => void toggleHandControl()}
           hand={hand}
           handStream={handStream}
           handError={handError}
@@ -1512,7 +1527,7 @@ export default function App() {
           linked={sidecarRunning}
           pid={sidecarPid}
           handControl={handControl}
-          onToggleHand={() => setHandControl((current) => !current)}
+          onToggleHand={() => void toggleHandControl()}
           onOpenSettings={openSettings}
         />
 

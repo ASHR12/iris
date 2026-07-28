@@ -69,6 +69,8 @@ type IrisConfig = {
   autoWakeOnHermes: boolean;
   micDevice: string;
   cameraDevice: string;
+  gestureControl: boolean;
+  conversationJournal: boolean;
   configured: boolean;
   voices: string[];
   models: string[];

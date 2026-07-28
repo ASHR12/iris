@@ -36,6 +36,9 @@ import {
   safeExternalUrl,
 } from "./windowSecurity.mjs";
 import { LiveToolCoordinator } from "./liveToolCoordinator.mjs";
+import { ConversationJournal } from "./conversationJournal.mjs";
+import { buildDigest, heuristicDigest } from "./conversationDigest.mjs";
+import { SessionLog } from "./sessionLog.mjs";
 import { readStoredHermesResult } from "./hermesResultService.mjs";
 import {
   approvalRequestFromRunStatus,
@@ -118,6 +121,19 @@ const pendingHermesInteractions = new Map();
 const liveToolCoordinator = new LiveToolCoordinator();
 const activeLiveToolBatches = new Set();
 const announcementLedger = new AnnouncementLedger();
+
+function envInt(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+// Long-term conversation memory. Safe to construct here: loadEnvFiles() ran above.
+const conversationJournal = new ConversationJournal({
+  enabled: envFlag("IRIS_CONVERSATION_JOURNAL", true),
+  rawRetentionDays: envInt("IRIS_JOURNAL_RAW_DAYS", 7),
+  digestRetentionDays: envInt("IRIS_JOURNAL_DIGEST_DAYS", 90),
+});
+const sessionLog = new SessionLog({ enabled: envFlag("IRIS_SESSION_LOG", true) });
 let welcomeGreeted = false;
 let welcomeFallbackTimer = null;
 let userInputSeenSinceStart = false;
@@ -128,6 +144,7 @@ let sleepFinalizeTimer = null;
 let pendingSleepRequest = null;
 let resumeGreetingWaiter = null;
 let reconnectTimer = null;
+let goAwayTimer = null;
 let autoWakeTimer = null;
 let hudTransitionTimer = null;
 let shuttingDown = false;
@@ -158,12 +175,26 @@ let liveConnectionId = 0; // rejects late callbacks from a closed/replaced socke
 // never wakes the UI), so the conversation survives naps of any length.
 // TTL sits between the two: refresh fires at 110, anything older than 118 is
 // treated as dead, 120 is Google's hard cutoff.
+// Sized against the ~5.5k-token incompressible floor (tool schemas + rules +
+// USER/MEMORY profile). See the note in buildLiveConfig before changing these.
+const LIVE_COMPRESSION_TRIGGER_TOKENS = 40000;
+const LIVE_COMPRESSION_TARGET_TOKENS = 16000;
 const RESUME_HANDLE_TTL_MS = 118 * 60 * 1000;
 const HANDLE_REFRESH_AGE_MS = 110 * 60 * 1000;
 const HANDLE_REFRESH_RETRY_MS = 3 * 60 * 1000; // failed renewals retry quickly
+// A renewal that has not produced a handle in this long is not going to. Kept
+// tight because a wake can arrive at any moment and has to wait its turn.
+const HANDLE_REFRESH_CONNECT_TIMEOUT_MS = 10000;
+const HANDLE_REFRESH_POLL_MS = 6000;
 const resumeHandles = new ResumeHandleStore({ ttlMs: RESUME_HANDLE_TTL_MS });
 let handleRefreshTimer = null;
 let handleRefreshPromise = null;
+let handleRefreshSession = null;
+let handleRefreshCancelled = false;
+// How long a wake will wait for an in-flight standby refresh before taking it
+// over. Long enough for one that is about to finish, short enough that the user
+// never hears the difference.
+const HANDLE_REFRESH_YIELD_MS = 1500;
 
 function autoSleepMs() {
   const raw = Number(process.env.IRIS_AUTO_SLEEP_SECONDS ?? 30);
@@ -312,6 +343,7 @@ function flushUserTranscript() {
     !isInternalSystemTranscript(userTranscriptBuffer)
   ) {
     emitEvent({ type: "transcript", speaker: "you", text: userTranscriptBuffer.trim() });
+    conversationJournal.addTurn("you", userTranscriptBuffer.trim());
   }
   userTranscriptBuffer = "";
 }
@@ -326,6 +358,7 @@ function flushModelTranscript() {
     !isInternalSystemTranscript(modelTranscriptBuffer)
   ) {
     emitEvent({ type: "transcript", speaker: "gemini", text: modelTranscriptBuffer.trim() });
+    conversationJournal.addTurn("iris", modelTranscriptBuffer.trim());
   }
   modelTranscriptBuffer = "";
   modelTranscriptSettled = false;
@@ -465,6 +498,8 @@ const ALLOWED_CONFIG_KEYS = new Set([
   "IRIS_AUTO_WAKE_ON_HERMES",
   "IRIS_MIC_DEVICE",
   "IRIS_CAMERA_DEVICE",
+  "IRIS_GESTURE_CONTROL",
+  "IRIS_CONVERSATION_JOURNAL",
 ]);
 
 function userConfigPath() {
@@ -505,6 +540,9 @@ function getFullConfig() {
     autoWakeOnHermes: envFlag("IRIS_AUTO_WAKE_ON_HERMES", true),
     micDevice: process.env.IRIS_MIC_DEVICE || "",
     cameraDevice: process.env.IRIS_CAMERA_DEVICE || "",
+    // Opt-in: the camera stays off until it is switched on explicitly.
+    gestureControl: envFlag("IRIS_GESTURE_CONTROL", false),
+    conversationJournal: envFlag("IRIS_CONVERSATION_JOURNAL", true),
     configured: Boolean((process.env.GEMINI_API_KEY || "").trim()),
     voices: GEMINI_VOICES,
     models: ensureIncludes(GEMINI_LIVE_MODELS, process.env.GEMINI_LIVE_MODEL),
@@ -523,6 +561,9 @@ function writeUserConfig(rawUpdates) {
     allowedKeys: ALLOWED_CONFIG_KEYS,
     secretKeys: new Set(["GEMINI_API_KEY", "API_SERVER_KEY"]),
   });
+  // The journal instance caches its own switch, so keep it in step with the
+  // saved setting rather than waiting for a restart.
+  conversationJournal.enabled = envFlag("IRIS_CONVERSATION_JOURNAL", true);
   return getFullConfig();
 }
 
@@ -1860,6 +1901,31 @@ async function searchMemory(query, topK = 6) {
   };
 }
 
+// Recall over the conversation journal. Synchronous on purpose: digests are a
+// few KB per day, so scanning months of them costs less than a network hop.
+function searchConversation(query, limit = 6) {
+  const q = String(query || "").trim();
+  if (!q) return { ok: false, error: "Empty conversation query." };
+  if (!conversationJournal.enabled) {
+    return {
+      ok: false,
+      error: "Conversation history is turned off.",
+      instructions: "Say you do not keep a record of past conversations; do not guess.",
+    };
+  }
+  const max = Math.max(1, Math.min(10, Number(limit) || 6));
+  const results = conversationJournal.search(q, { limit: max });
+  return {
+    ok: true,
+    query: q,
+    results,
+    instructions:
+      results.length > 0
+        ? "These are summaries of earlier sessions, not transcripts. Describe what happened in your own words and never present them as exact quotes."
+        : "Nothing in the conversation history matched. Say you cannot recall it; do not invent a past conversation.",
+  };
+}
+
 function readMemoryNote(sourcePath) {
   const requested = String(sourcePath || "").trim();
   if (requested.startsWith("brain:")) {
@@ -2087,6 +2153,8 @@ async function executeTool(name, args = {}) {
       return searchBrain(args.query, args.top_k);
     case "search_memory":
       return searchMemory(args.query, args.top_k);
+    case "search_conversation":
+      return searchConversation(args.query, args.limit);
     case "read_memory_note":
       return readMemoryNote(args.path);
     case "go_to_sleep":
@@ -2101,8 +2169,14 @@ async function executeTool(name, args = {}) {
       scheduleSleepRequest("Gemini go_to_sleep tool");
       return {
         status: "sleeping",
-        instructions:
-          "Say one short goodbye right now and nothing else. Iris will sleep after this farewell turn completes.",
+        instructions: [
+          "Say one short goodbye right now and nothing else.",
+          // This arrives immediately before the farewell, so it has to repeat the
+          // time-of-day ban from the system instruction to actually win.
+          "Do not use a time of day: no 'good night', 'good evening', 'good afternoon', or 'good morning'.",
+          "Use a time-neutral sign-off such as 'Talk soon', 'Catch you later', or 'I'm here whenever you need me'.",
+          "Iris will sleep after this farewell turn completes.",
+        ].join(" "),
       };
     case "control_iris_ui":
       return controlIrisUi(args);
@@ -2635,6 +2709,19 @@ function buildIrisUiTools() {
           },
         },
         {
+          name: "search_conversation",
+          description:
+            "Search summaries of past spoken conversations with the user, by topic or by day. Use this when they refer to something said earlier that you cannot recall — 'what did we decide about that', 'the thing I mentioned yesterday', 'what did we talk about last week'. Sessions from today are already in your context, so use this for older days or for detail missing from them. Returns short summaries, never exact words: describe what happened, do not quote.",
+          parameters: {
+            type: "object",
+            properties: {
+              query: { type: "string", description: "Topic, decision, or name to look for." },
+              limit: { type: "number", description: "Summaries to return (1-10, default 6)." },
+            },
+            required: ["query"],
+          },
+        },
+        {
           name: "read_memory_note",
           description:
             "Read one bounded source returned by search_memory. Call directly when a snippet needs verification or more detail. Pass the exact returned path; never invent one.",
@@ -2708,6 +2795,22 @@ function buildLiveConfig(resumeHandleForSession = null) {
         },
       },
     },
+    // Caps the window so per-turn cost stops compounding (the API re-bills the
+    // whole context every turn, and native audio accrues ~25 tok/s) and so the
+    // session is never force-terminated at the 15-minute audio ceiling.
+    //
+    // These numbers are sized against the incompressible floor — tool schemas,
+    // these rules, and the USER/MEMORY profile total ~5.5k tokens and are never
+    // pruned by slidingWindow. An earlier attempt used 16384/8192, which left
+    // only ~2.6k tokens (~105s of audio) for the actual conversation; a Google
+    // Search result could not fit, which is why it was reverted. At 40000/16000
+    // a compression leaves ~10.4k tokens (~7 min of speech) and a grounded
+    // search turn has ~24k of headroom. Long-term recall is the conversation
+    // journal's job, not this window's.
+    contextWindowCompression: {
+      triggerTokens: LIVE_COMPRESSION_TRIGGER_TOKENS,
+      slidingWindow: { targetTokens: LIVE_COMPRESSION_TARGET_TOKENS },
+    },
     // Lets us disconnect (auto-sleep, server GoAway resets) and reconnect
     // into the SAME conversation. Handles stay valid ~2h after disconnect.
     sessionResumption: resumeHandleForSession ? { handle: resumeHandleForSession } : {},
@@ -2734,9 +2837,11 @@ function buildLiveConfig(resumeHandleForSession = null) {
             "All tools except a new Hermes dispatch and a pending Hermes approval/interaction are normal model-decided tools: call them directly when useful without asking permission and without merely saying you could use them.",
             "UI control rule: for requests such as open/close a result, show history or steps, switch HUD mode, or operate the Neural Map, call control_iris_ui. Use get_iris_ui_context first only when words like 'it', 'that', or 'the second one' need resolution. Never send UI-only commands to Hermes.",
             "Opening a Hermes card changes only the interface; it does not place the result in your context. Before answering any question about an opened, focused, latest, or historical Hermes task, call get_iris_ui_context when needed and then read_hermes_task_result. Use the complete returned output and never infer facts from the task title.",
-            `Sleep rule: when ${userDisplayName()} clearly ends the conversation or asks Iris to sleep, call go_to_sleep FIRST without speaking, then follow its response and say one short time-neutral farewell. Do not trigger sleep when a farewell is merely quoted or discussed.`,
+            `Sleep rule: when ${userDisplayName()} clearly ends the conversation or asks Iris to sleep, call go_to_sleep FIRST without speaking, then follow its response and say one short farewell. Do not trigger sleep when a farewell is merely quoted or discussed.`,
+            "Time-of-day rule: you have no clock, so you cannot know whether it is morning, afternoon, evening, or night. Never greet or sign off with a time of day — no 'good morning', 'good afternoon', 'good evening', or 'good night' — and never guess the current time or date. Use time-neutral wording such as 'Hey', 'Talk soon', 'Catch you later', or 'I'm here whenever you need me'.",
             `HUD rule: 'enter HUD mode', 'glass mode', 'float over my screen', or 'overlay mode' -> control_iris_ui with enter_hud_mode. 'Exit HUD', 'back to the deck', or 'normal window' -> exit_hud_mode.`,
             `Neural Map rule: 'load/show your brain', 'open the neural map', or 'show the knowledge graph' -> open_brain_graph. 'Close/hide the brain/map' -> close_brain_graph. To focus one note use focus_brain_node with query; to show every matching note use filter_brain_graph; to clear either filter use show_full_brain_graph; to read a note use open_brain_note; to return to the map use close_brain_note.`,
+            "Conversation recall rule: your live memory of this conversation covers only the recent part of it, so older turns will be missing. When the user refers to something spoken earlier that you cannot find in context — an earlier decision, a request from yesterday, what you discussed last week — call search_conversation instead of guessing or saying you have no memory. Any EARLIER TODAY digests above already cover today's earlier sessions. Digests are summaries: describe them in your own words and never present them as exact quotes.",
             `Brain and memory rule: for accumulated personal knowledge — clients, deals, drafts, people, preferences, decisions, style, recurring projects, or "what do we know" — use the injected USER/MEMORY context and call search_brain or search_memory when retrieval would improve confidence. For detailed or consequential memory facts, read the selected source with read_memory_note. Prefer these over Google for personal facts and over Hermes for simple recall. Say honestly when nothing strong matches.`,
             "For task cards and history: show/hide steps -> show_task_steps/hide_task_steps; partial task names -> open_task_by_query with query; latest result -> open_latest_hermes_result; history -> open_hermes_history. If several cards match, use get_iris_ui_context to resolve the user's first/second/third choice.",
             `When proposing a Hermes task, preserve the goal and every concrete detail ${userDisplayName()} explicitly supplied — names, numbers, dates, budgets, URLs, file paths, named tools, constraints, and output format. Hermes cannot hear this conversation, so the brief must stand alone. Do not add workflow mechanics, scripts, databases, pages, or implementation constraints that you merely inferred from memory.`,
@@ -2750,9 +2855,32 @@ function buildLiveConfig(resumeHandleForSession = null) {
           ].join("\n"),
         },
         ...userContextParts(),
+        ...todayDigestParts(),
       ],
     },
   };
+}
+
+// Today's session digests, injected at connect so "what did we do this morning?"
+// is answered immediately instead of costing a lookup. Small by construction —
+// a few hundred tokens against a ~5.5k floor. Anything older goes through
+// search_conversation instead.
+function todayDigestParts() {
+  const digest = conversationJournal.todayDigest();
+  if (!digest) return [];
+  return [
+    {
+      text: [
+        "EARLIER TODAY — digests of your previous sessions with the user today, oldest first.",
+        "Treat these as your own memory of today and refer to them naturally.",
+        "They are summaries, not transcripts: never quote them as exact words.",
+        "For anything before today, or any detail missing here, call search_conversation.",
+        "----- BEGIN EARLIER TODAY -----",
+        digest,
+        "----- END EARLIER TODAY -----",
+      ].join("\n"),
+    },
+  ];
 }
 
 // Personal context injected as its own system-instruction part. Kept separate so
@@ -2799,7 +2927,8 @@ function sendWelcomeGreeting() {
   if (userInputSeenSinceStart) return;
   sendLiveText(
     `SYSTEM_EVENT_SESSION_START: Greet ${userDisplayName()} once in one short sentence, ` +
-      "then ask what they have in mind. Do not report service status unless asked.",
+      "then ask what they have in mind. Do not use a time-of-day greeting. " +
+      "Do not report service status unless asked.",
   );
 }
 
@@ -2832,13 +2961,14 @@ async function startLive({ preserveLogicalStart = false } = {}) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
-  // A standby handle-refresh may be mid-rotation; let it finish so we resume
-  // with the newest handle instead of racing it with a second connection.
+  stopGoAwayTimer();
+  // A standby handle-refresh may be mid-rotation. Give it a moment to land the
+  // newer handle, then take the socket from it — a refresh can spend tens of
+  // seconds connecting and polling, and the person waiting to talk must never
+  // pay for that. The handle we already hold is valid either way.
   stopHandleRefresh();
-  if (handleRefreshPromise) {
-    try { await handleRefreshPromise; } catch { /* refresh failures are non-fatal */ }
-    if (liveSession || connectInFlight) return liveStatus;
-  }
+  await yieldToHandleRefresh();
+  if (liveSession || connectInFlight) return liveStatus;
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     emitEvent({ type: "fatal", message: "GEMINI_API_KEY is not set." });
@@ -2956,6 +3086,7 @@ async function startLive({ preserveLogicalStart = false } = {}) {
     if (handle) {
       // The stale resume token was refused at the door — retry fresh once.
       resumeHandles.clear();
+      sessionLog.record("resume_rejected", { where: "connect", error: error?.message || String(error) });
       emitEvent({
         type: "log",
         level: "warn",
@@ -2986,6 +3117,7 @@ async function startLive({ preserveLogicalStart = false } = {}) {
     closedDuringConnect = false;
     if (handle) {
       resumeHandles.clear();
+      sessionLog.record("resume_rejected", { where: "setup" });
       emitEvent({
         type: "log",
         level: "warn",
@@ -2997,6 +3129,14 @@ async function startLive({ preserveLogicalStart = false } = {}) {
     endResponseWait();
     throw new Error("Gemini Live closed during setup");
   }
+
+  // One journal section per wake→sleep cycle. Guarded rather than unconditional
+  // because the resume-rejection paths re-enter startLive.
+  if (!conversationJournal.activeSessionId) conversationJournal.beginSession();
+  sessionLog.record(resuming ? "resume_ok" : "fresh_start", {
+    model,
+    journalSession: conversationJournal.activeSessionId,
+  });
 
   // Send AFTER connect resolves: onopen can fire before liveSession is assigned,
   // which would otherwise skip the queued announcements. Track what we send
@@ -3112,8 +3252,9 @@ function handleLiveMessage(message) {
     emitEvent({
       type: "log",
       level: "info",
-      message: `Gemini server rotating the connection (${message.goAway.timeLeft || "soon"}) — will resume transparently.`,
+      message: `Gemini server rotating the connection (${formatTimeLeft(message.goAway.timeLeft)}) — will resume transparently.`,
     });
+    scheduleGoAwayReconnect(message.goAway.timeLeft);
   }
 
   const content = message.serverContent;
@@ -3278,6 +3419,50 @@ function handleLiveMessage(message) {
   }
 }
 
+// One cheap text call per session, not on the Live socket. Kept off the sleep
+// path (never awaited) because nothing needs the digest until the next wake.
+async function generateDigestText(prompt) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error("GEMINI_API_KEY is not set");
+  const client = ai || new GoogleGenAI({ apiKey });
+  const response = await client.models.generateContent({
+    model: process.env.IRIS_DIGEST_MODEL || "gemini-flash-lite-latest",
+    contents: prompt,
+  });
+  return typeof response?.text === "function" ? response.text() : response?.text;
+}
+
+function finalizeJournalSession({ immediate = false } = {}) {
+  if (!conversationJournal.activeSessionId) return;
+  const transcript = conversationJournal.sessionTranscript();
+  // Detach before the await: the user may wake again while the digest is still
+  // being written, and that wake must get its own section.
+  const session = conversationJournal.closeSession();
+  if (!session || !transcript.length) return;
+  // On quit there is no time for a model round trip — the process is going away.
+  // The plainer heuristic summary is far better than losing the session.
+  if (immediate) {
+    conversationJournal.writeDigest(session, heuristicDigest(transcript));
+    return;
+  }
+  void buildDigest(transcript, { generate: generateDigestText })
+    .then((digest) => {
+      const written = conversationJournal.writeDigest(session, digest);
+      sessionLog.record("journal_digest", {
+        sessionId: session.id,
+        turns: transcript.length,
+        written: Boolean(written),
+      });
+    })
+    .catch((error) => {
+      emitEvent({
+        type: "log",
+        level: "warn",
+        message: `Could not write the conversation digest: ${error?.message || error}`,
+      });
+    });
+}
+
 async function stopLive({ preserveProposal = false, forQuit = false } = {}) {
   settleResumeGreeting();
   welcomeGreeted = true;
@@ -3287,6 +3472,7 @@ async function stopLive({ preserveProposal = false, forQuit = false } = {}) {
   endResponseWait();
   setGoogleSearchActive(false);
   flushTranscripts();
+  finalizeJournalSession({ immediate: forQuit });
   localSpeechActive = false;
   localSpeechSources.clear();
   intentionalClose = true;
@@ -3296,6 +3482,7 @@ async function stopLive({ preserveProposal = false, forQuit = false } = {}) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
+  stopGoAwayTimer();
   if (sleepRequestTimer) {
     clearTimeout(sleepRequestTimer);
     sleepRequestTimer = null;
@@ -3327,6 +3514,64 @@ async function stopLive({ preserveProposal = false, forQuit = false } = {}) {
   return liveStatus;
 }
 
+// ===== GoAway: rotate the connection on our terms =====
+// The server warns before it drops a long-lived connection. Waiting for the
+// drop means it lands wherever it lands — often mid-sentence — and the reconnect
+// gap is audible. Cycling a couple of seconds early, while nobody is talking,
+// turns the same rotation into silence the user never notices.
+
+// timeLeft is a protobuf Duration, which the SDK surfaces either as an object
+// or as a string such as "9.5s".
+function parseDurationMs(duration) {
+  if (!duration) return 0;
+  if (typeof duration === "object") {
+    const seconds = Number(duration.seconds ?? 0);
+    const nanos = Number(duration.nanos ?? 0);
+    return Math.max(0, seconds * 1000 + nanos / 1e6);
+  }
+  const match = /^(-?\d+(?:\.\d+)?)s$/.exec(String(duration).trim());
+  return match ? Math.max(0, Number(match[1]) * 1000) : 0;
+}
+
+function formatTimeLeft(duration) {
+  const ms = parseDurationMs(duration);
+  return ms ? `${Math.round(ms / 1000)}s left` : "soon";
+}
+
+function stopGoAwayTimer() {
+  if (goAwayTimer) {
+    clearTimeout(goAwayTimer);
+    goAwayTimer = null;
+  }
+}
+
+function scheduleGoAwayReconnect(timeLeft) {
+  stopGoAwayTimer();
+  const leftMs = parseDurationMs(timeLeft);
+  // Too little warning to do anything useful — the reconnect-on-close path has it.
+  if (leftMs < 3000) return;
+  goAwayTimer = setTimeout(() => {
+    goAwayTimer = null;
+    if (!liveSession || intentionalClose || connectInFlight) return;
+    // Mid-turn is exactly what we were trying to avoid interrupting, so leave a
+    // busy connection to the server and let the existing close path recover it.
+    if (liveTurnState.busy || localSpeechActive || activeLiveToolBatches.size > 0) {
+      sessionLog.record("goaway_skipped_busy", { leftMs });
+      return;
+    }
+    sessionLog.record("goaway_proactive_cycle", { leftMs });
+    emitEvent({
+      type: "log",
+      level: "info",
+      message: "Rotating the Gemini connection now, while it's quiet.",
+    });
+    // Deliberately not intentionalClose: the onclose handler owns the reconnect
+    // and resumes the same conversation from the handle.
+    try { liveSession.close(); } catch { /* ignore close races */ }
+  }, leftMs - 2000);
+  goAwayTimer.unref?.();
+}
+
 // ===== Standby handle keep-alive =====
 // Google invalidates resumption handles 2h after disconnect. During long naps
 // (overnight standby) we briefly reconnect — headless, no UI wake, no audio,
@@ -3337,6 +3582,33 @@ function stopHandleRefresh() {
     clearTimeout(handleRefreshTimer);
     handleRefreshTimer = null;
   }
+}
+
+// Stops an in-flight refresh immediately. Its socket is closed here rather than
+// left to unwind, so the wake never holds two connections on one conversation.
+function cancelHandleRefresh() {
+  handleRefreshCancelled = true;
+  if (handleRefreshSession) {
+    try { handleRefreshSession.close(); } catch { /* ignore close races */ }
+    handleRefreshSession = null;
+  }
+}
+
+async function yieldToHandleRefresh() {
+  if (!handleRefreshPromise) return;
+  const started = Date.now();
+  let timer;
+  await Promise.race([
+    handleRefreshPromise.catch(() => {}),
+    new Promise((resolve) => {
+      timer = setTimeout(resolve, HANDLE_REFRESH_YIELD_MS);
+      timer.unref?.();
+    }),
+  ]);
+  clearTimeout(timer);
+  if (!handleRefreshPromise) return;
+  cancelHandleRefresh();
+  sessionLog.record("refresh_yielded_to_wake", { waitedMs: Date.now() - started });
 }
 
 function runHandleRefreshNow() {
@@ -3372,6 +3644,7 @@ async function refreshResumeHandle() {
   if (!handle || !apiKey) return false;
   const model = process.env.GEMINI_LIVE_MODEL || "models/gemini-3.1-flash-live-preview";
   let gotNewHandle = false;
+  handleRefreshCancelled = false;
   try {
     const client = ai || new GoogleGenAI({ apiKey });
     // Deliberately NOT startLive(): no tools, no renderer events, no greeting.
@@ -3387,6 +3660,8 @@ async function refreshResumeHandle() {
         onopen() {},
         onmessage(message) {
           const update = message.sessionResumptionUpdate;
+          // Once a wake has taken over, the live session owns the handle store.
+          if (handleRefreshCancelled) return;
           if (update?.resumable && update.newHandle) {
             resumeHandles.update(update.newHandle);
             gotNewHandle = true;
@@ -3395,22 +3670,32 @@ async function refreshResumeHandle() {
         onerror() {},
         onclose() {},
       },
-    }), 15000, "Standby handle refresh");
+    }), HANDLE_REFRESH_CONNECT_TIMEOUT_MS, "Standby handle refresh");
+    handleRefreshSession = session;
+    if (handleRefreshCancelled) {
+      try { session.close(); } catch { /* ignore close races */ }
+      handleRefreshSession = null;
+      return false;
+    }
+    // Nudge immediately: a sliver of silent PCM counts as activity and prompts
+    // the update, without triggering any model response (VAD hears nothing).
+    // Waiting first only added dead time to a job a wake may need to interrupt.
+    try {
+      session.sendRealtimeInput({
+        audio: { data: Buffer.alloc(3200).toString("base64"), mimeType: "audio/pcm;rate=16000" },
+      });
+    } catch { /* connection may already be gone */ }
     let waited = 0;
-    while (!gotNewHandle && waited < 12000) {
+    while (!gotNewHandle && !handleRefreshCancelled && waited < HANDLE_REFRESH_POLL_MS) {
       await new Promise((resolve) => setTimeout(resolve, 250));
       waited += 250;
-      // Nudge: a sliver of silent PCM counts as activity and prompts an
-      // update, without triggering any model response (VAD hears nothing).
-      if (waited === 4000) {
-        try {
-          session.sendRealtimeInput({
-            audio: { data: Buffer.alloc(3200).toString("base64"), mimeType: "audio/pcm;rate=16000" },
-          });
-        } catch { /* connection may already be gone */ }
-      }
     }
-    try { session.close(); } catch { /* ignore close races */ }
+    if (handleRefreshSession) {
+      try { handleRefreshSession.close(); } catch { /* ignore close races */ }
+      handleRefreshSession = null;
+    }
+    if (handleRefreshCancelled) return gotNewHandle;
+    sessionLog.record("handle_refresh", { renewed: gotNewHandle, waitedMs: waited });
     emitEvent({
       type: "log",
       level: gotNewHandle ? "info" : "warn",
@@ -3419,6 +3704,8 @@ async function refreshResumeHandle() {
         : "Standby: handle renewal got no update; if it expires, the next wake starts fresh.",
     });
   } catch (error) {
+    handleRefreshSession = null;
+    sessionLog.record("handle_refresh_failed", { error: error?.message || String(error) });
     emitEvent({ type: "log", level: "warn", message: `Standby handle renewal failed: ${error?.message || error}` });
   }
   return gotNewHandle;
@@ -3813,6 +4100,15 @@ app.whenReady().then(() => {
     app.dock.setIcon(appIcon);
   }
   installAppMenu();
+
+  // Age out old journal entries once per launch, off the startup path.
+  const pruneTimer = setTimeout(() => {
+    const { strippedRaw, removedDays } = conversationJournal.prune();
+    if (strippedRaw || removedDays) {
+      sessionLog.record("journal_prune", { strippedRaw, removedDays });
+    }
+  }, 15000);
+  pruneTimer.unref?.();
 
   const devUrl = process.env.VITE_DEV_SERVER_URL ?? "http://127.0.0.1:5173";
   const ipcTrust = { repoRoot, devUrl };

@@ -35,6 +35,7 @@ type Draft = {
   IRIS_SOUNDS: string;
   IRIS_AUTO_SLEEP_SECONDS: string;
   IRIS_AUTO_WAKE_ON_HERMES: string;
+  IRIS_CONVERSATION_JOURNAL: string;
 };
 
 const WIZARD_STEPS = ["welcome", "gemini", "hermes", "you", "permissions", "finish"] as const;
@@ -75,6 +76,7 @@ export default function SetupPanel({
     IRIS_SOUNDS: config.sounds ? "true" : "false",
     IRIS_AUTO_SLEEP_SECONDS: config.autoSleepSeconds || "30",
     IRIS_AUTO_WAKE_ON_HERMES: config.autoWakeOnHermes ? "true" : "false",
+    IRIS_CONVERSATION_JOURNAL: config.conversationJournal ? "true" : "false",
   });
   const [step, setStep] = useState(0);
   const [gemini, setGemini] = useState<TestState>({ status: "idle" });
@@ -539,6 +541,23 @@ export default function SetupPanel({
         <small className="setup-note">
           Hand a task to Hermes, go quiet, let Iris drop to standby — when the result lands she wakes, announces it,
           and returns to standby if you have nothing else.
+        </small>
+      </label>
+      <label className="setup-field">
+        <span>Conversation memory</span>
+        <ThemedSelect
+          ariaLabel="Conversation memory"
+          value={draft.IRIS_CONVERSATION_JOURNAL}
+          options={[
+            { value: "true", label: "On — remember what we talked about earlier (recommended)" },
+            { value: "false", label: "Off — forget each session when it ends" },
+          ]}
+          onChange={(value) => set("IRIS_CONVERSATION_JOURNAL", value)}
+        />
+        <small className="setup-note">
+          A live session only holds the last few minutes of speech, so Iris keeps a summary of each conversation in
+          ~/.iris/journal on this Mac — never uploaded anywhere. That's how she can answer "what did we decide this
+          morning?". Summaries are kept 90 days, the underlying lines 7.
         </small>
       </label>
       <label className="setup-field">
