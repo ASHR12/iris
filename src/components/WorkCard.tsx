@@ -3,7 +3,7 @@ import { Check, ChevronDown, Code2, Cpu, FileText, Globe, Search, Wrench, X } fr
 import type { TaskCard } from "../types";
 import {
   TERMINAL,
-  normalizeMarkdown,
+  markdownToPlainText,
   prettyToolName,
   shortRunId,
   stepDetail,
@@ -99,7 +99,7 @@ export default function WorkCard({
       </div>
       <p className="wcard-task">{task.task}</p>
       {expandable ? (
-        <div className="wcard-preview">{normalizeMarkdown(task.error || task.output)}</div>
+        <div className="wcard-preview">{markdownToPlainText(task.error || task.output)}</div>
       ) : null}
 
       {active && (runningStep || steps.length > 0) ? (
