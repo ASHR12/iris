@@ -267,6 +267,20 @@
   padding: var(--s-05) var(--s-4) var(--s-4);
 }
 
+/* Marks where a restored conversation crosses into another day, so history
+   pulled back from an earlier session cannot read as one long chat. */
+.comms-day {
+  flex: 0 0 auto;
+  align-self: center;
+  margin: var(--s-2) 0 var(--s-1);
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs);
+  font-weight: var(--w-semi);
+  letter-spacing: var(--tr-caps);
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
 .bubble {
   flex: 0 0 auto;
   max-width: 88%;

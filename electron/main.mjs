@@ -36,7 +36,8 @@ import {
   safeExternalUrl,
 } from "./windowSecurity.mjs";
 import { LiveToolCoordinator } from "./liveToolCoordinator.mjs";
-import { ConversationJournal } from "./conversationJournal.mjs";
+import { ConversationJournal, dateFromKey, dayKey, longDate } from "./conversationJournal.mjs";
+import { ConversationStore, UNATTRIBUTED } from "./conversationStore.mjs";
 import { buildDigest, heuristicDigest } from "./conversationDigest.mjs";
 import { SessionLog } from "./sessionLog.mjs";
 import { readStoredHermesResult } from "./hermesResultService.mjs";
@@ -128,10 +129,20 @@ function envInt(name, fallback) {
 }
 
 // Long-term conversation memory. Safe to construct here: loadEnvFiles() ran above.
+// The journal is the readable archive; the store is the index the app queries,
+// and it is fed passively from the journal so there is only one write path.
+const conversationStore = new ConversationStore({
+  enabled: envFlag("IRIS_CONVERSATION_JOURNAL", true),
+});
 const conversationJournal = new ConversationJournal({
   enabled: envFlag("IRIS_CONVERSATION_JOURNAL", true),
-  rawRetentionDays: envInt("IRIS_JOURNAL_RAW_DAYS", 7),
+  rawRetentionDays: envInt("IRIS_JOURNAL_RAW_DAYS", 30),
   digestRetentionDays: envInt("IRIS_JOURNAL_DIGEST_DAYS", 90),
+  mirror: {
+    sessionStarted: (session) => conversationStore.beginSession(session),
+    turnsFlushed: (session, turns) => conversationStore.addTurns(session.id, session.thread, turns),
+    sessionEnded: (session) => conversationStore.endSession(session),
+  },
 });
 const sessionLog = new SessionLog({ enabled: envFlag("IRIS_SESSION_LOG", true) });
 let welcomeGreeted = false;
@@ -539,6 +550,7 @@ function getFullConfig() {
 // Merge updates into ~/.iris/.env (preserving comments/other keys) and apply them
 // to process.env so they take effect on the next wake without a full restart.
 function writeUserConfig(rawUpdates) {
+  const threadBefore = hermesSessionId();
   writeEnvUpdates({
     rawUpdates,
     allowedKeys: ALLOWED_CONFIG_KEYS,
@@ -547,6 +559,11 @@ function writeUserConfig(rawUpdates) {
   // The journal instance caches its own switch, so keep it in step with the
   // saved setting rather than waiting for a restart.
   conversationJournal.enabled = envFlag("IRIS_CONVERSATION_JOURNAL", true);
+  conversationStore.enabled = conversationJournal.enabled;
+  // Moving to another Hermes chat starts another conversation: close the
+  // section here so its turns stay attributed to the thread they were actually
+  // spoken in, and so the next wake seeds from the thread now in front of us.
+  if (hermesSessionId() !== threadBefore) switchConversationThread(hermesSessionId());
   return getFullConfig();
 }
 
@@ -1897,7 +1914,13 @@ function searchConversation(query, limit = 6) {
     };
   }
   const max = Math.max(1, Math.min(10, Number(limit) || 6));
-  const results = conversationJournal.search(q, { limit: max });
+  // Deliberately across every thread: recall is the one place where "which chat
+  // was that in?" is exactly what the person cannot remember.
+  const results = conversationStore.search(q, { limit: max }).map((row) => ({
+    when: longDate(dateFromKey(row.day)),
+    time: clockOf(row.started_at),
+    digest: row.digest,
+  }));
   return {
     ok: true,
     query: q,
@@ -1906,6 +1929,28 @@ function searchConversation(query, limit = 6) {
       results.length > 0
         ? "These are summaries of earlier sessions, not transcripts. Describe what happened in your own words and never present them as exact quotes."
         : "Nothing in the conversation history matched. Say you cannot recall it; do not invent a past conversation.",
+  };
+}
+
+// The spoken side of a Hermes thread, for restoring the Comms panel at launch
+// and paging back through it. `beforeId` walks upward through the thread; the
+// rows come back oldest-first so the renderer can prepend them as they are.
+function conversationHistory({ thread, beforeAt = null, beforeId = null, limit = 60 } = {}) {
+  if (!conversationJournal.enabled) return { ok: true, turns: [], thread: "", more: false };
+  const requested = String(thread || "").trim() || hermesSessionId();
+  // A thread with nothing of its own shows the conversations that predate
+  // thread tracking, matching what Iris herself remembers on that first wake.
+  const scope = conversationStore.countTurns({ thread: requested }) > 0 ? requested : UNATTRIBUTED;
+  const size = Math.max(1, Math.min(200, Number(limit) || 60));
+  const turns = Number.isFinite(beforeAt)
+    ? conversationStore.turnsBefore({ thread: scope, beforeAt, beforeId, limit: size })
+    : conversationStore.recentTurns({ thread: scope, limit: size });
+  return {
+    ok: true,
+    thread: scope,
+    turns,
+    // Whether anything remains above what was just handed back.
+    more: turns.length === size,
   };
 }
 
@@ -2861,12 +2906,48 @@ function buildLiveConfig(resumeHandleForSession = null, conversationContext = nu
 // hundred tokens of text costs nothing measurable at connect, where replaying
 // the same conversation costs seconds and grows all day.
 //
+function clockOf(at) {
+  const date = new Date(at);
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+// Today's summaries for one thread, oldest first and bounded, dropping the
+// oldest first so what survives the budget is what happened most recently.
+function threadDigestText(thread, { maxChars = 1200 } = {}) {
+  const today = dayKey();
+  const lines = conversationStore
+    .digests({ thread, day: today, limit: 20 })
+    .map((row) => `- ${clockOf(row.started_at)}: ${row.digest}`);
+  while (lines.length > 1 && lines.join("\n").length > maxChars) lines.shift();
+  const text = lines.join("\n");
+  return text.length > maxChars ? `${text.slice(0, maxChars)}…` : text;
+}
+
+// The tail of what was actually said in this thread, in the journal's own
+// wording so the model sees one consistent shape.
+function threadRecentLines(thread, { limit = 8, maxChars = 1400 } = {}) {
+  const lines = conversationStore
+    .recentTurns({ thread, limit })
+    .map((row) => `${clockOf(row.at)} ${row.speaker}: ${row.text}`);
+  while (lines.length > 1 && lines.join("\n").length > maxChars) lines.shift();
+  return lines;
+}
+
 // Two layers, because they answer different questions: the digests say what the
 // day has been about, the recent lines say what was just said. Anything older
 // than that is a search_conversation call away.
+//
+// Scoped to the current Hermes thread, so switching chats switches what Iris
+// remembers as well as what the panels show — otherwise the link between the
+// two would be cosmetic and she would answer one project from another's
+// context. Conversations recorded before threads were tracked stand in when the
+// thread has nothing of its own, so nothing goes blank on the first wake after
+// upgrading.
 function conversationContextParts() {
-  const digest = conversationJournal.todayDigest();
-  const recent = conversationJournal.recentTurns();
+  const thread = hermesSessionId();
+  const scope = conversationStore.countTurns({ thread }) > 0 ? thread : UNATTRIBUTED;
+  const digest = threadDigestText(scope);
+  const recent = threadRecentLines(scope);
   if (!digest && !recent.length) return [];
 
   const text = [
@@ -3159,9 +3240,12 @@ async function startLive({ preserveLogicalStart = false } = {}) {
     throw new Error("Gemini Live closed during setup");
   }
 
-  // One journal section per wake→sleep cycle. Guarded rather than unconditional
-  // because the resume-rejection paths re-enter startLive.
-  if (!conversationJournal.activeSessionId) conversationJournal.beginSession();
+  // One journal section per wake→sleep cycle, tagged with the Hermes thread it
+  // belongs to. Guarded rather than unconditional because the resume-rejection
+  // paths re-enter startLive.
+  if (!conversationJournal.activeSessionId) {
+    conversationJournal.beginSession(undefined, { thread: hermesSessionId() });
+  }
   // connectMs is the number that matters: it is what the person waiting to talk
   // actually feels, and the whole reason wakes no longer replay the session.
   sessionLog.record(resuming ? "recover_ok" : continuing ? "wake_continuing" : "wake_cold", {
@@ -3495,6 +3579,18 @@ function finalizeJournalSession({ immediate = false } = {}) {
         message: `Could not write the conversation digest: ${error?.message || error}`,
       });
     });
+}
+
+// Picking another Hermes chat picks another conversation. The section in
+// progress is closed and summarised where it belongs, and a live session opens
+// a new one immediately so nothing said next is filed under the old thread.
+function switchConversationThread(thread) {
+  if (!conversationJournal.enabled) return;
+  const had = Boolean(conversationJournal.activeSessionId);
+  flushTranscripts();
+  finalizeJournalSession();
+  if (had && liveSession) conversationJournal.beginSession(undefined, { thread });
+  sessionLog.record("thread_switch", { thread, hadSession: had });
 }
 
 async function stopLive({ preserveProposal = false, forQuit = false } = {}) {
@@ -3998,14 +4094,23 @@ app.whenReady().then(() => {
   }
   installAppMenu();
 
-  // Age out old journal entries once per launch, off the startup path.
-  const pruneTimer = setTimeout(() => {
+  // Backfill and age out the conversation record once per launch, off the
+  // startup path. The import is a no-op after the first run: it skips sessions
+  // the index already holds.
+  const upkeepTimer = setTimeout(() => {
+    const imported = conversationStore.importFromJournal(conversationJournal);
+    if (imported.sessions) sessionLog.record("journal_import", imported);
     const { strippedRaw, removedDays } = conversationJournal.prune();
-    if (strippedRaw || removedDays) {
-      sessionLog.record("journal_prune", { strippedRaw, removedDays });
+    const cutoff = (days) => Date.now() - days * 24 * 60 * 60 * 1000;
+    const dropped = conversationStore.prune({
+      rawBefore: cutoff(conversationJournal.rawRetentionDays),
+      digestBefore: cutoff(conversationJournal.digestRetentionDays),
+    });
+    if (strippedRaw || removedDays || dropped.turns || dropped.sessions) {
+      sessionLog.record("journal_prune", { strippedRaw, removedDays, ...dropped });
     }
   }, 15000);
-  pruneTimer.unref?.();
+  upkeepTimer.unref?.();
 
   const devUrl = process.env.VITE_DEV_SERVER_URL ?? "http://127.0.0.1:5173";
   const ipcTrust = { repoRoot, devUrl };
@@ -4046,6 +4151,9 @@ app.whenReady().then(() => {
   trustedHandle("config:test-gemini", (_event, payload) => testGeminiKey(payload?.key));
   trustedHandle("config:test-hermes", (_event, payload) => testHermesConnection(payload || {}));
   trustedHandle("config:preview-voice", (_event, payload) => previewVoice(payload || {}));
+  // The Comms panel's equivalent of hermes:history — the spoken half of the
+  // same conversation, restored by the same thread id.
+  trustedHandle("conversation:history", (_event, payload = {}) => conversationHistory(payload));
   trustedHandle("hermes:history", () => fetchHermesHistory());
   trustedHandle("hermes:sessions", () => listHermesSessions());
   trustedHandle("hermes:create-session", () => createHermesSession());
@@ -4202,6 +4310,8 @@ app.on("before-quit", () => {
   interactiveHermes = null;
   closePreviewSession();
   void stopLive({ forQuit: true });
+  // After stopLive, so the closing session's turns and digest are already in.
+  conversationStore.close();
 });
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();

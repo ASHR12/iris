@@ -32,7 +32,21 @@ and IPC surfaces.
   long.
 - **Conversation memory setting** in Settings, plus `IRIS_CONVERSATION_JOURNAL`,
   `IRIS_JOURNAL_RAW_DAYS`, `IRIS_JOURNAL_DIGEST_DAYS`, `IRIS_DIGEST_MODEL`, and
-  `IRIS_SESSION_LOG`. Raw spoken lines age out after 7 days, digests after 90.
+  `IRIS_SESSION_LOG`. Raw spoken lines age out after 30 days, digests after 90.
+- **The conversation survives quitting the app, and belongs to a Hermes chat.**
+  Work restored on launch but the talking did not: the Comms panel was React
+  state, so pausing or stopping kept it only because the process was still
+  alive. Every turn is now indexed in `~/.iris/conversations.db` under the
+  Hermes chat it was spoken in, and the panel restores from it the same way the
+  Work Stream restores task cards — by the same thread id, so reopening the app
+  tomorrow brings back both halves of the same conversation. Scrolling to the
+  top pages further back, across days, with dividers where the day changes.
+  Switching chats with `+` switches both halves and re-scopes what Iris
+  remembers, so she cannot answer one project out of another's context.
+  `node:sqlite` is part of Electron, so this adds no native dependency and
+  nothing to rebuild when packaging. Journals written before this are imported
+  once at launch; they predate thread tracking, so they stand in until a chat
+  has a conversation of its own.
 
 ### Changed
 

@@ -339,15 +339,18 @@ flowchart TB
   subgraph live["Tier 1 — live window (Google, server-side)"]
     W["The conversation in progress<br/>compresses 40k → 16k tokens<br/>discarded when Iris sleeps"]
   end
-  subgraph disk["Tier 2 — conversation journal (your Mac)"]
-    F["~/.iris/journal/2026-07-27.md<br/>one file per day, one numbered<br/>section per wake→sleep cycle"]
+  subgraph disk["Tier 2 — conversation record (your Mac)"]
+    F["~/.iris/journal/2026-07-27.md<br/>readable: one file per day, one<br/>numbered section per wake→sleep"]
+    D["~/.iris/conversations.db<br/>queryable: every turn, keyed by<br/>the Hermes chat it was spoken in"]
   end
   Talk["You talk"] -->|"transcripts, debounced"| W
   Talk -->|"buffered, batched write every 5s"| F
+  F -->|"mirrored on each flush"| D
   Sleep["Iris sleeps"] -->|"one cheap text call summarizes the session"| F
-  F -->|"digests + the last few lines,<br/>as text in the system instruction"| Wake["Iris wakes<br/>~1s, new session"]
+  D -->|"this thread's digests + last lines,<br/>as text in the system instruction"| Wake["Iris wakes<br/>~1s, new session"]
   Wake --> W
-  F -->|"older days on request"| Tool["search_conversation tool"]
+  D -->|"this thread's turns, paged"| Panel["Comms panel<br/>restored at launch"]
+  D -->|"older days on request"| Tool["search_conversation tool"]
 ```
 
 A day on disk, which is meant to be readable months later without tooling — file names stay `YYYY-MM-DD.md` because retention sorts them as strings, but everything inside is written for a person:
@@ -368,6 +371,8 @@ from the moment Iris woke to the moment she slept, summarised under its heading.
 - 15:02 you: where did that finance summary come from?
 ```
 
+- **A conversation is identified by its Hermes chat**, which is what makes the two halves of the screen one thing. The Work Stream restores its task cards from Hermes by that id; the Comms panel restores its turns from the local index by the same id. Close the app mid-thought and reopen it tomorrow and both come back together. Switching chats with the `+` button switches both, and re-scopes what Iris remembers too — otherwise she would answer one project out of another's context.
+- **Two files, one write path.** The Markdown is the artifact you own and can grep; the SQLite index is what the app queries, and it is fed from the journal's own flush rather than written separately, so the two cannot disagree about where a session starts and ends. `node:sqlite` ships inside Electron, so this adds no native dependency and nothing to rebuild at package time.
 - **Waking never replays the conversation.** Handing the session back to Google to rehydrate costs about 140ms per turn of history — 1.0s fresh, 3.5s at 10 turns, 6.4s at 30, 9.6s at 60 — so every wake got slower than the last one all day. Connecting costs ~90ms either way, so a wake now opens a new session and carries the conversation across as text. Resumption handles survive only to recover a socket that drops mid-sentence, where the context is already warm.
 - **Writes never touch the audio path.** Turns are buffered in memory and flushed on a timer; the summary call happens after the socket closes, so sleeping stays instant.
 - **The summary is written in Iris's own voice** ("I reviewed the Vercel bill and asked Hermes to…") because it is injected back as memory, and third-person notes read like someone else's.
@@ -433,7 +438,7 @@ IRIS_SOUNDS=true                                  # subtle interface sound cues
 IRIS_LOAD_TEST_DATA=false                         # demo mode
 ```
 
-To erase conversation memory, delete `~/.iris/journal` — or set `IRIS_CONVERSATION_JOURNAL=false` (**Settings → Conversation memory**) to keep no record at all.
+To erase conversation memory, delete `~/.iris/journal` and `~/.iris/conversations.db` — or set `IRIS_CONVERSATION_JOURNAL=false` (**Settings → Conversation memory**) to keep no record at all.
 
 Config resolution order: repo `.env` (dev) → `~/.iris/.env` (wizard/packaged) → bundled `.env`.
 
@@ -449,7 +454,9 @@ electron/          main process — Gemini Live session, Hermes bridge, dispatch
                    liveSessionState / liveToolCoordinator — turn lifecycle,
                    resume handles, serialized tool execution
                    conversationJournal / conversationDigest — per-day journal,
-                   session summaries, recall search, retention
+                   session summaries, retention
+                   conversationStore.mjs — SQLite index over the journal:
+                   per-thread restore, paging, recall search
                    sessionLog.mjs — append-only session lifecycle diagnostics
                    hermes* — HTTP/gateway clients, event stream, interactive
                    transport, dispatch gate, result service
@@ -524,7 +531,7 @@ Found a vulnerability? Please report it privately — see [SECURITY.md](SECURITY
 - Your Gemini key and Hermes key live in mode-`0600` `~/.iris/.env`, are never returned to renderer state, and are never committed.
 - Camera frames and wake-word audio are processed **entirely on-device** and never uploaded.
 - Conversation audio goes to Gemini Live while Iris is awake. Wake-word audio stays local while asleep, and nothing connects to Google while Iris is napping.
-- **Conversation summaries are written to disk.** With `IRIS_CONVERSATION_JOURNAL=true` (the default), spoken transcripts and a short summary per conversation are stored in `~/.iris/journal/YYYY-MM-DD.md` on your machine only — they are never uploaded, and the only thing sent to Google is the one-shot summarization call at the end of a session. Today's summaries are injected into the system instruction on the next wake. Turn the setting off to keep no record, and delete the folder to erase what exists.
+- **Conversations are written to disk.** With `IRIS_CONVERSATION_JOURNAL=true` (the default), spoken transcripts and a short summary per conversation are stored in `~/.iris/journal/YYYY-MM-DD.md` and mirrored into `~/.iris/conversations.db` on your machine only — never uploaded. The only thing sent to Google is the one-shot summarization call at the end of a session. That record is what restores the Comms panel at launch and what the current chat's summaries are seeded from on the next wake. Turn the setting off to keep no record, and delete both to erase what exists.
 - A bounded snapshot of Hermes `USER.md` and `MEMORY.md` is sent to Gemini at session setup. Brain-note content is retrieved only when relevant; semantic indexing/querying also uses Gemini embeddings when enabled.
 - `API_SERVER_KEY` must be a strong secret (Hermes enforces 16+ chars and refuses weak keys — the endpoint dispatches terminal-capable agent work). Generate one with `openssl rand -hex 32` and use the same value on both sides.
 

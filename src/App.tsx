@@ -47,6 +47,14 @@ export default function App() {
   const [webSearching, setWebSearching] = useState(false);
   const [hermesSummarizing, setHermesSummarizing] = useState(false);
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
+  const [hasOlderTurns, setHasOlderTurns] = useState(false);
+  // Cursor into the conversation store: the oldest turn currently on screen.
+  // Time-then-id, because row ids follow insertion rather than the clock.
+  const oldestRef = useRef<{ at: number; id: number } | null>(null);
+  const loadingOlderRef = useRef(false);
+  // Set when older turns are being inserted above the view, so the autoscroll
+  // below restores the reading position instead of jumping to the newest line.
+  const keepScrollRef = useRef<number | null>(null);
   const [, setLogs] = useState<LogLine[]>([]);
   const [tasks, setTasks] = useState<TaskCard[]>([]);
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
@@ -277,6 +285,68 @@ export default function App() {
       // Chip stays hidden if config can't load; history restore still runs.
     }
     restoreHermesHistory();
+    restoreConversation();
+  }
+
+  // The Comms half of a thread's history. Tasks come back from Hermes, the
+  // conversation comes back from Iris's own store, and both are keyed by the
+  // same thread id — so reopening the app tomorrow restores both sides of the
+  // conversation you were having, not just the work.
+  async function restoreConversation(thread?: string) {
+    if (!hasBridge) return;
+    try {
+      const history = await window.iris.getConversationHistory({ thread, limit: 60 });
+      const turns = history.turns ?? [];
+      oldestRef.current = turns[0] ? { at: turns[0].at, id: turns[0].id } : null;
+      setHasOlderTurns(Boolean(history.more));
+      setTranscript(
+        turns.map((turn) => ({
+          id: `past:${turn.id}`,
+          speaker: turn.speaker,
+          text: turn.text,
+          at: turn.at,
+          rowId: turn.id,
+        })),
+      );
+    } catch {
+      // A missing record is not an error: the panel simply starts empty.
+    }
+  }
+
+  // Paging back through a thread. The panel is pinned to its current line so
+  // the view does not jump while older turns are inserted above it.
+  async function loadOlderConversation() {
+    if (!hasBridge || loadingOlderRef.current || !hasOlderTurns) return;
+    loadingOlderRef.current = true;
+    const el = commsScrollRef.current;
+    const anchor = el ? el.scrollHeight - el.scrollTop : 0;
+    try {
+      const history = await window.iris.getConversationHistory({
+        beforeAt: oldestRef.current?.at,
+        beforeId: oldestRef.current?.id,
+        limit: 60,
+      });
+      const turns = history.turns ?? [];
+      if (turns.length) {
+        oldestRef.current = { at: turns[0].at, id: turns[0].id };
+        keepScrollRef.current = anchor;
+        setTranscript((current) => [
+          ...turns.map((turn) => ({
+            id: `past:${turn.id}`,
+            speaker: turn.speaker,
+            text: turn.text,
+            at: turn.at,
+            rowId: turn.id,
+          })),
+          ...current,
+        ]);
+      }
+      setHasOlderTurns(Boolean(history.more) && turns.length > 0);
+    } catch {
+      setHasOlderTurns(false);
+    } finally {
+      loadingOlderRef.current = false;
+    }
   }
 
   // Switch the pinned Hermes chat thread: persists the choice, drops cards
@@ -295,7 +365,7 @@ export default function App() {
     setShowHistory(false);
     setTasks((current) => current.filter((task) => !task.id.startsWith("history:")));
     pushLog("info", `Hermes chat session: ${config.hermesSession}`);
-    await restoreHermesHistory();
+    await Promise.all([restoreHermesHistory(), restoreConversation(config.hermesSession)]);
   }
 
   // New thread ids come from Hermes itself (native `api_…` format + an
@@ -551,7 +621,14 @@ export default function App() {
   // layout up. Scroll the comms panel directly instead.
   useEffect(() => {
     const el = commsScrollRef.current;
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    if (!el) return;
+    // Older turns were just prepended: hold the line the reader was on.
+    if (keepScrollRef.current != null) {
+      el.scrollTop = el.scrollHeight - keepScrollRef.current;
+      keepScrollRef.current = null;
+      return;
+    }
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, [transcript]);
 
   const working = useMemo(
@@ -662,8 +739,10 @@ export default function App() {
       if (text.trim()) {
         // Your words just got locked in — the orb answers with a soft ripple.
         if (/you|user/i.test(speaker)) setRippleKey((key) => key + 1);
+        // Bounded well above a single conversation's length: the panel now
+        // holds restored history too, and trimming to 40 would eat it.
         setTranscript((current) =>
-          [...current, { id: crypto.randomUUID(), speaker, text }].slice(-40),
+          [...current, { id: crypto.randomUUID(), speaker, text, at: Date.now() }].slice(-400),
         );
       }
       return;
@@ -1537,6 +1616,8 @@ export default function App() {
             <CommsPanel
               transcript={transcript}
               scrollRef={commsScrollRef}
+              hasOlder={hasOlderTurns}
+              onLoadOlder={() => void loadOlderConversation()}
               testDataEnabled={testDataEnabled}
               onLoadDemo={loadUiTestData}
             />

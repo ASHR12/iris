@@ -85,6 +85,13 @@ function fileHeader(key) {
   ].join("\n");
 }
 
+function timeOnDay(key, hhmm) {
+  const date = dateFromKey(key);
+  const [hours, minutes] = String(hhmm || "00:00").split(":").map(Number);
+  date.setHours(hours || 0, minutes || 0, 0, 0);
+  return date.getTime();
+}
+
 // Older files were written as "## Session 08:26"; both shapes reduce to the
 // time span, which is all a reader or the model needs from the heading.
 function sessionLabel(heading) {
@@ -114,6 +121,11 @@ export class ConversationJournal {
     digestRetentionDays = 90,
     enabled = true,
     now = () => new Date(),
+    // Optional passive mirror (the SQLite index). The journal stays in charge
+    // of the conversation's lifecycle; the mirror only gets told about it, so
+    // there is one write path and no chance of the two disagreeing about where
+    // a session starts and ends.
+    mirror = null,
   } = {}) {
     this.dir = dir;
     this.flushMs = flushMs;
@@ -121,6 +133,7 @@ export class ConversationJournal {
     this.digestRetentionDays = digestRetentionDays;
     this.enabled = enabled;
     this.now = now;
+    this.mirror = mirror;
     this.pending = [];
     this.flushTimer = null;
     this.session = null;
@@ -132,15 +145,30 @@ export class ConversationJournal {
 
   // ===== Session lifecycle =====
 
-  beginSession(sessionId = makeSessionId(this.now())) {
+  // `thread` is the Hermes chat this conversation belongs to. It is the join
+  // between the two halves of a conversation — the Work Stream restores its
+  // tasks from Hermes by it, the Comms panel restores its turns by it — so a
+  // session is closed and reopened when the thread changes rather than
+  // straddling two.
+  beginSession(sessionId = makeSessionId(this.now()), { thread = "" } = {}) {
     if (!this.enabled) return null;
     const at = this.now();
-    this.session = { id: sessionId, startedAt: at, dayKey: dayKey(at), turns: 0 };
+    this.session = { id: sessionId, startedAt: at, dayKey: dayKey(at), thread, turns: 0 };
+    this.mirror?.sessionStarted?.({
+      id: sessionId,
+      thread,
+      day: this.session.dayKey,
+      startedAt: at.getTime(),
+    });
     return sessionId;
   }
 
   get activeSessionId() {
     return this.session?.id ?? null;
+  }
+
+  get activeThread() {
+    return this.session?.thread ?? "";
   }
 
   addTurn(speaker, text) {
@@ -223,6 +251,7 @@ export class ConversationJournal {
       }
       out += `${turns.map(formatTurn).join("\n")}\n`;
       fs.appendFileSync(file, out);
+      if (this.session) this.mirror?.turnsFlushed?.(this.session, turns);
       return turns.length;
     } catch {
       // Losing journal lines must never surface as a voice error.
@@ -240,6 +269,7 @@ export class ConversationJournal {
     this.session = null;
     session.endedAt = this.now();
     this.#patchSection(session);
+    this.mirror?.sessionEnded?.({ id: session.id, endedAt: session.endedAt.getTime() });
     return session;
   }
 
@@ -251,6 +281,7 @@ export class ConversationJournal {
     if (!this.enabled || !session || !digest) return null;
     const clean = String(digest).replace(/\s+/g, " ").trim();
     if (!clean) return null;
+    this.mirror?.sessionEnded?.({ id: session.id, digest: clean });
     return this.#patchSection(session, { digest: clean }) ? clean : null;
   }
 
@@ -282,7 +313,8 @@ export class ConversationJournal {
 
   // ===== Retrieval =====
 
-  #days() {
+  // Newest first. Public because the SQLite index backfills through it.
+  days() {
     try {
       return fs
         .readdirSync(this.dir)
@@ -293,6 +325,50 @@ export class ConversationJournal {
     } catch {
       return [];
     }
+  }
+
+  // A day parsed back into structure, for backfilling the SQLite index from
+  // journals written before it existed. Turn lines carry only a wall-clock
+  // time, so they are dated from the file they live in.
+  readDay(key) {
+    let text;
+    try {
+      text = fs.readFileSync(this.filePath(key), "utf8");
+    } catch {
+      return [];
+    }
+    const out = [];
+    let current = null;
+    for (const line of text.split("\n")) {
+      if (line.startsWith("## ")) {
+        const id = line.match(/\(id:\s*([^)]+)\)/)?.[1]?.trim() ?? "";
+        const label = sessionLabel(line.slice(3).replace(/\s*\(id:[^)]*\)\s*$/, "").trim());
+        const [startedAt, endedAt] = label.split("–").map((part) => part?.trim());
+        current = {
+          id: id || `${key}-${label}`,
+          day: key,
+          startedAt: timeOnDay(key, startedAt),
+          endedAt: endedAt ? timeOnDay(key, endedAt) : null,
+          digest: "",
+          turns: [],
+        };
+        out.push(current);
+      } else if (!current) {
+        continue;
+      } else if (line.startsWith(DIGEST_MARKER)) {
+        current.digest = line.slice(DIGEST_MARKER.length).trim();
+      } else if (line.startsWith("- ")) {
+        const match = line.slice(2).match(/^(\d{2}:\d{2})\s+([^:]+):\s*(.*)$/);
+        if (match) {
+          current.turns.push({
+            at: timeOnDay(key, match[1]),
+            speaker: match[2].trim(),
+            text: match[3].trim(),
+          });
+        }
+      }
+    }
+    return out;
   }
 
   #digestsFor(key) {
@@ -343,7 +419,7 @@ export class ConversationJournal {
     this.flush();
     let lines = [];
     // Yesterday's tail still matters for an overnight wake mid-thought.
-    for (const key of this.#days().slice(0, 2)) {
+    for (const key of this.days().slice(0, 2)) {
       try {
         const dayLines = fs
           .readFileSync(this.filePath(key), "utf8")
@@ -370,7 +446,7 @@ export class ConversationJournal {
       .split(/[^a-z0-9]+/)
       .filter((token) => token.length > 2);
     const candidates = [];
-    for (const key of this.#days().slice(0, days)) {
+    for (const key of this.days().slice(0, days)) {
       for (const entry of this.#digestsFor(key)) candidates.push(entry);
     }
     if (!tokens.length) return candidates.slice(0, limit);
@@ -406,7 +482,7 @@ export class ConversationJournal {
     let strippedRaw = 0;
     let removedDays = 0;
 
-    for (const key of this.#days()) {
+    for (const key of this.days()) {
       const file = this.filePath(key);
       try {
         if (key < digestCutoff) {

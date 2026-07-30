@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld("iris", {
   testGemini: (key) => ipcRenderer.invoke("config:test-gemini", { key }),
   testHermes: (payload) => ipcRenderer.invoke("config:test-hermes", payload),
   previewVoice: (payload) => ipcRenderer.invoke("config:preview-voice", payload),
+  getConversationHistory: (payload) => ipcRenderer.invoke("conversation:history", payload ?? {}),
   getHermesHistory: () => ipcRenderer.invoke("hermes:history"),
   listHermesSessions: () => ipcRenderer.invoke("hermes:sessions"),
   createHermesSession: () => ipcRenderer.invoke("hermes:create-session"),

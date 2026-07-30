@@ -120,6 +120,21 @@ type HermesHistoryResult = {
   error?: string;
 };
 
+type ConversationTurnRow = {
+  id: number;
+  at: number;
+  speaker: string;
+  text: string;
+};
+
+type ConversationHistoryResult = {
+  ok: boolean;
+  thread?: string;
+  turns?: ConversationTurnRow[];
+  /** More turns exist above the page just returned. */
+  more?: boolean;
+};
+
 type HermesSessionInfo = {
   id: string;
   source: string;
@@ -204,6 +219,12 @@ type IrisApi = {
   testGemini: (key?: string) => Promise<IrisTestResult>;
   testHermes: (payload?: { url?: string; key?: string }) => Promise<IrisTestResult>;
   previewVoice: (payload?: { voice?: string; key?: string }) => Promise<IrisTestResult>;
+  getConversationHistory: (payload?: {
+    thread?: string;
+    beforeAt?: number | null;
+    beforeId?: number | null;
+    limit?: number;
+  }) => Promise<ConversationHistoryResult>;
   getHermesHistory: () => Promise<HermesHistoryResult>;
   listHermesSessions: () => Promise<HermesSessionsResult>;
   createHermesSession: () => Promise<{ ok: boolean; id?: string; error?: string }>;
