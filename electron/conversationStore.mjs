@@ -19,9 +19,8 @@ import { DatabaseSync } from "node:sqlite";
 // node:sqlite ships inside Electron and Node, so this costs no native module
 // and nothing to rebuild at package time.
 
-// Conversations recorded before threads were tracked, and anything spoken
-// before Hermes has named a thread. Kept visible rather than dropped: it is
-// still Iris's memory, it just cannot be attributed to a thread.
+// Where turns land if they are somehow recorded before Hermes has named a
+// thread. A real conversation always carries the chat it happened in.
 export const UNATTRIBUTED = "unknown";
 
 const SCHEMA = `
@@ -272,29 +271,4 @@ export class ConversationStore {
     this.db = null;
   }
 
-  // ===== Backfill =====
-
-  // One-time import of journals written before this index existed. Those
-  // conversations predate thread tracking, so they land unattributed: still
-  // searchable, still Iris's memory, just not tied to a Hermes thread.
-  importFromJournal(journal, { thread = UNATTRIBUTED } = {}) {
-    const imported = { sessions: 0, turns: 0 };
-    const db = this.#open();
-    if (!db || !journal?.days) return imported;
-    // Oldest day first, so row ids still broadly follow the clock afterwards.
-    for (const day of [...journal.days()].reverse()) {
-      for (const session of journal.readDay(day)) {
-        const exists = this.#run(
-          (handle) => handle.prepare("SELECT 1 AS found FROM sessions WHERE id = ?").get(session.id),
-          null,
-        );
-        if (exists) continue;
-        this.beginSession({ id: session.id, thread, day, startedAt: session.startedAt });
-        if (session.digest) this.endSession({ id: session.id, endedAt: session.endedAt, digest: session.digest });
-        imported.turns += this.addTurns(session.id, thread, session.turns);
-        imported.sessions += 1;
-      }
-    }
-    return imported;
-  }
 }

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ConversationStore, UNATTRIBUTED } from "../electron/conversationStore.mjs";
+import { ConversationStore } from "../electron/conversationStore.mjs";
 import { ConversationJournal } from "../electron/conversationJournal.mjs";
 
 function tempStore(t, options = {}) {
@@ -159,22 +159,16 @@ test("a disabled journal writes to neither the file nor the store", (t) => {
   assert.equal(store.recentTurns({ thread: "hermes-x" }).length, 0);
 });
 
-test("importing a journal is idempotent and lands unattributed", (t) => {
-  const { journal } = tempPair(t);
-  journal.beginSession("sess-1", { thread: "hermes-x" });
-  journal.addTurn("you", "the first thing");
-  journal.addTurn("iris", "Understood.");
-  journal.endSession("Talked about the first thing.");
-
+test("a chat nobody has spoken in has no conversation to show", (t) => {
   const store = tempStore(t);
-  const first = store.importFromJournal(journal);
-  assert.equal(first.sessions, 1);
-  assert.equal(first.turns, 2);
+  store.beginSession({ id: "s1", thread: "hermes-a", day: "2026-07-30", startedAt: 1 });
+  store.addTurns("s1", "hermes-a", [{ at: 2, speaker: "you", text: "only in chat A" }]);
 
-  const second = store.importFromJournal(journal);
-  assert.equal(second.sessions, 0, "re-importing must not duplicate");
-  assert.equal(store.countTurns({ thread: UNATTRIBUTED }), 2);
-  assert.match(store.digests({ thread: UNATTRIBUTED })[0].digest, /first thing/);
+  // Selecting a chat with no turns must come back empty rather than borrowing
+  // another chat's conversation.
+  assert.deepEqual(store.recentTurns({ thread: "hermes-b" }), []);
+  assert.equal(store.countTurns({ thread: "hermes-b" }), 0);
+  assert.deepEqual(store.digests({ thread: "hermes-b" }), []);
 });
 
 test("pruning drops old turns but keeps the digests that remember them", (t) => {

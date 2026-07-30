@@ -44,9 +44,9 @@ and IPC surfaces.
   Switching chats with `+` switches both halves and re-scopes what Iris
   remembers, so she cannot answer one project out of another's context.
   `node:sqlite` is part of Electron, so this adds no native dependency and
-  nothing to rebuild when packaging. Journals written before this are imported
-  once at launch; they predate thread tracking, so they stand in until a chat
-  has a conversation of its own.
+  nothing to rebuild when packaging. A chat nobody has spoken in shows an empty
+  panel and wakes with no memory of earlier ones, because the alternative is
+  showing another chat's conversation under this one's name.
 
 ### Changed
 

@@ -85,13 +85,6 @@ function fileHeader(key) {
   ].join("\n");
 }
 
-function timeOnDay(key, hhmm) {
-  const date = dateFromKey(key);
-  const [hours, minutes] = String(hhmm || "00:00").split(":").map(Number);
-  date.setHours(hours || 0, minutes || 0, 0, 0);
-  return date.getTime();
-}
-
 // Older files were written as "## Session 08:26"; both shapes reduce to the
 // time span, which is all a reader or the model needs from the heading.
 function sessionLabel(heading) {
@@ -325,50 +318,6 @@ export class ConversationJournal {
     } catch {
       return [];
     }
-  }
-
-  // A day parsed back into structure, for backfilling the SQLite index from
-  // journals written before it existed. Turn lines carry only a wall-clock
-  // time, so they are dated from the file they live in.
-  readDay(key) {
-    let text;
-    try {
-      text = fs.readFileSync(this.filePath(key), "utf8");
-    } catch {
-      return [];
-    }
-    const out = [];
-    let current = null;
-    for (const line of text.split("\n")) {
-      if (line.startsWith("## ")) {
-        const id = line.match(/\(id:\s*([^)]+)\)/)?.[1]?.trim() ?? "";
-        const label = sessionLabel(line.slice(3).replace(/\s*\(id:[^)]*\)\s*$/, "").trim());
-        const [startedAt, endedAt] = label.split("–").map((part) => part?.trim());
-        current = {
-          id: id || `${key}-${label}`,
-          day: key,
-          startedAt: timeOnDay(key, startedAt),
-          endedAt: endedAt ? timeOnDay(key, endedAt) : null,
-          digest: "",
-          turns: [],
-        };
-        out.push(current);
-      } else if (!current) {
-        continue;
-      } else if (line.startsWith(DIGEST_MARKER)) {
-        current.digest = line.slice(DIGEST_MARKER.length).trim();
-      } else if (line.startsWith("- ")) {
-        const match = line.slice(2).match(/^(\d{2}:\d{2})\s+([^:]+):\s*(.*)$/);
-        if (match) {
-          current.turns.push({
-            at: timeOnDay(key, match[1]),
-            speaker: match[2].trim(),
-            text: match[3].trim(),
-          });
-        }
-      }
-    }
-    return out;
   }
 
   #digestsFor(key) {

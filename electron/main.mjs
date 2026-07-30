@@ -37,7 +37,7 @@ import {
 } from "./windowSecurity.mjs";
 import { LiveToolCoordinator } from "./liveToolCoordinator.mjs";
 import { ConversationJournal, dateFromKey, dayKey, longDate } from "./conversationJournal.mjs";
-import { ConversationStore, UNATTRIBUTED } from "./conversationStore.mjs";
+import { ConversationStore } from "./conversationStore.mjs";
 import { buildDigest, heuristicDigest } from "./conversationDigest.mjs";
 import { SessionLog } from "./sessionLog.mjs";
 import { readStoredHermesResult } from "./hermesResultService.mjs";
@@ -1937,10 +1937,10 @@ function searchConversation(query, limit = 6) {
 // rows come back oldest-first so the renderer can prepend them as they are.
 function conversationHistory({ thread, beforeAt = null, beforeId = null, limit = 60 } = {}) {
   if (!conversationJournal.enabled) return { ok: true, turns: [], thread: "", more: false };
-  const requested = String(thread || "").trim() || hermesSessionId();
-  // A thread with nothing of its own shows the conversations that predate
-  // thread tracking, matching what Iris herself remembers on that first wake.
-  const scope = conversationStore.countTurns({ thread: requested }) > 0 ? requested : UNATTRIBUTED;
+  // Strictly the chat that was asked for. A chat with nothing said in it shows
+  // an empty panel, because anything else is another chat's conversation
+  // wearing this one's name.
+  const scope = String(thread || "").trim() || hermesSessionId();
   const size = Math.max(1, Math.min(200, Number(limit) || 60));
   const turns = Number.isFinite(beforeAt)
     ? conversationStore.turnsBefore({ thread: scope, beforeAt, beforeId, limit: size })
@@ -2940,14 +2940,12 @@ function threadRecentLines(thread, { limit = 8, maxChars = 1400 } = {}) {
 // Scoped to the current Hermes thread, so switching chats switches what Iris
 // remembers as well as what the panels show — otherwise the link between the
 // two would be cosmetic and she would answer one project from another's
-// context. Conversations recorded before threads were tracked stand in when the
-// thread has nothing of its own, so nothing goes blank on the first wake after
-// upgrading.
+// context. A chat with no conversation yet starts cold, which is the truth: it
+// has not been talked in.
 function conversationContextParts() {
   const thread = hermesSessionId();
-  const scope = conversationStore.countTurns({ thread }) > 0 ? thread : UNATTRIBUTED;
-  const digest = threadDigestText(scope);
-  const recent = threadRecentLines(scope);
+  const digest = threadDigestText(thread);
+  const recent = threadRecentLines(thread);
   if (!digest && !recent.length) return [];
 
   const text = [
@@ -4094,12 +4092,8 @@ app.whenReady().then(() => {
   }
   installAppMenu();
 
-  // Backfill and age out the conversation record once per launch, off the
-  // startup path. The import is a no-op after the first run: it skips sessions
-  // the index already holds.
+  // Age out the conversation record once per launch, off the startup path.
   const upkeepTimer = setTimeout(() => {
-    const imported = conversationStore.importFromJournal(conversationJournal);
-    if (imported.sessions) sessionLog.record("journal_import", imported);
     const { strippedRaw, removedDays } = conversationJournal.prune();
     const cutoff = (days) => Date.now() - days * 24 * 60 * 60 * 1000;
     const dropped = conversationStore.prune({
