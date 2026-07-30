@@ -523,8 +523,8 @@ export default function SetupPanel({
         />
         <small className="setup-note">
           An idle Gemini Live session streams silence at ~25 tokens/sec and re-bills accumulated audio on every turn.
-          Standby closes the session when nobody's talking and resumes the same conversation when you return — Iris
-          quietly renews the resume token in the background, so even an overnight nap wakes into the same chat.
+          Standby closes the session when nobody's talking. Waking opens a new one in about a second and carries the
+          conversation across in memory, so a nap of any length picks up where you left off without a wait.
         </small>
       </label>
       <label className="setup-field">

@@ -79,7 +79,7 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 
-const { app, BrowserWindow, ipcMain, session, nativeImage, Menu, Tray, screen, globalShortcut, shell, powerMonitor } = electron;
+const { app, BrowserWindow, ipcMain, session, nativeImage, Menu, Tray, screen, globalShortcut, shell } = electron;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
@@ -169,32 +169,15 @@ let closedDuringConnect = false; // server hung up while connect() was resolving
 let sessionConnectedAt = 0; // when the current connection opened
 let sessionUsedHandle = false; // current connection tried to resume
 let liveConnectionId = 0; // rejects late callbacks from a closed/replaced socket
-// Google expires resumption handles 2h (120 min) after disconnect — far too
-// short for all-day standby. While napping, a silent micro-reconnect rotates
-// the handle when it turns 110 minutes old (no audio, no turns, ~zero cost,
-// never wakes the UI), so the conversation survives naps of any length.
-// TTL sits between the two: refresh fires at 110, anything older than 118 is
-// treated as dead, 120 is Google's hard cutoff.
 // Sized against the ~5.5k-token incompressible floor (tool schemas + rules +
 // USER/MEMORY profile). See the note in buildLiveConfig before changing these.
 const LIVE_COMPRESSION_TRIGGER_TOKENS = 40000;
 const LIVE_COMPRESSION_TARGET_TOKENS = 16000;
-const RESUME_HANDLE_TTL_MS = 118 * 60 * 1000;
-const HANDLE_REFRESH_AGE_MS = 110 * 60 * 1000;
-const HANDLE_REFRESH_RETRY_MS = 3 * 60 * 1000; // failed renewals retry quickly
-// A renewal that has not produced a handle in this long is not going to. Kept
-// tight because a wake can arrive at any moment and has to wait its turn.
-const HANDLE_REFRESH_CONNECT_TIMEOUT_MS = 10000;
-const HANDLE_REFRESH_POLL_MS = 6000;
+// Resumption handles now serve exactly one purpose: recovering a socket that
+// dropped mid conversation, seconds after it happened. Sleeping clears the
+// handle outright, so Google's 2h validity is far more than this needs.
+const RESUME_HANDLE_TTL_MS = 10 * 60 * 1000;
 const resumeHandles = new ResumeHandleStore({ ttlMs: RESUME_HANDLE_TTL_MS });
-let handleRefreshTimer = null;
-let handleRefreshPromise = null;
-let handleRefreshSession = null;
-let handleRefreshCancelled = false;
-// How long a wake will wait for an in-flight standby refresh before taking it
-// over. Long enough for one that is about to finish, short enough that the user
-// never hears the difference.
-const HANDLE_REFRESH_YIELD_MS = 1500;
 
 function autoSleepMs() {
   const raw = Number(process.env.IRIS_AUTO_SLEEP_SECONDS ?? 30);
@@ -2165,18 +2148,30 @@ async function executeTool(name, args = {}) {
             "This is a resume greeting. The old farewell is complete; do not sleep again.",
         };
       }
+      // Nobody has spoken since this session opened, so there is no request to
+      // honour — this can only be an echo of a farewell further up the context.
+      // The prompt-level guards were not enough on their own: Iris spent four
+      // consecutive wakes saying goodbye to a user who was asking whether she
+      // could hear him. Code has to be the thing that refuses.
+      if (!userInputSeenSinceStart) {
+        sessionLog.record("sleep_refused_no_input", { journalSession: conversationJournal.activeSessionId });
+        return {
+          status: "ignored",
+          instructions:
+            "The user has not said anything yet, so there is nothing to say goodbye to. Any farewell you can see is already finished. Stay awake, say nothing further, and wait for them to speak.",
+        };
+      }
       // The actual stop is tied to the farewell's turnComplete below.
       scheduleSleepRequest("Gemini go_to_sleep tool");
       return {
         status: "sleeping",
-        instructions: [
-          "Say one short goodbye right now and nothing else.",
-          // This arrives immediately before the farewell, so it has to repeat the
-          // time-of-day ban from the system instruction to actually win.
-          "Do not use a time of day: no 'good night', 'good evening', 'good afternoon', or 'good morning'.",
-          "Use a time-neutral sign-off such as 'Talk soon', 'Catch you later', or 'I'm here whenever you need me'.",
-          "Iris will sleep after this farewell turn completes.",
-        ].join(" "),
+        // Kept to one line on purpose. This response is the last thing left in
+        // the conversation, so anything imperative here gets read again later as
+        // if it were current — an earlier version listed example sign-offs and
+        // the model spent whole sessions reciting them back and sleeping again.
+        // The time-of-day ban lives in the system instruction, where it applies
+        // once rather than lingering in history.
+        instructions: "Say one short goodbye and nothing else.",
       };
     case "control_iris_ui":
       return controlIrisUi(args);
@@ -2784,7 +2779,7 @@ function buildIrisUiTools() {
   ];
 }
 
-function buildLiveConfig(resumeHandleForSession = null) {
+function buildLiveConfig(resumeHandleForSession = null, conversationContext = null) {
   return {
     responseModalities: ["AUDIO"],
     mediaResolution: "MEDIA_RESOLUTION_MEDIUM",
@@ -2855,32 +2850,52 @@ function buildLiveConfig(resumeHandleForSession = null) {
           ].join("\n"),
         },
         ...userContextParts(),
-        ...todayDigestParts(),
+        ...(conversationContext ?? conversationContextParts()),
       ],
     },
   };
 }
 
-// Today's session digests, injected at connect so "what did we do this morning?"
-// is answered immediately instead of costing a lookup. Small by construction —
-// a few hundred tokens against a ~5.5k floor. Anything older goes through
-// search_conversation instead.
-function todayDigestParts() {
+// Everything the model needs to carry on a conversation it did not technically
+// take part in. This is what replaces replaying the session server-side: a few
+// hundred tokens of text costs nothing measurable at connect, where replaying
+// the same conversation costs seconds and grows all day.
+//
+// Two layers, because they answer different questions: the digests say what the
+// day has been about, the recent lines say what was just said. Anything older
+// than that is a search_conversation call away.
+function conversationContextParts() {
   const digest = conversationJournal.todayDigest();
-  if (!digest) return [];
-  return [
-    {
-      text: [
-        "EARLIER TODAY — digests of your previous sessions with the user today, oldest first.",
-        "Treat these as your own memory of today and refer to them naturally.",
-        "They are summaries, not transcripts: never quote them as exact words.",
-        "For anything before today, or any detail missing here, call search_conversation.",
-        "----- BEGIN EARLIER TODAY -----",
-        digest,
-        "----- END EARLIER TODAY -----",
-      ].join("\n"),
-    },
+  const recent = conversationJournal.recentTurns();
+  if (!digest && !recent.length) return [];
+
+  const text = [
+    "YOUR MEMORY OF THIS CONVERSATION — you and the user have been talking already today.",
+    "This is your own memory. Speak from it naturally and never mention notes, records, logs, or a journal.",
   ];
+  if (digest) {
+    text.push(
+      "",
+      "Earlier sessions today, oldest first. These are summaries, not transcripts — never quote them as exact words:",
+      digest,
+    );
+  }
+  if (recent.length) {
+    text.push(
+      "",
+      "The most recent things actually said, oldest last. 'you:' is the user, 'iris:' is you:",
+      ...recent.map((line) => `  ${line}`),
+    );
+  }
+  text.push(
+    "",
+    "Do not greet the user as if meeting them for the first time, and do not summarize this back to them unprompted.",
+    // Without this, a farewell sitting at the end of the recent lines reads as a
+    // live instruction and the model says goodbye again the moment it wakes.
+    "Anything above is finished and historical. If it ends with a goodbye, that goodbye is already said — never repeat it, and never treat it as a reason to sleep.",
+    "For anything older, or any detail missing here, call search_conversation.",
+  );
+  return [{ text: text.join("\n") }];
 }
 
 // Personal context injected as its own system-instruction part. Kept separate so
@@ -2962,12 +2977,6 @@ async function startLive({ preserveLogicalStart = false } = {}) {
     reconnectTimer = null;
   }
   stopGoAwayTimer();
-  // A standby handle-refresh may be mid-rotation. Give it a moment to land the
-  // newer handle, then take the socket from it — a refresh can spend tens of
-  // seconds connecting and polling, and the person waiting to talk must never
-  // pay for that. The handle we already hold is valid either way.
-  stopHandleRefresh();
-  await yieldToHandleRefresh();
   if (liveSession || connectInFlight) return liveStatus;
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -2976,11 +2985,29 @@ async function startLive({ preserveLogicalStart = false } = {}) {
   }
 
   const model = process.env.GEMINI_LIVE_MODEL || "models/gemini-3.1-flash-live-preview";
-  // Resuming (handle < ~2h old) reconnects to the SAME conversation — full
-  // context, no cold-start greeting. Otherwise it's a fresh session (after a
-  // long nap the handle has expired server-side; Google's validity is 2h).
-  const handle = freshResumeHandle();
+  // A resume handle is only used to recover a connection that dropped mid
+  // conversation, never to wake from sleep.
+  //
+  // Replaying a conversation is not free: the server rehydrates the whole
+  // window before the model can speak, measured at ~140ms per turn of history
+  // (1.0s fresh, 3.5s at 10 turns, 6.4s at 30, 9.6s at 60). That made every
+  // wake slower than the last one all day, for context the journal already
+  // holds. Connecting costs ~90ms either way, so a wake now opens a fresh
+  // session and carries its context as text — see conversationContextParts().
+  // Recovering a dropped socket still resumes, because there the context is
+  // already warm and losing it mid-sentence is the worse failure.
+  // With the journal switched off there is nothing to carry a nap, so fall back
+  // to replaying the session rather than waking with no memory at all — slower,
+  // but never worse than having no continuity.
+  const resumeToWake = !conversationJournal.enabled;
+  const handle = preserveLogicalStart || resumeToWake ? freshResumeHandle() : null;
   const resuming = Boolean(handle);
+  // "Continuing" is about the conversation, not the socket: a fresh session that
+  // carries today's context is still the same conversation to the person in the
+  // room, so it must not open with a cold-start greeting or the boot ceremony.
+  const conversationContext = conversationContextParts();
+  const continuing = resuming || conversationContext.length > 0;
+  const connectStartedAt = Date.now();
   if (!resuming) resetHermesGate();
   intentionalClose = false;
   autoSlept = false;
@@ -2989,11 +3016,13 @@ async function startLive({ preserveLogicalStart = false } = {}) {
   // the conversation is merely continuing (auto-wake, quick re-wake). A
   // Hermes-driven wake also skips it even on a fresh session — Iris starts
   // announcing immediately and must not talk over the boot animation.
-  const resumingUi = resuming || announcementLedger.pendingCount > 0;
+  const resumingUi = continuing || announcementLedger.pendingCount > 0;
   emitEvent({ type: "sidecar_status", status: { running: true, model, mode: "webrtc-aec" }, resuming: resumingUi });
   emitEvent({ type: "gemini_status", status: "connecting", model, resuming: resumingUi });
   if (resuming) {
-    emitEvent({ type: "log", level: "info", message: "Resuming the previous Gemini session (context preserved)." });
+    emitEvent({ type: "log", level: "info", message: "Recovering the dropped connection (context preserved)." });
+  } else if (continuing) {
+    emitEvent({ type: "log", level: "info", message: "Picking up where we left off." });
   }
 
   connectInFlight = true;
@@ -3004,7 +3033,7 @@ async function startLive({ preserveLogicalStart = false } = {}) {
   try {
     liveSession = await connectLiveWithTimeout(ai.live.connect({
       model,
-      config: buildLiveConfig(handle),
+      config: buildLiveConfig(handle, conversationContext),
       callbacks: {
         onopen() {
           liveStatus = { running: true, pid: process.pid };
@@ -3133,8 +3162,12 @@ async function startLive({ preserveLogicalStart = false } = {}) {
   // One journal section per wake→sleep cycle. Guarded rather than unconditional
   // because the resume-rejection paths re-enter startLive.
   if (!conversationJournal.activeSessionId) conversationJournal.beginSession();
-  sessionLog.record(resuming ? "resume_ok" : "fresh_start", {
+  // connectMs is the number that matters: it is what the person waiting to talk
+  // actually feels, and the whole reason wakes no longer replay the session.
+  sessionLog.record(resuming ? "recover_ok" : continuing ? "wake_continuing" : "wake_cold", {
     model,
+    connectMs: Date.now() - connectStartedAt,
+    contextChars: conversationContext[0]?.text?.length ?? 0,
     journalSession: conversationJournal.activeSessionId,
   });
 
@@ -3146,9 +3179,10 @@ async function startLive({ preserveLogicalStart = false } = {}) {
     announcementLedger.drain(sendLiveText);
   }
 
-  if (resuming) {
-    // The conversation never ended. Start a short, interruptible resume turn
-    // without delaying microphone capture or the user's first words.
+  if (continuing) {
+    // The conversation never ended, whether or not the socket did. Start a
+    // short, interruptible resume turn without delaying microphone capture or
+    // the user's first words.
     welcomeGreeted = true;
     if (welcomeFallbackTimer) {
       clearTimeout(welcomeFallbackTimer);
@@ -3506,11 +3540,13 @@ async function stopLive({ preserveProposal = false, forQuit = false } = {}) {
   emitEvent({ type: "audio_state", state: "idle" });
   emitEvent({ type: "sidecar_status", status: liveStatus });
   updateTrayMenu();
-  // Sleep of either kind (manual or standby) keeps the conversation resumable:
-  // rotate the handle in the background so even an overnight nap wakes into
-  // the same conversation.
-  if (forQuit) stopHandleRefresh();
-  else scheduleHandleRefresh();
+  // Nothing to keep alive across a nap any more. Handles now only recover a
+  // socket that drops mid conversation, which happens seconds later and well
+  // inside their validity, so the background renewal that used to run every 110
+  // minutes — waking the network to preserve a context a wake no longer replays
+  // — has no purpose. The journal is what carries a nap now, unless it is off,
+  // in which case the handle is the only continuity left and has to survive.
+  if (conversationJournal.enabled) resumeHandles.clear();
   return liveStatus;
 }
 
@@ -3570,145 +3606,6 @@ function scheduleGoAwayReconnect(timeLeft) {
     try { liveSession.close(); } catch { /* ignore close races */ }
   }, leftMs - 2000);
   goAwayTimer.unref?.();
-}
-
-// ===== Standby handle keep-alive =====
-// Google invalidates resumption handles 2h after disconnect. During long naps
-// (overnight standby) we briefly reconnect — headless, no UI wake, no audio,
-// no tokens billed — purely to be issued a fresh handle, then hang up. The
-// conversation stays resumable indefinitely.
-function stopHandleRefresh() {
-  if (handleRefreshTimer) {
-    clearTimeout(handleRefreshTimer);
-    handleRefreshTimer = null;
-  }
-}
-
-// Stops an in-flight refresh immediately. Its socket is closed here rather than
-// left to unwind, so the wake never holds two connections on one conversation.
-function cancelHandleRefresh() {
-  handleRefreshCancelled = true;
-  if (handleRefreshSession) {
-    try { handleRefreshSession.close(); } catch { /* ignore close races */ }
-    handleRefreshSession = null;
-  }
-}
-
-async function yieldToHandleRefresh() {
-  if (!handleRefreshPromise) return;
-  const started = Date.now();
-  let timer;
-  await Promise.race([
-    handleRefreshPromise.catch(() => {}),
-    new Promise((resolve) => {
-      timer = setTimeout(resolve, HANDLE_REFRESH_YIELD_MS);
-      timer.unref?.();
-    }),
-  ]);
-  clearTimeout(timer);
-  if (!handleRefreshPromise) return;
-  cancelHandleRefresh();
-  sessionLog.record("refresh_yielded_to_wake", { waitedMs: Date.now() - started });
-}
-
-function runHandleRefreshNow() {
-  if (shuttingDown || handleRefreshPromise || liveSession || connectInFlight) return;
-  handleRefreshPromise = refreshResumeHandle().finally(() => {
-    handleRefreshPromise = null;
-    // Keep rotating for as long as the nap lasts.
-    if (!liveSession && !connectInFlight) scheduleHandleRefresh();
-  });
-}
-
-function scheduleHandleRefresh() {
-  stopHandleRefresh();
-  if (shuttingDown) return;
-  if (!freshResumeHandle()) return;
-  // Fire when the handle turns HANDLE_REFRESH_AGE_MS old (scheduled off the
-  // handle's own timestamp, so late timers and reschedules stay correct). A
-  // past-due handle (failed attempt, timer drift, system sleep) retries on
-  // the short interval instead — freshResumeHandle() ends the loop once the
-  // handle truly expires, and the fresh-session fallback covers the wake.
-  const age = resumeHandles.age();
-  const delay = Math.max(age >= HANDLE_REFRESH_AGE_MS ? HANDLE_REFRESH_RETRY_MS : HANDLE_REFRESH_AGE_MS - age, 15000);
-  handleRefreshTimer = setTimeout(() => {
-    handleRefreshTimer = null;
-    runHandleRefreshNow();
-  }, delay);
-}
-
-async function refreshResumeHandle() {
-  if (shuttingDown || liveSession || connectInFlight) return false;
-  const handle = freshResumeHandle();
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!handle || !apiKey) return false;
-  const model = process.env.GEMINI_LIVE_MODEL || "models/gemini-3.1-flash-live-preview";
-  let gotNewHandle = false;
-  handleRefreshCancelled = false;
-  try {
-    const client = ai || new GoogleGenAI({ apiKey });
-    // Deliberately NOT startLive(): no tools, no renderer events, no greeting.
-    // The server sends a sessionResumptionUpdate shortly after setup; we take
-    // the new handle and leave.
-    const session = await connectLiveWithTimeout(client.live.connect({
-      model,
-      config: {
-        responseModalities: ["AUDIO"],
-        sessionResumption: { handle },
-      },
-      callbacks: {
-        onopen() {},
-        onmessage(message) {
-          const update = message.sessionResumptionUpdate;
-          // Once a wake has taken over, the live session owns the handle store.
-          if (handleRefreshCancelled) return;
-          if (update?.resumable && update.newHandle) {
-            resumeHandles.update(update.newHandle);
-            gotNewHandle = true;
-          }
-        },
-        onerror() {},
-        onclose() {},
-      },
-    }), HANDLE_REFRESH_CONNECT_TIMEOUT_MS, "Standby handle refresh");
-    handleRefreshSession = session;
-    if (handleRefreshCancelled) {
-      try { session.close(); } catch { /* ignore close races */ }
-      handleRefreshSession = null;
-      return false;
-    }
-    // Nudge immediately: a sliver of silent PCM counts as activity and prompts
-    // the update, without triggering any model response (VAD hears nothing).
-    // Waiting first only added dead time to a job a wake may need to interrupt.
-    try {
-      session.sendRealtimeInput({
-        audio: { data: Buffer.alloc(3200).toString("base64"), mimeType: "audio/pcm;rate=16000" },
-      });
-    } catch { /* connection may already be gone */ }
-    let waited = 0;
-    while (!gotNewHandle && !handleRefreshCancelled && waited < HANDLE_REFRESH_POLL_MS) {
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      waited += 250;
-    }
-    if (handleRefreshSession) {
-      try { handleRefreshSession.close(); } catch { /* ignore close races */ }
-      handleRefreshSession = null;
-    }
-    if (handleRefreshCancelled) return gotNewHandle;
-    sessionLog.record("handle_refresh", { renewed: gotNewHandle, waitedMs: waited });
-    emitEvent({
-      type: "log",
-      level: gotNewHandle ? "info" : "warn",
-      message: gotNewHandle
-        ? "Standby: renewed the session handle — the conversation stays resumable."
-        : "Standby: handle renewal got no update; if it expires, the next wake starts fresh.",
-    });
-  } catch (error) {
-    handleRefreshSession = null;
-    sessionLog.record("handle_refresh_failed", { error: error?.message || String(error) });
-    emitEvent({ type: "log", level: "warn", message: `Standby handle renewal failed: ${error?.message || error}` });
-  }
-  return gotNewHandle;
 }
 
 // ===== Auto-sleep (idle) =====
@@ -4131,17 +4028,6 @@ app.whenReady().then(() => {
 
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
     callback(mediaPermissionAllowed(webContents, permission, ipcTrust));
-  });
-
-  // macOS system sleep freezes all timers, so a scheduled handle renewal may
-  // have been missed entirely. The moment the Mac wakes, renew immediately if
-  // Iris is napping and the handle survived; if it already expired, the
-  // fresh-session fallback covers the next wake.
-  powerMonitor.on("resume", () => {
-    if (!liveSession && !connectInFlight && freshResumeHandle()) {
-      stopHandleRefresh();
-      runHandleRefreshNow();
-    }
   });
 
   trustedHandle("sidecar:start", () => startLive());

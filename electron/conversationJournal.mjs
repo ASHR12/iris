@@ -245,6 +245,33 @@ export class ConversationJournal {
     return text;
   }
 
+  // The tail of today's spoken lines, newest last. This is what lets a fresh
+  // session pick up mid-conversation: the digests say what the day was about,
+  // these say what was just said. Cheap to carry as text, unlike replaying the
+  // conversation server-side.
+  recentTurns({ limit = 8, maxChars = 1400 } = {}) {
+    if (!this.enabled) return [];
+    this.flush();
+    let lines = [];
+    // Yesterday's tail still matters for an overnight wake mid-thought.
+    for (const key of this.#days().slice(0, 2)) {
+      try {
+        const dayLines = fs
+          .readFileSync(this.filePath(key), "utf8")
+          .split("\n")
+          .filter((line) => line.startsWith("- "))
+          .map((line) => line.slice(2));
+        lines = [...dayLines, ...lines];
+      } catch {
+        // Skip an unreadable day.
+      }
+      if (lines.length >= limit) break;
+    }
+    lines = lines.slice(-limit);
+    while (lines.length > 1 && lines.join("\n").length > maxChars) lines.shift();
+    return lines;
+  }
+
   // Keyword search across digests. Deliberately local and index-free: digests
   // are a few KB per day, so scanning even a year costs milliseconds and adds
   // no network round trip.

@@ -150,6 +150,50 @@ test("a digest that arrives after the next session started lands in its own sect
   );
 });
 
+test("recent turns are the tail of what was said, newest last", (t) => {
+  const journal = tempJournal(t);
+  journal.beginSession();
+  for (let index = 0; index < 20; index += 1) {
+    journal.addTurn(index % 2 ? "iris" : "you", `line ${index}`);
+  }
+  const recent = journal.recentTurns({ limit: 6 });
+  assert.equal(recent.length, 6);
+  assert.match(recent.at(-1), /line 19/);
+  assert.match(recent[0], /line 14/);
+  assert.doesNotMatch(recent.join("\n"), /line 13/);
+});
+
+test("recent turns cross the session boundary a nap creates", (t) => {
+  const journal = tempJournal(t);
+  journal.beginSession();
+  journal.addTurn("you", "before the nap");
+  journal.endSession("First half.");
+  journal.beginSession();
+  journal.addTurn("you", "after the nap");
+  const recent = journal.recentTurns({ limit: 4 });
+  assert.match(recent.join("\n"), /before the nap/);
+  assert.match(recent.join("\n"), /after the nap/);
+  assert.doesNotMatch(recent.join("\n"), /First half/);
+});
+
+test("recent turns stay bounded by character budget, keeping the newest", (t) => {
+  const journal = tempJournal(t);
+  journal.beginSession();
+  for (let index = 0; index < 10; index += 1) {
+    journal.addTurn("you", `turn ${index} ${"padding ".repeat(40)}`);
+  }
+  const recent = journal.recentTurns({ limit: 10, maxChars: 600 });
+  assert.ok(recent.join("\n").length <= 600, `context was ${recent.join("\n").length} chars`);
+  assert.match(recent.at(-1), /turn 9/);
+});
+
+test("a disabled journal has no recent turns to offer", (t) => {
+  const journal = tempJournal(t, { enabled: false });
+  journal.beginSession();
+  journal.addTurn("you", "nothing is stored");
+  assert.deepEqual(journal.recentTurns(), []);
+});
+
 test("a disabled journal records nothing and reports nothing", (t) => {
   const journal = tempJournal(t, { enabled: false });
   journal.beginSession();

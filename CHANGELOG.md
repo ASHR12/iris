@@ -20,9 +20,11 @@ and IPC surfaces.
 - **`search_conversation` tool** for anything older than today, or for detail the
   digests omit. Search is a local scan over digest lines — roughly 0.06 ms per
   query, with no index to maintain and no network round trip.
-- **Session lifecycle log** at `~/.iris/session-log.jsonl`, recording connects,
-  resumes, rejected resume handles, refresh takeovers, and digest writes. There
-  was previously no history of any of this once the log panel scrolled away.
+- **Session lifecycle log** at `~/.iris/session-log.jsonl`, recording every wake
+  with its measured connect time, plus recoveries, refused sleeps, and digest
+  writes. There was previously no history of any of this once the log panel
+  scrolled away, which is why the wake regression below went undiagnosed for so
+  long.
 - **Conversation memory setting** in Settings, plus `IRIS_CONVERSATION_JOURNAL`,
   `IRIS_JOURNAL_RAW_DAYS`, `IRIS_JOURNAL_DIGEST_DAYS`, `IRIS_DIGEST_MODEL`, and
   `IRIS_SESSION_LOG`. Raw spoken lines age out after 7 days, digests after 90.
@@ -37,11 +39,23 @@ and IPC surfaces.
   for a Google Search result to land, which is why it was reverted. Verified
   live — after a forced compression, a grounded search still returns a real
   figure.
-- **Waking no longer waits on background handle renewal.** A standby refresh
-  could hold the wake for tens of seconds while it connected and polled. A wake
-  now yields to it for at most 1.5 s, then closes its socket and takes over. The
-  refresh itself nudges immediately instead of after 4 s, cutting its worst case
-  from ~27 s to ~16 s.
+- **Waking no longer replays the conversation, and no longer gets slower as the
+  day goes on.** Resuming a session hands it back to Google to rehydrate before
+  the model will speak, which measures at roughly 140 ms per turn of history:
+  1.0 s on a fresh session, 3.5 s at 10 turns, 6.4 s at 30, 9.6 s at 60. A
+  40-turn afternoon therefore woke in 15-20 seconds, and every wake was slower
+  than the one before it. Since connecting costs ~90 ms either way, a wake now
+  opens a new session and carries the conversation across as text — today's
+  digests plus the last few lines actually spoken — which measured 831 ms to
+  first audio while still recalling the previous topic correctly. Resumption
+  handles now survive only to recover a socket that drops mid-sentence, where
+  the context is already warm; with the journal disabled, waking falls back to
+  the old replay rather than waking with no memory.
+- **Removed the standby handle-renewal machinery** (139 lines, plus its
+  power-resume hook). It existed to keep a resumption handle alive across long
+  naps so a wake could replay into it, and a wake no longer does. It also never
+  paid for itself: across 75 recorded sessions it ran 3 times and collided with
+  a wake 0 times.
 - **The microphone opens in parallel with the Gemini connect** rather than after
   it. In series, the device's own startup delay landed after "I'm back", so the
   first thing said on waking went into a microphone that was not listening yet.
@@ -55,10 +69,19 @@ and IPC surfaces.
 
 ### Fixed
 
+- **Iris no longer wakes up, says goodbye, and goes back to sleep in a loop.**
+  The `go_to_sleep` tool response is the last thing left in the conversation, so
+  an expanded version of it listing example sign-offs was read again on every
+  wake as if it were a live instruction — Iris spent four consecutive wakes
+  reciting "Catch you later" and "Talk soon" at a user who was asking whether
+  she could hear him. The response is one short line again, the time-of-day ban
+  lives only in the system instruction where it does not linger in history, and
+  `go_to_sleep` is now refused in code when nobody has spoken yet in the
+  session, since a sleep request that predates the user's first word can only be
+  an echo.
 - **Farewells no longer guess the time of day.** Iris has no clock, so "go to
   sleep" could be answered with "good night" at three in the afternoon. The
-  `go_to_sleep` tool response, the sleep rule, and the session-start greeting now
-  agree on time-neutral wording.
+  sleep rule and the session-start greeting now agree on time-neutral wording.
 - **Markdown no longer leaks into Hermes card previews.** The two-line preview in
   the side panel rendered `**bold**` and `##` literally while the opened reader
   showed it correctly. Previews are now flattened to prose.
