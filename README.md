@@ -79,7 +79,7 @@ When Hermes finishes a background task, Iris **proactively speaks up**: *"Quick 
 
 ### Sessions & memory
 
-- **Conversation memory across the whole day** — a live session only holds the last few minutes of speech, so each conversation is summarized to a few lines in `~/.iris/journal/YYYY-MM-DD.md` on your machine. Iris reads today's summaries when it wakes, so "what did we decide this morning?" just works
+- **Conversation memory across the whole day** — a live session only holds the last few minutes of speech, so every conversation is saved to `~/.iris/journal/YYYY-MM-DD.md` on your machine: one file per day headed with the weekday, one numbered section per session with the times it ran, each summarized in a couple of lines. Iris reads today's summaries when it wakes, so "what did we decide this morning?" just works — and searches older days on request
 - **`search_conversation` for older days** — "the thing I mentioned yesterday", "what did we talk about last week"; keyword search over summaries, ~0.06 ms per query with no network round trip
 - **Bounded context window** — compression keeps long sessions affordable and lifts Google's 15-minute audio-session ceiling, without starving Google Search of the room it needs for grounded results
 - **One pinned Hermes chat thread** — like picking a chat in the Hermes app; no stray sessions
@@ -340,7 +340,7 @@ flowchart TB
     W["The conversation in progress<br/>compresses 40k → 16k tokens<br/>discarded when Iris sleeps"]
   end
   subgraph disk["Tier 2 — conversation journal (your Mac)"]
-    F["~/.iris/journal/2026-07-28.md<br/>one section per wake→sleep cycle<br/>each closed with a **Digest:** line"]
+    F["~/.iris/journal/2026-07-27.md<br/>one file per day, one numbered<br/>section per wake→sleep cycle"]
   end
   Talk["You talk"] -->|"transcripts, debounced"| W
   Talk -->|"buffered, batched write every 5s"| F
@@ -350,10 +350,28 @@ flowchart TB
   F -->|"older days on request"| Tool["search_conversation tool"]
 ```
 
+A day on disk, which is meant to be readable months later without tooling — file names stay `YYYY-MM-DD.md` because retention sorts them as strings, but everything inside is written for a person:
+
+```markdown
+# Conversation journal — Monday, 27 July 2026
+
+Every conversation held on Monday, 27 July 2026, oldest first — one section per session,
+from the moment Iris woke to the moment she slept, summarised under its heading.
+
+## Session 1 — 09:12–09:31 (id: 20260727-091200-ggg8)
+**Digest:** You asked me to pull the April deal numbers and I dispatched that to Hermes.
+- 09:12 you: ask Hermes for the April deal numbers
+- 09:12 iris: Hermes has started the task.
+
+## Session 2 — 15:02–15:08 (id: 20260727-150200-piz5)
+**Digest:** I confirmed the finance summary row came from your Notion workspace.
+- 15:02 you: where did that finance summary come from?
+```
+
 - **Waking never replays the conversation.** Handing the session back to Google to rehydrate costs about 140ms per turn of history — 1.0s fresh, 3.5s at 10 turns, 6.4s at 30, 9.6s at 60 — so every wake got slower than the last one all day. Connecting costs ~90ms either way, so a wake now opens a new session and carries the conversation across as text. Resumption handles survive only to recover a socket that drops mid-sentence, where the context is already warm.
 - **Writes never touch the audio path.** Turns are buffered in memory and flushed on a timer; the summary call happens after the socket closes, so sleeping stays instant.
 - **The summary is written in Iris's own voice** ("I reviewed the Vercel bill and asked Hermes to…") because it is injected back as memory, and third-person notes read like someone else's.
-- **The journal is the only thing carrying a nap**, which is why turning it off falls back to the slower replay rather than waking with no memory.
+- **The journal is on by default**, and it is the only thing carrying a nap. Turned off, waking is just as quick but each session starts knowing nothing of the earlier ones — which is the honest reading of switching memory off.
 - **Retention is bounded**: raw spoken lines age out after 7 days, summaries after 90, swept shortly after each launch. A full day of conversation is on the order of a couple of KB.
 - `~/.iris/session-log.jsonl` records every wake with its connect time, so a slow one leaves evidence instead of guesswork.
 

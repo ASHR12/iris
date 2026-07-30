@@ -555,9 +555,11 @@ export default function SetupPanel({
           onChange={(value) => set("IRIS_CONVERSATION_JOURNAL", value)}
         />
         <small className="setup-note">
-          A live session only holds the last few minutes of speech, so Iris keeps a summary of each conversation in
-          ~/.iris/journal on this Mac — never uploaded anywhere. That's how she can answer "what did we decide this
-          morning?". Summaries are kept 90 days, the underlying lines 7.
+          On by default. A live session only holds the last few minutes of speech, so Iris keeps a summary of each
+          conversation in ~/.iris/journal on this Mac — one file per day, one section per session — never uploaded
+          anywhere. That's how she can answer "what did we decide this morning?". Summaries are kept 90 days, the
+          underlying lines 7. Turned off, waking is just as quick but she starts each session knowing nothing of the
+          earlier ones.
         </small>
       </label>
       <label className="setup-field">

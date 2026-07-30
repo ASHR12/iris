@@ -2996,11 +2996,11 @@ async function startLive({ preserveLogicalStart = false } = {}) {
   // session and carries its context as text — see conversationContextParts().
   // Recovering a dropped socket still resumes, because there the context is
   // already warm and losing it mid-sentence is the worse failure.
-  // With the journal switched off there is nothing to carry a nap, so fall back
-  // to replaying the session rather than waking with no memory at all — slower,
-  // but never worse than having no continuity.
-  const resumeToWake = !conversationJournal.enabled;
-  const handle = preserveLogicalStart || resumeToWake ? freshResumeHandle() : null;
+  //
+  // Turning the journal off therefore means waking with no memory of earlier
+  // sessions, which is the honest reading of switching memory off — and still a
+  // one-second wake. Trading that for a slow one would punish the setting.
+  const handle = preserveLogicalStart ? freshResumeHandle() : null;
   const resuming = Boolean(handle);
   // "Continuing" is about the conversation, not the socket: a fresh session that
   // carries today's context is still the same conversation to the person in the

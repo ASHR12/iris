@@ -26,9 +26,70 @@ test("turns land in the day's file under a session heading", (t) => {
   assert.equal(journal.flush(), 2);
 
   const text = fs.readFileSync(journal.filePath(dayKey()), "utf8");
-  assert.match(text, new RegExp(`## Session \\d{2}:\\d{2} \\(id: ${id}\\)`));
+  assert.match(text, new RegExp(`## Session 1 — \\d{2}:\\d{2} \\(id: ${id}\\)`));
   assert.match(text, /- \d{2}:\d{2} you: remind me about the Q3 pricing deck/);
   assert.match(text, /- \d{2}:\d{2} iris: Opening it now\./);
+});
+
+test("the day's file names the weekday and full date, not just the key", (t) => {
+  const journal = tempJournal(t, { now: () => new Date(2026, 6, 29, 9, 15) });
+  journal.beginSession();
+  journal.addTurn("you", "what's on today?");
+  journal.flush();
+
+  const text = fs.readFileSync(journal.filePath("2026-07-29"), "utf8");
+  assert.match(text, /^# Conversation journal — Wednesday, 29 July 2026$/m);
+  assert.match(text, /Every conversation held on Wednesday, 29 July 2026/);
+});
+
+test("sessions are numbered in order and stamped with when they started and ended", (t) => {
+  let clock = new Date(2026, 6, 29, 9, 15);
+  const journal = tempJournal(t, { now: () => clock });
+
+  journal.beginSession();
+  journal.addTurn("you", "first conversation");
+  clock = new Date(2026, 6, 29, 9, 42);
+  journal.endSession("Talked about the first thing.");
+
+  clock = new Date(2026, 6, 29, 14, 3);
+  journal.beginSession();
+  journal.addTurn("you", "second conversation");
+  clock = new Date(2026, 6, 29, 14, 30);
+  journal.endSession("Talked about the second thing.");
+
+  const text = fs.readFileSync(journal.filePath("2026-07-29"), "utf8");
+  assert.match(text, /## Session 1 — 09:15–09:42 /);
+  assert.match(text, /## Session 2 — 14:03–14:30 /);
+  // The digest introduces its session rather than trailing the raw lines.
+  assert.match(text, /## Session 1 — [^\n]*\n\*\*Digest:\*\* Talked about the first thing\./);
+});
+
+test("session numbering continues across a relaunch on the same day", (t) => {
+  const clock = () => new Date(2026, 6, 29, 16, 0);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "iris-journal-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const before = new ConversationJournal({ dir, flushMs: 60_000, now: clock });
+  before.beginSession();
+  before.addTurn("you", "before the restart");
+  before.endSession("Before.");
+
+  const after = new ConversationJournal({ dir, flushMs: 60_000, now: clock });
+  after.beginSession();
+  after.addTurn("you", "after the restart");
+  after.flush();
+
+  assert.match(fs.readFileSync(after.filePath("2026-07-29"), "utf8"), /## Session 2 — 16:00 /);
+});
+
+test("search matches the weekday and month people actually say", (t) => {
+  const journal = tempJournal(t, { now: () => new Date(2026, 6, 29, 11, 0) });
+  journal.beginSession();
+  journal.addTurn("you", "the pricing deck");
+  journal.endSession("Reviewed the pricing deck with you.");
+
+  assert.equal(journal.search("what did we do on Wednesday")[0].when, "Wednesday, 29 July 2026");
+  assert.equal(journal.search("that thing back in July").length, 1);
 });
 
 test("multiple sessions in one day stay separate and both digests are kept", (t) => {

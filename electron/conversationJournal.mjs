@@ -11,10 +11,16 @@ import path from "node:path";
 // Layout is one Markdown file per calendar day, sectioned per Iris session:
 //
 //   ~/.iris/journal/2026-07-28.md
-//     ## Session 14:02 – 14:31  (id: 20260728-140215-a1b2)
+//     # Conversation journal — Tuesday, 28 July 2026
+//     ## Session 3 — 14:02–14:31 (id: 20260728-140215-a1b2)
 //     **Digest:** two or three lines describing what happened
 //     - 14:02 you: ...
 //     - 14:02 iris: ...
+//
+// File names stay machine-sortable because retention compares them as strings,
+// but everything written inside is for a person reading it months later: the
+// weekday spelled out, sessions numbered in the order they happened, and each
+// one stamped with the minute it started and the minute it ended.
 //
 // Turns are buffered in memory and flushed on a timer so the audio path never
 // waits on disk. Digests are what gets preloaded and searched; raw turns exist
@@ -22,6 +28,24 @@ import path from "node:path";
 
 const DEFAULT_FLUSH_MS = 5000;
 const DIGEST_MARKER = "**Digest:**";
+
+// Fixed English names rather than Intl, so a journal reads and greps the same
+// way on every machine regardless of system locale.
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const MONTHS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
 
 function defaultDir() {
   return path.join(os.homedir(), ".iris", "journal");
@@ -37,6 +61,37 @@ export function dayKey(date = new Date()) {
 
 function clockTime(date) {
   return `${two(date.getHours())}:${two(date.getMinutes())}`;
+}
+
+export function dateFromKey(key) {
+  const [year, month, day] = String(key).split("-").map(Number);
+  return new Date(year, month - 1, day);
+}
+
+// "Wednesday, 29 July 2026" — the weekday earns its place because a person
+// asking about a past conversation reaches for "Monday" far sooner than a date.
+export function longDate(date) {
+  return `${WEEKDAYS[date.getDay()]}, ${date.getDate()} ${MONTHS[date.getMonth()]} ${date.getFullYear()}`;
+}
+
+function fileHeader(key) {
+  const day = longDate(dateFromKey(key));
+  return [
+    `# Conversation journal — ${day}`,
+    "",
+    `Every conversation held on ${day}, oldest first — one section per session,`,
+    "from the moment Iris woke to the moment she slept, summarised under its heading.",
+    "",
+  ].join("\n");
+}
+
+// Older files were written as "## Session 08:26"; both shapes reduce to the
+// time span, which is all a reader or the model needs from the heading.
+function sessionLabel(heading) {
+  return heading
+    .replace(/^Session\s+\d+\s+—\s*/, "")
+    .replace(/^Session\s+/, "")
+    .trim();
 }
 
 export function makeSessionId(date = new Date()) {
@@ -98,6 +153,48 @@ export class ConversationJournal {
     this.#scheduleFlush();
   }
 
+  // Sessions are numbered within their day so "the third conversation on
+  // Monday" is a thing you can point at. Counted from the file rather than
+  // tracked in memory, because a relaunch mid-day must continue the sequence.
+  #nextSessionNumber(file) {
+    try {
+      const headings = fs.readFileSync(file, "utf8").match(/^## Session\b/gm);
+      return (headings?.length ?? 0) + 1;
+    } catch {
+      return 1;
+    }
+  }
+
+  #headingLine(session) {
+    const span = session.endedAt
+      ? `${clockTime(session.startedAt)}–${clockTime(session.endedAt)}`
+      : clockTime(session.startedAt);
+    return `## Session ${session.number} — ${span} (id: ${session.id})`;
+  }
+
+  // The end time and the digest are both only knowable once the session is
+  // over, so each is patched into the section already sitting on disk. The id
+  // is the anchor: by then a newer session may have appended below it.
+  #patchSection(session, { digest } = {}) {
+    if (!session?.headerWritten) return false;
+    try {
+      const file = this.filePath(session.dayKey);
+      const lines = fs.readFileSync(file, "utf8").split("\n");
+      const at = lines.findIndex((line) => line.startsWith("## ") && line.includes(`(id: ${session.id})`));
+      if (at < 0) return false;
+      lines[at] = this.#headingLine(session);
+      if (digest) {
+        const line = `${DIGEST_MARKER} ${digest}`;
+        if (lines[at + 1]?.startsWith(DIGEST_MARKER)) lines[at + 1] = line;
+        else lines.splice(at + 1, 0, line);
+      }
+      fs.writeFileSync(file, lines.join("\n"));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   #scheduleFlush() {
     if (this.flushTimer) return;
     this.flushTimer = setTimeout(() => {
@@ -118,9 +215,10 @@ export class ConversationJournal {
       const key = this.session?.dayKey ?? dayKey(this.now());
       const file = this.filePath(key);
       let out = "";
-      if (!fs.existsSync(file)) out += `# Conversation journal — ${key}\n`;
+      if (!fs.existsSync(file)) out += fileHeader(key);
       if (this.session && !this.session.headerWritten) {
-        out += `\n## Session ${clockTime(this.session.startedAt)} (id: ${this.session.id})\n`;
+        this.session.number = this.#nextSessionNumber(file);
+        out += `\n${this.#headingLine(this.session)}\n`;
         this.session.headerWritten = true;
       }
       out += `${turns.map(formatTurn).join("\n")}\n`;
@@ -140,31 +238,20 @@ export class ConversationJournal {
     this.flush();
     const session = this.session;
     this.session = null;
+    session.endedAt = this.now();
+    this.#patchSection(session);
     return session;
   }
 
   // The digest is the durable part: it is what gets preloaded at the next wake
-  // and what search looks through. Inserted at the end of its own section rather
-  // than appended to the file, because by the time a model-generated digest
-  // arrives a newer session may already have written turns below it.
+  // and what search looks through. It sits directly under its heading rather
+  // than at the foot of the section, so scrolling a day reads as a list of
+  // summaries with the raw lines available underneath each.
   writeDigest(session, digest) {
     if (!this.enabled || !session || !digest) return null;
-    const line = `${DIGEST_MARKER} ${String(digest).replace(/\s+/g, " ").trim()}`;
-    try {
-      const file = this.filePath(session.dayKey);
-      const text = fs.readFileSync(file, "utf8");
-      const headingAt = text.indexOf(`(id: ${session.id})`);
-      if (headingAt < 0) return null;
-      const nextHeadingAt = text.indexOf("\n## ", headingAt);
-      if (nextHeadingAt < 0) {
-        fs.appendFileSync(file, text.endsWith("\n") ? `${line}\n` : `\n${line}\n`);
-      } else {
-        fs.writeFileSync(file, `${text.slice(0, nextHeadingAt)}\n${line}${text.slice(nextHeadingAt)}`);
-      }
-      return line.slice(DIGEST_MARKER.length).trim();
-    } catch {
-      return null;
-    }
+    const clean = String(digest).replace(/\s+/g, " ").trim();
+    if (!clean) return null;
+    return this.#patchSection(session, { digest: clean }) ? clean : null;
   }
 
   endSession(digest) {
@@ -212,13 +299,15 @@ export class ConversationJournal {
     try {
       const text = fs.readFileSync(this.filePath(key), "utf8");
       const out = [];
+      const when = longDate(dateFromKey(key));
       let heading = "";
       for (const line of text.split("\n")) {
         // The session id is bookkeeping for sessionTranscript(); strip it so it
         // never reaches the model as noise.
-        if (line.startsWith("## ")) heading = line.slice(3).replace(/\s*\(id:[^)]*\)\s*$/, "").trim();
-        else if (line.startsWith(DIGEST_MARKER)) {
-          out.push({ day: key, session: heading, digest: line.slice(DIGEST_MARKER.length).trim() });
+        if (line.startsWith("## ")) {
+          heading = sessionLabel(line.slice(3).replace(/\s*\(id:[^)]*\)\s*$/, "").trim());
+        } else if (line.startsWith(DIGEST_MARKER)) {
+          out.push({ day: key, when, session: heading, digest: line.slice(DIGEST_MARKER.length).trim() });
         }
       }
       return out;
@@ -288,7 +377,9 @@ export class ConversationJournal {
 
     const scored = [];
     for (const entry of candidates) {
-      const haystack = `${entry.day} ${entry.session} ${entry.digest}`.toLowerCase();
+      // The spelled-out date is part of the haystack so "what did we decide on
+      // Monday?" and "back in July" match on the words people actually use.
+      const haystack = `${entry.day} ${entry.when} ${entry.session} ${entry.digest}`.toLowerCase();
       let score = 0;
       for (const token of tokens) if (haystack.includes(token)) score += 1;
       if (score) scored.push({ ...entry, score });

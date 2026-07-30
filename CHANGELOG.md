@@ -11,12 +11,17 @@ and IPC surfaces.
 
 ### Added
 
-- **Conversation memory that spans the whole day.** A Live session only retains
-  the last few minutes of speech, so Iris now summarizes each conversation into
-  `~/.iris/journal/YYYY-MM-DD.md` — one section per wake-to-sleep cycle, closed
-  with a short digest written in Iris's own voice. Today's digests are injected
-  at connect, so "what did we decide this morning?" needs no lookup. Everything
-  stays on the machine; only the one-shot summarization call leaves it.
+- **Conversation memory that spans the whole day**, on by default. A Live
+  session only retains the last few minutes of speech, so every conversation is
+  now saved to `~/.iris/journal/YYYY-MM-DD.md` — one file per day headed with
+  the weekday spelled out ("Monday, 27 July 2026"), one numbered section per
+  wake-to-sleep cycle stamped with the minutes it ran, each introduced by a
+  short digest written in Iris's own voice. Today's digests are injected at
+  connect, so "what did we decide this morning?" needs no lookup, and search
+  matches the spelled-out date so "what did we decide on Monday?" finds it.
+  Everything stays on the machine; only the one-shot summarization call leaves
+  it. Turned off, waking is just as quick but each session begins knowing
+  nothing of the earlier ones.
 - **`search_conversation` tool** for anything older than today, or for detail the
   digests omit. Search is a local scan over digest lines — roughly 0.06 ms per
   query, with no index to maintain and no network round trip.
@@ -49,8 +54,7 @@ and IPC surfaces.
   digests plus the last few lines actually spoken — which measured 831 ms to
   first audio while still recalling the previous topic correctly. Resumption
   handles now survive only to recover a socket that drops mid-sentence, where
-  the context is already warm; with the journal disabled, waking falls back to
-  the old replay rather than waking with no memory.
+  the context is already warm.
 - **Removed the standby handle-renewal machinery** (139 lines, plus its
   power-resume hook). It existed to keep a resumption handle alive across long
   naps so a wake could replay into it, and a wake no longer does. It also never
