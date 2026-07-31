@@ -29,7 +29,8 @@ and IPC surfaces.
   with its measured connect time, plus recoveries, refused sleeps, and digest
   writes. There was previously no history of any of this once the log panel
   scrolled away, which is why the wake regression below went undiagnosed for so
-  long.
+  long. Refused Hermes dispatches are recorded there too, with the reason, the
+  proposal's stage, and how much of it was read aloud.
 - **Conversation memory setting** in Settings, plus `IRIS_CONVERSATION_JOURNAL`,
   `IRIS_JOURNAL_RAW_DAYS`, `IRIS_JOURNAL_DIGEST_DAYS`, `IRIS_DIGEST_MODEL`, and
   `IRIS_SESSION_LOG`. Raw spoken lines age out after 30 days, digests after 90.
@@ -103,6 +104,18 @@ and IPC surfaces.
 - **Markdown no longer leaks into Hermes card previews.** The two-line preview in
   the side panel rendered `**bold**` and `##` literally while the opened reader
   showed it correctly. Previews are now flattened to prose.
+- **A confirmed Hermes brief can no longer be stuck behind an endless read-back.**
+  Saying "yes" the moment Iris finished reading a brief could reject it as an
+  interrupted read-back, and the restage met the same fate — one user answered
+  "yes" five times to the same brief while Iris apologised and read it again.
+  The dispatch gate judged the read-back on two things it could not see: an
+  interruption belonging to the turn *before* the proposal was staged, which
+  voided a brief that had not yet been spoken, and the length of the Comms
+  transcript buffer, which empties on its own schedule and so reported a fully
+  read brief as barely started. The gate now counts the speech produced since
+  the proposal was staged, and ignores an interruption that arrives before a
+  word of it has been read. Submitting still requires a read-back that finishes
+  and an answer that follows it.
 
 ## [0.4.0] — 2026-07-25
 

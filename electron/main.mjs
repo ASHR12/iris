@@ -7,6 +7,8 @@ import {
   markModelTurnComplete,
   markModelTurnInterrupted,
   markUserSpoke,
+  recordModelSpeech,
+  readbackAudible,
   resetHermesGate,
   hasPendingProposal,
   getHermesProposal,
@@ -112,7 +114,6 @@ let modelTranscriptBuffer = "";
 let userTranscriptTimer = null;
 let modelTranscriptTimer = null;
 let modelTranscriptSettled = false;
-const MIN_AUDIBLE_READBACK_CHARS = 48;
 let lastUserRoute = "direct";
 const hermesRuns = new Map();
 const runRegistry = new RunRegistry();
@@ -2134,6 +2135,12 @@ async function executeTool(name, args = {}) {
       });
       if (!claim.ok) {
         const activeProposal = getHermesProposal();
+        sessionLog.record("hermes_submit_blocked", {
+          reason: claim.reason,
+          stage: activeProposal?.stage || null,
+          spokenChars: activeProposal?.spokenChars ?? null,
+          userTurnObserved: activeProposal?.userTurnObserved ?? null,
+        });
         const reasons = {
           no_proposal:
             "REJECTED: no active proposal. Stage and read back a complete brief first.",
@@ -3389,10 +3396,7 @@ function handleLiveMessage(message) {
     scheduleUserTranscriptFlush();
     if (userTranscriptBuffer.trim()) {
       lastUserRoute = classifyRoute(userTranscriptBuffer);
-      markUserSpoke(userTranscriptBuffer, {
-        allowDuringReadback:
-          modelTranscriptBuffer.trim().length >= MIN_AUDIBLE_READBACK_CHARS,
-      });
+      markUserSpoke(userTranscriptBuffer, { allowDuringReadback: readbackAudible() });
       for (const [runId, approval] of pendingHermesApprovals) {
         if (approval.stage === "awaiting_user") {
           pendingHermesApprovals.set(runId, {
@@ -3421,18 +3425,10 @@ function handleLiveMessage(message) {
     // A barge-in starts a new user turn even though the previous model turn
     // was cut short; protect that replacement turn from standby.
     liveTurnState.interrupted();
-    const audibleReadbackChars = modelTranscriptBuffer.trim().length;
     flushTranscripts();
     modelTranscriptSettled = true;
     scheduleModelTranscriptFlush();
-    // Natural voice replies often arrive just before Gemini's turnComplete.
-    // Preserve confirmation when a meaningful readback was already audible;
-    // a genuinely early interruption still invalidates it.
-    if (audibleReadbackChars >= MIN_AUDIBLE_READBACK_CHARS) {
-      markModelTurnComplete();
-    } else {
-      markModelTurnInterrupted();
-    }
+    markModelTurnInterrupted();
     for (const [runId, interaction] of pendingHermesInteractions) {
       if (!interaction.secret && interaction.stage === "awaiting_model") {
         pendingHermesInteractions.set(runId, {
@@ -3476,12 +3472,14 @@ function handleLiveMessage(message) {
 
   if (content.outputTranscription?.text) {
     modelTranscriptBuffer += content.outputTranscription.text;
+    recordModelSpeech(content.outputTranscription.text);
     if (modelTranscriptSettled) scheduleModelTranscriptFlush();
   }
 
   for (const part of content.modelTurn?.parts || []) {
     if (part.text) {
       modelTranscriptBuffer += part.text;
+      recordModelSpeech(part.text);
       if (modelTranscriptSettled) scheduleModelTranscriptFlush();
     }
     const inlineData = part.inlineData;

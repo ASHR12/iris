@@ -8,9 +8,14 @@ import {
   markModelTurnComplete,
   markModelTurnInterrupted,
   proposeHermesTask,
+  readbackAudible,
+  recordModelSpeech,
   recordUserResponse,
   resetHermesGate,
 } from "../electron/hermesGate.mjs";
+
+const FULL_READBACK =
+  "Hermes should check the Fetra brief and draft two posts. Should I send this to Hermes?";
 
 test("records a real user turn without hard-coding its wording", () => {
   for (const response of [
@@ -100,15 +105,61 @@ test("Gemini can discard the exact staged proposal when it interprets a decline"
   assert.equal(getHermesProposal(), null);
 });
 
-test("an interrupted readback never unlocks submission", () => {
+test("a readback cut off early never unlocks submission", () => {
   resetHermesGate();
   const staged = proposeHermesTask("Task", "normal", { sessionId: "s" }).proposal;
+  recordModelSpeech("Here is the brief:");
   markModelTurnInterrupted();
   assert.equal(recordUserResponse("yes").reason, "not_awaiting_user");
   assert.equal(
     claimConfirmedProposal({ proposalId: staged.id, sessionId: "s" }).reason,
     "readback_interrupted",
   );
+});
+
+test("answering the tail of a full readback confirms it instead of voiding it", () => {
+  resetHermesGate();
+  const staged = proposeHermesTask("Task", "normal", { sessionId: "s" }).proposal;
+  // Gemini streams the read-back in chunks; the user answers on its last word.
+  for (const chunk of FULL_READBACK.match(/.{1,12}/g)) recordModelSpeech(chunk);
+  assert.equal(readbackAudible(), true);
+  markModelTurnInterrupted();
+  assert.equal(recordUserResponse("Yes.").userTurnObserved, true);
+  assert.equal(
+    claimConfirmedProposal({ proposalId: staged.id, sessionId: "s" }).ok,
+    true,
+  );
+});
+
+test("an interruption from before the readback leaves the proposal intact", () => {
+  // Nothing has been read aloud yet, so the cut-short turn was not the
+  // read-back. Voiding the proposal here forces a restage, and the restage
+  // meets the same stale interruption: the loop the user could not escape.
+  resetHermesGate();
+  const staged = proposeHermesTask("Task", "normal", { sessionId: "s" }).proposal;
+  markModelTurnInterrupted();
+  assert.equal(getHermesProposal().stage, "awaiting_readback");
+
+  for (const chunk of FULL_READBACK.match(/.{1,12}/g)) recordModelSpeech(chunk);
+  markModelTurnComplete();
+  recordUserResponse("Yes.");
+  assert.equal(
+    claimConfirmedProposal({ proposalId: staged.id, sessionId: "s" }).ok,
+    true,
+  );
+});
+
+test("a proposal nobody has heard cannot be submitted, however often it is asked", () => {
+  resetHermesGate();
+  const staged = proposeHermesTask("Task", "normal", { sessionId: "s" }).proposal;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    markModelTurnInterrupted();
+    assert.equal(recordUserResponse("Yes, send it.").reason, "readback_in_progress");
+    assert.equal(
+      claimConfirmedProposal({ proposalId: staged.id, sessionId: "s" }).reason,
+      "no_user_turn",
+    );
+  }
 });
 
 test("captures a quick response that arrives just before readback completion", () => {
