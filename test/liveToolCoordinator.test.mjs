@@ -64,3 +64,31 @@ test("drops responses for tool calls cancelled during execution", async () => {
   assert.deepEqual(await operation, []);
   assert.deepEqual(sent, []);
 });
+
+test("a cancelled call is skipped unless it stages state the model will rely on", async () => {
+  const coordinator = new LiveToolCoordinator();
+  const ran = [];
+  const sent = [];
+  coordinator.cancel(["a", "b"]);
+  const responses = await coordinator.enqueue(
+    {
+      functionCalls: [
+        { id: "a", name: "check_hermes_status", args: {} },
+        { id: "b", name: "propose_hermes_task", args: { goal: "Email the client" } },
+      ],
+    },
+    {
+      execute: async (name) => {
+        ran.push(name);
+        return { status: "ok" };
+      },
+      send: async (batch) => sent.push(batch),
+      survivesCancellation: (name) => name === "propose_hermes_task",
+    },
+  );
+
+  assert.deepEqual(ran, ["propose_hermes_task"]);
+  // It ran, but a cancelled call still gets no response on the wire.
+  assert.deepEqual(responses, []);
+  assert.deepEqual(sent, []);
+});

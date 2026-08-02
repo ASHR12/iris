@@ -59,6 +59,10 @@ export type TranscriptLine = {
   id: string;
   speaker: string;
   text: string;
+  /** When it was said. Absent on live lines, which are always "now". */
+  at?: number;
+  /** Row id in the conversation store; the cursor for paging further back. */
+  rowId?: number;
 };
 
 // Purely-visual delegation handoff effects (orb <-> Work Stream). These never

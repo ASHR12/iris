@@ -35,6 +35,7 @@ type Draft = {
   IRIS_SOUNDS: string;
   IRIS_AUTO_SLEEP_SECONDS: string;
   IRIS_AUTO_WAKE_ON_HERMES: string;
+  IRIS_CONVERSATION_JOURNAL: string;
 };
 
 const WIZARD_STEPS = ["welcome", "gemini", "hermes", "you", "permissions", "finish"] as const;
@@ -75,6 +76,7 @@ export default function SetupPanel({
     IRIS_SOUNDS: config.sounds ? "true" : "false",
     IRIS_AUTO_SLEEP_SECONDS: config.autoSleepSeconds || "30",
     IRIS_AUTO_WAKE_ON_HERMES: config.autoWakeOnHermes ? "true" : "false",
+    IRIS_CONVERSATION_JOURNAL: config.conversationJournal ? "true" : "false",
   });
   const [step, setStep] = useState(0);
   const [gemini, setGemini] = useState<TestState>({ status: "idle" });
@@ -521,8 +523,8 @@ export default function SetupPanel({
         />
         <small className="setup-note">
           An idle Gemini Live session streams silence at ~25 tokens/sec and re-bills accumulated audio on every turn.
-          Standby closes the session when nobody's talking and resumes the same conversation when you return — Iris
-          quietly renews the resume token in the background, so even an overnight nap wakes into the same chat.
+          Standby closes the session when nobody's talking. Waking opens a new one in about a second and carries the
+          conversation across in memory, so a nap of any length picks up where you left off without a wait.
         </small>
       </label>
       <label className="setup-field">
@@ -539,6 +541,25 @@ export default function SetupPanel({
         <small className="setup-note">
           Hand a task to Hermes, go quiet, let Iris drop to standby — when the result lands she wakes, announces it,
           and returns to standby if you have nothing else.
+        </small>
+      </label>
+      <label className="setup-field">
+        <span>Conversation memory</span>
+        <ThemedSelect
+          ariaLabel="Conversation memory"
+          value={draft.IRIS_CONVERSATION_JOURNAL}
+          options={[
+            { value: "true", label: "On — remember what we talked about earlier (recommended)" },
+            { value: "false", label: "Off — forget each session when it ends" },
+          ]}
+          onChange={(value) => set("IRIS_CONVERSATION_JOURNAL", value)}
+        />
+        <small className="setup-note">
+          On by default. A live session only holds the last few minutes of speech, so Iris keeps every conversation on
+          this Mac — readable in ~/.iris/journal, indexed in ~/.iris/conversations.db — and never uploads it. Each one
+          is filed under the Hermes chat it happened in, so reopening the app brings back both the work and the
+          conversation about it. Spoken lines are kept 30 days, summaries 90. Turned off, waking is just as quick but
+          Comms starts empty and she begins each session knowing nothing of the earlier ones.
         </small>
       </label>
       <label className="setup-field">

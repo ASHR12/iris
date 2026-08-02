@@ -7,6 +7,129 @@ and the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Iris is
 pre-1.0, so minor versions may still contain breaking changes to configuration
 and IPC surfaces.
 
+## [Unreleased]
+
+### Added
+
+- **Conversation memory that spans the whole day**, on by default. A Live
+  session only retains the last few minutes of speech, so every conversation is
+  now saved to `~/.iris/journal/YYYY-MM-DD.md` — one file per day headed with
+  the weekday spelled out ("Monday, 27 July 2026"), one numbered section per
+  wake-to-sleep cycle stamped with the minutes it ran, each introduced by a
+  short digest written in Iris's own voice. Today's digests are injected at
+  connect, so "what did we decide this morning?" needs no lookup, and search
+  matches the spelled-out date so "what did we decide on Monday?" finds it.
+  Everything stays on the machine; only the one-shot summarization call leaves
+  it. Turned off, waking is just as quick but each session begins knowing
+  nothing of the earlier ones.
+- **`search_conversation` tool** for anything older than today, or for detail the
+  digests omit. Search is a local scan over digest lines — roughly 0.06 ms per
+  query, with no index to maintain and no network round trip.
+- **Session lifecycle log** at `~/.iris/session-log.jsonl`, recording every wake
+  with its measured connect time, plus recoveries, refused sleeps, and digest
+  writes. There was previously no history of any of this once the log panel
+  scrolled away, which is why the wake regression below went undiagnosed for so
+  long. Refused Hermes dispatches are recorded there too, with the reason, the
+  proposal's stage, and how much of it was read aloud.
+- **Conversation memory setting** in Settings, plus `IRIS_CONVERSATION_JOURNAL`,
+  `IRIS_JOURNAL_RAW_DAYS`, `IRIS_JOURNAL_DIGEST_DAYS`, `IRIS_DIGEST_MODEL`, and
+  `IRIS_SESSION_LOG`. Raw spoken lines age out after 30 days, digests after 90.
+- **The conversation survives quitting the app, and belongs to a Hermes chat.**
+  Work restored on launch but the talking did not: the Comms panel was React
+  state, so pausing or stopping kept it only because the process was still
+  alive. Every turn is now indexed in `~/.iris/conversations.db` under the
+  Hermes chat it was spoken in, and the panel restores from it the same way the
+  Work Stream restores task cards — by the same thread id, so reopening the app
+  tomorrow brings back both halves of the same conversation. Scrolling to the
+  top pages further back, across days, with dividers where the day changes.
+  Switching chats with `+` switches both halves and re-scopes what Iris
+  remembers, so she cannot answer one project out of another's context.
+  `node:sqlite` is part of Electron, so this adds no native dependency and
+  nothing to rebuild when packaging. A chat nobody has spoken in shows an empty
+  panel and wakes with no memory of earlier ones, because the alternative is
+  showing another chat's conversation under this one's name.
+
+### Changed
+
+- **The Live context window is now compressed** at 40000 tokens down to 16000,
+  which stops per-turn cost compounding across an all-day session and removes
+  the 15-minute ceiling on audio-only sessions. The numbers are sized against
+  the ~5.5k-token incompressible floor of tool schemas, instructions, and the
+  `USER`/`MEMORY` snapshot: an earlier 16384/8192 attempt left too little room
+  for a Google Search result to land, which is why it was reverted. Verified
+  live — after a forced compression, a grounded search still returns a real
+  figure.
+- **Waking no longer replays the conversation, and no longer gets slower as the
+  day goes on.** Resuming a session hands it back to Google to rehydrate before
+  the model will speak, which measures at roughly 140 ms per turn of history:
+  1.0 s on a fresh session, 3.5 s at 10 turns, 6.4 s at 30, 9.6 s at 60. A
+  40-turn afternoon therefore woke in 15-20 seconds, and every wake was slower
+  than the one before it. Since connecting costs ~90 ms either way, a wake now
+  opens a new session and carries the conversation across as text — today's
+  digests plus the last few lines actually spoken — which measured 831 ms to
+  first audio while still recalling the previous topic correctly. Resumption
+  handles now survive only to recover a socket that drops mid-sentence, where
+  the context is already warm.
+- **Removed the standby handle-renewal machinery** (139 lines, plus its
+  power-resume hook). It existed to keep a resumption handle alive across long
+  naps so a wake could replay into it, and a wake no longer does. It also never
+  paid for itself: across 75 recorded sessions it ran 3 times and collided with
+  a wake 0 times.
+- **The microphone opens in parallel with the Gemini connect** rather than after
+  it. In series, the device's own startup delay landed after "I'm back", so the
+  first thing said on waking went into a microphone that was not listening yet.
+- **`GoAway` is handled proactively.** When the server warns that a long-lived
+  connection is about to be recycled, Iris now rotates it early during a silent
+  moment instead of being cut off wherever the drop happens to fall. A busy
+  connection is left alone for the existing reconnect path.
+- **Gesture control is a remembered preference.** The camera no longer switches
+  itself on at wake, in HUD mode, or when the Neural Map opens; it is off until
+  you turn it on, and it stays however you left it (`IRIS_GESTURE_CONTROL`).
+
+### Fixed
+
+- **Iris no longer wakes up, says goodbye, and goes back to sleep in a loop.**
+  The `go_to_sleep` tool response is the last thing left in the conversation, so
+  an expanded version of it listing example sign-offs was read again on every
+  wake as if it were a live instruction — Iris spent four consecutive wakes
+  reciting "Catch you later" and "Talk soon" at a user who was asking whether
+  she could hear him. The response is one short line again, the time-of-day ban
+  lives only in the system instruction where it does not linger in history, and
+  `go_to_sleep` is now refused in code when nobody has spoken yet in the
+  session, since a sleep request that predates the user's first word can only be
+  an echo.
+- **Farewells no longer guess the time of day.** Iris has no clock, so "go to
+  sleep" could be answered with "good night" at three in the afternoon. The
+  sleep rule and the session-start greeting now agree on time-neutral wording.
+- **Markdown no longer leaks into Hermes card previews.** The two-line preview in
+  the side panel rendered `**bold**` and `##` literally while the opened reader
+  showed it correctly. Previews are now flattened to prose.
+- **A confirmed Hermes brief can no longer be stuck behind an endless read-back.**
+  Saying "yes" the moment Iris finished reading a brief could reject it as an
+  interrupted read-back, and the restage met the same fate — one user answered
+  "yes" five times to the same brief while Iris apologised and read it again.
+  The dispatch gate judged the read-back on two things it could not see: an
+  interruption belonging to the turn *before* the proposal was staged, which
+  voided a brief that had not yet been spoken, and the length of the Comms
+  transcript buffer, which empties on its own schedule and so reported a fully
+  read brief as barely started. The gate now counts the speech produced since
+  the proposal was staged, and ignores an interruption that arrives before a
+  word of it has been read. Submitting still requires a read-back that finishes
+  and an answer that follows it.
+- **Answering before Iris finishes staging a brief no longer loses it.** Speaking
+  over Gemini cancels its turn along with every tool call still in flight, and
+  the call being cancelled was the one recording what the user was about to
+  confirm — so the confirmation arrived, found nothing staged, and was refused
+  with "no active proposal", five times in a row on one brief, with nothing
+  reaching Hermes. Staging now survives the cancellation that discards the rest,
+  and because the model is never told the id of a brief staged that way, a
+  submit that cannot quote the id is accepted for it. An id the model *was*
+  given must still match, and the read-back and answer are still required.
+- **Staging, dispatch, and cancelled tool calls are recorded** in
+  `~/.iris/session-log.jsonl`. The gate refused five dispatches leaving no trace
+  of whether a brief had ever been staged, which is most of what made the
+  failure above hard to place.
+
 ## [0.4.0] — 2026-07-25
 
 The Luminous Instrument redesign. The interface is rebuilt on flat surfaces and a

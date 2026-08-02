@@ -42,6 +42,41 @@ export function normalizeMarkdown(text?: string): string {
     .replace(/\\t/g, "  ");
 }
 
+// Flatten Markdown to prose for the card's two-line clamp, where syntax would
+// otherwise show up literally as "**" and "##". The clamp needs one continuous
+// inline box, so headings, lists and tables cannot be rendered here — the open
+// reader keeps the real Markdown.
+export function markdownToPlainText(text?: string): string {
+  if (!text) return "";
+  return (
+    normalizeMarkdown(text)
+      // Drop code fences but keep the code itself as prose.
+      .replace(/^[ \t]*(?:```|~~~).*$/gm, "")
+      // Images before links, so alt text survives while URLs do not.
+      .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+      // Whole-line rules and table separators carry no prose at all.
+      .replace(/^[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t]*$/gm, "")
+      .replace(/^[ \t]*\|?[ \t]*:?-{2,}:?[ \t]*(?:\|[ \t]*:?-{2,}:?[ \t]*)*\|?[ \t]*$/gm, "")
+      // Line-leading markers: headings, quotes, bullets, numbered items.
+      .replace(/^[ \t]*#{1,6}[ \t]+/gm, "")
+      .replace(/^[ \t]*>[ \t]?/gm, "")
+      .replace(/^[ \t]*[-*+][ \t]+/gm, "")
+      .replace(/^[ \t]*\d+[.)][ \t]+/gm, "")
+      .replace(/`+/g, "")
+      // Emphasis markers only when they wrap non-space text and sit on a word
+      // boundary, so snake_case names and stray asterisks are left alone.
+      .replace(/(\*\*|__)(\S(?:[\s\S]*?\S)?)\1/g, "$2")
+      .replace(/(?<![\w*])\*(\S(?:[^*]*?\S)?)\*(?![\w*])/g, "$1")
+      .replace(/(?<![\w_])_(\S(?:[^_]*?\S)?)_(?![\w_])/g, "$1")
+      .replace(/~~(\S(?:[\s\S]*?\S)?)~~/g, "$1")
+      // Table cell pipes become spaces so adjacent columns stay separated.
+      .replace(/[ \t]*\|[ \t]*/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+  );
+}
+
 export type ToolCategory = "browser" | "search" | "code" | "file" | "tool";
 
 export function toolCategory(tool: string): ToolCategory {

@@ -9,6 +9,9 @@ import crypto from "node:crypto";
 
 export const PROPOSAL_TTL_MS = 5 * 60 * 1000;
 
+/** Enough read-back for a reply landing on its tail to be a confirmation. */
+export const MIN_AUDIBLE_READBACK_CHARS = 48;
+
 const VALID_URGENCY = new Set(["low", "normal", "high"]);
 
 let proposal = null;
@@ -36,8 +39,19 @@ export function proposeHermesTask(task, urgency = "normal", options = {}) {
     proposedAt: Number(options.now) || Date.now(),
     userResponse: "",
     userTurnObserved: false,
+    spokenChars: 0,
+    idDelivered: false,
   });
   return { ok: true, proposal };
+}
+
+/**
+ * The staging result actually reached the model, so it can quote the id back.
+ * Until it does, the model has no way of knowing what to quote.
+ */
+export function noteProposalIdDelivered(proposalId) {
+  if (!proposal || !proposalId || proposalId !== proposal.id) return;
+  if (!proposal.idDelivered) replaceProposal({ idDelivered: true });
 }
 
 /** Advance only after the model completed the read-back turn. */
@@ -47,11 +61,40 @@ export function markModelTurnComplete() {
 }
 
 /**
+ * Model speech produced since this proposal was staged. The gate keeps its own
+ * count because the transcript buffers it used to be measured against are
+ * flushed on a UI schedule, so their length answers "how much has arrived since
+ * the last flush", not "how much of the brief was read aloud".
+ */
+export function recordModelSpeech(text) {
+  if (proposal?.stage !== "awaiting_readback") return;
+  const chars = typeof text === "number" ? text : String(text || "").length;
+  if (chars > 0) replaceProposal({ spokenChars: proposal.spokenChars + chars });
+}
+
+/** Has enough of the brief been read aloud to interpret a reply as an answer? */
+export function readbackAudible() {
+  return Boolean(proposal && proposal.spokenChars >= MIN_AUDIBLE_READBACK_CHARS);
+}
+
+/**
  * A barge-in does not prove that the complete brief was heard. The next model
  * turn must stage/read a fresh proposal before submission can succeed.
  */
 export function markModelTurnInterrupted() {
-  if (proposal?.stage === "awaiting_readback") replaceProposal({ stage: "readback_interrupted" });
+  if (proposal?.stage !== "awaiting_readback") return;
+  // Not a word of the brief has been read yet, so this interruption belongs to
+  // a turn that ended before the read-back began. It is evidence about that
+  // turn, not this proposal: leave the proposal waiting for a read-back, which
+  // still cannot be submitted until one completes.
+  if (proposal.spokenChars === 0) return;
+  // Natural replies often land on the tail of a read-back the user has already
+  // heard in full. That is an answer, not a barge-in.
+  if (proposal.spokenChars >= MIN_AUDIBLE_READBACK_CHARS) {
+    replaceProposal({ stage: "awaiting_user" });
+    return;
+  }
+  replaceProposal({ stage: "readback_interrupted" });
 }
 
 /**
@@ -100,7 +143,7 @@ export function discardHermesProposal(options = {}) {
   const now = options.now ?? Date.now();
   expire(now);
   if (!proposal) return { ok: false, reason: "no_proposal" };
-  if (!options.proposalId || options.proposalId !== proposal.id) {
+  if (proposal.idDelivered && options.proposalId !== proposal.id) {
     return { ok: false, reason: "proposal_mismatch" };
   }
   if (proposal.sessionId && options.sessionId !== proposal.sessionId) {
@@ -119,7 +162,13 @@ export function claimConfirmedProposal(options = {}) {
   const now = typeof options === "number" ? options : options.now ?? Date.now();
   expire(now);
   if (!proposal) return { ok: false, reason: "no_proposal" };
-  if (!options.proposalId || options.proposalId !== proposal.id) {
+  // The id binds the submit to the brief the user heard. When the staging
+  // result never reached the model — a barge-in cancelled it — the model cannot
+  // quote an id it was never given, and holding out for one leaves a brief the
+  // user has already approved permanently unsendable. The substantive
+  // guarantees below are unchanged: one proposal is staged at a time, it was
+  // read out in full, and the user answered it.
+  if (proposal.idDelivered && options.proposalId !== proposal.id) {
     return { ok: false, reason: "proposal_mismatch" };
   }
   if (proposal.sessionId && options.sessionId !== proposal.sessionId) {

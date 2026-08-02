@@ -21,7 +21,7 @@ export class LiveToolCoordinator {
     }
   }
 
-  enqueue(toolCall, { execute, onCall, send, isCancelled }) {
+  enqueue(toolCall, { execute, onCall, send, isCancelled, survivesCancellation }) {
     const operation = this.chain.then(async () => {
       const calls = toolCall?.functionCalls || [];
       const functionResponses = [];
@@ -31,9 +31,14 @@ export class LiveToolCoordinator {
           const cancelled = () =>
             Boolean(id) &&
             (this.cancelledIds.has(id) || isCancelled?.(id));
-          if (cancelled()) continue;
           const name = String(call?.name || "");
           const args = call?.args && typeof call.args === "object" ? call.args : {};
+          // Speaking over Gemini cancels its turn and every tool call still in
+          // flight. Dropping those is usually right — they answer a question
+          // nobody is asking any more. A call that stages state the rest of the
+          // conversation refers to is the exception: skipping it leaves the
+          // model certain it staged something the app never recorded.
+          if (cancelled() && !survivesCancellation?.(name)) continue;
           onCall?.({ id, name, args });
           let result;
           try {
@@ -45,6 +50,7 @@ export class LiveToolCoordinator {
               error: error?.message || String(error),
             };
           }
+          // A cancelled call has no place left in the protocol for its answer.
           if (cancelled()) continue;
           functionResponses.push({
             ...(id ? { id } : {}),

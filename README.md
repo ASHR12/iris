@@ -79,10 +79,14 @@ When Hermes finishes a background task, Iris **proactively speaks up**: *"Quick 
 
 ### Sessions & memory
 
+- **Conversation memory across the whole day** — a live session only holds the last few minutes of speech, so every conversation is saved to `~/.iris/journal/YYYY-MM-DD.md` on your machine: one file per day headed with the weekday, one numbered section per session with the times it ran, each summarized in a couple of lines. Iris reads today's summaries when it wakes, so "what did we decide this morning?" just works — and searches older days on request
+- **`search_conversation` for older days** — "the thing I mentioned yesterday", "what did we talk about last week"; keyword search over summaries, ~0.06 ms per query with no network round trip
+- **Bounded context window** — compression keeps long sessions affordable and lifts Google's 15-minute audio-session ceiling, without starving Google Search of the room it needs for grounded results
 - **One pinned Hermes chat thread** — like picking a chat in the Hermes app; no stray sessions
 - **Session switcher on the main page** — chip at the top of the Work Stream lists your Iris sessions; **+** starts a new thread (named by Hermes, titled by your first prompt, like every chat tool)
 - **Session-scoped Work Stream** — only the selected session’s cards are shown; work in other sessions continues without leaking cards into the current thread
 - **History restore** — close Iris, reopen it, and your past completed runs are rebuilt from Hermes's own session transcript. Nothing is lost between launches.
+- **Standby that survives the day** — Iris naps after silence and wakes in about a second regardless of how long you have been talking, because waking opens a new session carrying the conversation as memory rather than replaying it
 
 
 
@@ -324,6 +328,57 @@ flowchart LR
 3. **Hermes runs in the background** through its authenticated TUI Gateway WebSocket. Tasks in one chat queue safely; different chats may work concurrently. Every tool step and native interaction request streams into Iris.
 4. **On completion**, Iris injects a system event into Gemini so it proactively announces and summarizes the result — then you can open it by voice, mouse, or finger.
 5. **Sessions mirror Hermes**: all work lives in one pinned Hermes chat thread; the Work Stream rebuilds from that thread's transcript on every launch.
+6. **Memory is two-tier** — a short, compressed live window for the conversation you are having, and a local journal for the rest of the day. See below.
+
+### Memory across a long day
+
+A Live session is not a place to keep memory. The API re-bills the entire context on every turn, native audio accrues roughly 25 tokens per second even in silence, and audio-only sessions are capped at 15 minutes unless the window is compressed. So Iris deliberately keeps the live window short and stores what matters on disk instead — the same split Google's Agent Development Kit draws between short-term session state and a long-term memory service, done locally.
+
+```mermaid
+flowchart TB
+  subgraph live["Tier 1 — live window (Google, server-side)"]
+    W["The conversation in progress<br/>compresses 40k → 16k tokens<br/>discarded when Iris sleeps"]
+  end
+  subgraph disk["Tier 2 — conversation record (your Mac)"]
+    F["~/.iris/journal/2026-07-27.md<br/>readable: one file per day, one<br/>numbered section per wake→sleep"]
+    D["~/.iris/conversations.db<br/>queryable: every turn, keyed by<br/>the Hermes chat it was spoken in"]
+  end
+  Talk["You talk"] -->|"transcripts, debounced"| W
+  Talk -->|"buffered, batched write every 5s"| F
+  F -->|"mirrored on each flush"| D
+  Sleep["Iris sleeps"] -->|"one cheap text call summarizes the session"| F
+  D -->|"this thread's digests + last lines,<br/>as text in the system instruction"| Wake["Iris wakes<br/>~1s, new session"]
+  Wake --> W
+  D -->|"this thread's turns, paged"| Panel["Comms panel<br/>restored at launch"]
+  D -->|"older days on request"| Tool["search_conversation tool"]
+```
+
+A day on disk, which is meant to be readable months later without tooling — file names stay `YYYY-MM-DD.md` because retention sorts them as strings, but everything inside is written for a person:
+
+```markdown
+# Conversation journal — Monday, 27 July 2026
+
+Every conversation held on Monday, 27 July 2026, oldest first — one section per session,
+from the moment Iris woke to the moment she slept, summarised under its heading.
+
+## Session 1 — 09:12–09:31 (id: 20260727-091200-ggg8)
+**Digest:** You asked me to pull the April deal numbers and I dispatched that to Hermes.
+- 09:12 you: ask Hermes for the April deal numbers
+- 09:12 iris: Hermes has started the task.
+
+## Session 2 — 15:02–15:08 (id: 20260727-150200-piz5)
+**Digest:** I confirmed the finance summary row came from your Notion workspace.
+- 15:02 you: where did that finance summary come from?
+```
+
+- **A conversation is identified by its Hermes chat**, which is what makes the two halves of the screen one thing. The Work Stream restores its task cards from Hermes by that id; the Comms panel restores its turns from the local index by the same id. Close the app mid-thought and reopen it tomorrow and both come back together. Picking another chat switches both, and re-scopes what Iris remembers too — otherwise she would answer one project out of another's context. A chat nobody has spoken in shows nothing rather than borrowing another's conversation.
+- **Two files, one write path.** The Markdown is the artifact you own and can grep; the SQLite index is what the app queries, and it is fed from the journal's own flush rather than written separately, so the two cannot disagree about where a session starts and ends. `node:sqlite` ships inside Electron, so this adds no native dependency and nothing to rebuild at package time.
+- **Waking never replays the conversation.** Handing the session back to Google to rehydrate costs about 140ms per turn of history — 1.0s fresh, 3.5s at 10 turns, 6.4s at 30, 9.6s at 60 — so every wake got slower than the last one all day. Connecting costs ~90ms either way, so a wake now opens a new session and carries the conversation across as text. Resumption handles survive only to recover a socket that drops mid-sentence, where the context is already warm.
+- **Writes never touch the audio path.** Turns are buffered in memory and flushed on a timer; the summary call happens after the socket closes, so sleeping stays instant.
+- **The summary is written in Iris's own voice** ("I reviewed the Vercel bill and asked Hermes to…") because it is injected back as memory, and third-person notes read like someone else's.
+- **The journal is on by default**, and it is the only thing carrying a nap. Turned off, waking is just as quick but each session starts knowing nothing of the earlier ones — which is the honest reading of switching memory off.
+- **Retention is bounded**: raw spoken lines age out after 7 days, summaries after 90, swept shortly after each launch. A full day of conversation is on the order of a couple of KB.
+- `~/.iris/session-log.jsonl` records every wake with its connect time, so a slow one leaves evidence instead of guesswork.
 
 **Pinned models, SDKs & known footguns (for contributors)**
 
@@ -331,6 +386,7 @@ flowchart LR
 | Purpose           | Identifier                                                                     | Where                                     |
 | ----------------- | ------------------------------------------------------------------------------ | ----------------------------------------- |
 | Gemini Live model | `models/gemini-3.1-flash-live-preview`                                         | `electron/main.mjs` (`GEMINI_LIVE_MODEL`) |
+| Session summaries | `gemini-flash-lite-latest` (one-shot text, off the voice path)                  | `electron/main.mjs` (`IRIS_DIGEST_MODEL`) |
 | Gemini SDK        | `@google/genai`                                                                | `package.json`                            |
 | Gesture runtime   | `@mediapipe/tasks-vision` (WASM pinned to same version in `useHandControl.ts`) | `package.json`                            |
 | Wake word         | openWakeWord-style ONNX via `onnxruntime-web`                                  | `public/wakeword/`                        |
@@ -339,6 +395,7 @@ flowchart LR
 - Live models are a distinct family — a normal `gemini-*` chat model will not open a Live session. Keep the `models/` prefix.
 - Gemini Live audio is fixed-format: **send 16 kHz PCM, receive 24 kHz PCM**.
 - Live function calls are synchronous — never block a tool call on Hermes work; return the `run_id` immediately.
+- **Context compression has a floor.** Tool schemas, the instruction set, and the `USER`/`MEMORY` snapshot total roughly 5.5k tokens and are never pruned by `slidingWindow`. Sizing `targetTokens` too close to that floor leaves no room for a Google Search result to land — an earlier 16384/8192 attempt broke grounded search for exactly this reason, and a 4000/2000 probe fails the request outright. The shipped 40000/16000 was verified live: a forced compression, then a grounded search that still returned a real figure.
 - Keep the MediaPipe WASM CDN version identical to the installed npm package version.
 - MediaPipe WASM + model are fetched from CDN on first gesture use — first run needs network.
 
@@ -371,9 +428,17 @@ IRIS_SHOW_WAKE_DIAGNOSTICS=false                  # optional 6-second wake reaso
 IRIS_HUD_HOTKEY=Alt+H                             # global Glass HUD hotkey
 IRIS_AUTO_SLEEP_SECONDS=30                        # standby after N s of silence (0 = never) — saves ~80% of Live API cost
 IRIS_AUTO_WAKE_ON_HERMES=true                     # Hermes results wake Iris from standby to announce themselves
+IRIS_CONVERSATION_JOURNAL=true                    # local per-day conversation summaries (~/.iris/journal) — how Iris recalls earlier today
+IRIS_JOURNAL_RAW_DAYS=7                           # how long the underlying spoken lines are kept
+IRIS_JOURNAL_DIGEST_DAYS=90                       # how long the summaries are kept
+IRIS_DIGEST_MODEL=gemini-flash-lite-latest        # one-shot summary model; falls back to plain text if the call fails
+IRIS_SESSION_LOG=true                             # ~/.iris/session-log.jsonl connect/resume diagnostics
+IRIS_GESTURE_CONTROL=false                        # camera + hand tracking; off until you switch it on
 IRIS_SOUNDS=true                                  # subtle interface sound cues
 IRIS_LOAD_TEST_DATA=false                         # demo mode
 ```
+
+To erase conversation memory, delete `~/.iris/journal` and `~/.iris/conversations.db` — or set `IRIS_CONVERSATION_JOURNAL=false` (**Settings → Conversation memory**) to keep no record at all.
 
 Config resolution order: repo `.env` (dev) → `~/.iris/.env` (wizard/packaged) → bundled `.env`.
 
@@ -388,6 +453,11 @@ electron/          main process — Gemini Live session, Hermes bridge, dispatch
                    gate, Glass HUD window control, tray, config
                    liveSessionState / liveToolCoordinator — turn lifecycle,
                    resume handles, serialized tool execution
+                   conversationJournal / conversationDigest — per-day journal,
+                   session summaries, retention
+                   conversationStore.mjs — SQLite index over the journal:
+                   per-thread restore, paging, recall search
+                   sessionLog.mjs — append-only session lifecycle diagnostics
                    hermes* — HTTP/gateway clients, event stream, interactive
                    transport, dispatch gate, result service
                    brainIndex.mjs — embedding + BM25 retrieval stack (also a CLI)
@@ -402,8 +472,8 @@ src/
   lib/             audio/PCM helpers, task utils + fuzzy matching, sounds, fixtures
   styles/          deep-space design system (tokens → base → deck → overlays → fx
                    → hud → brain)
-test/              17 Node test files — gate, Live lifecycle, Hermes contract,
-                   registry, memory, routing, security
+test/              19 Node test files — gate, Live lifecycle, Hermes contract,
+                   registry, memory, journal, routing, security
 scripts/           dev launcher, icon renderer, macOS package/install/sign,
                    demo-vault generator, live-API harnesses, soak runner
 public/wakeword/   on-device "Hey Iris" ONNX models
@@ -460,7 +530,8 @@ Found a vulnerability? Please report it privately — see [SECURITY.md](SECURITY
 
 - Your Gemini key and Hermes key live in mode-`0600` `~/.iris/.env`, are never returned to renderer state, and are never committed.
 - Camera frames and wake-word audio are processed **entirely on-device** and never uploaded.
-- Conversation audio goes to Gemini Live while Iris is awake. Wake-word audio stays local while asleep; a brief silent connection may renew the Gemini resumption handle during long standby.
+- Conversation audio goes to Gemini Live while Iris is awake. Wake-word audio stays local while asleep, and nothing connects to Google while Iris is napping.
+- **Conversations are written to disk.** With `IRIS_CONVERSATION_JOURNAL=true` (the default), spoken transcripts and a short summary per conversation are stored in `~/.iris/journal/YYYY-MM-DD.md` and mirrored into `~/.iris/conversations.db` on your machine only — never uploaded. The only thing sent to Google is the one-shot summarization call at the end of a session. That record is what restores the Comms panel at launch and what the current chat's summaries are seeded from on the next wake. Turn the setting off to keep no record, and delete both to erase what exists.
 - A bounded snapshot of Hermes `USER.md` and `MEMORY.md` is sent to Gemini at session setup. Brain-note content is retrieved only when relevant; semantic indexing/querying also uses Gemini embeddings when enabled.
 - `API_SERVER_KEY` must be a strong secret (Hermes enforces 16+ chars and refuses weak keys — the endpoint dispatches terminal-capable agent work). Generate one with `openssl rand -hex 32` and use the same value on both sides.
 
