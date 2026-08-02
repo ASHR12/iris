@@ -7,12 +7,14 @@ import {
   getHermesProposal,
   markModelTurnComplete,
   markModelTurnInterrupted,
+  noteProposalIdDelivered,
   proposeHermesTask,
   readbackAudible,
   recordModelSpeech,
   recordUserResponse,
   resetHermesGate,
 } from "../electron/hermesGate.mjs";
+import { LiveToolCoordinator } from "../electron/liveToolCoordinator.mjs";
 
 const FULL_READBACK =
   "Hermes should check the Fetra brief and draft two posts. Should I send this to Hermes?";
@@ -43,6 +45,7 @@ test("requires completed readback, a real user turn, exact proposal id, and sess
   });
   assert.equal(staged.ok, true);
   assert.equal(Object.isFrozen(staged.proposal), true);
+  noteProposalIdDelivered(staged.proposal.id);
 
   assert.equal(
     claimConfirmedProposal({
@@ -89,6 +92,7 @@ test("requires completed readback, a real user turn, exact proposal id, and sess
 test("Gemini can discard the exact staged proposal when it interprets a decline", () => {
   resetHermesGate();
   const staged = proposeHermesTask("Task A", "normal", { sessionId: "s" }).proposal;
+  noteProposalIdDelivered(staged.id);
   markModelTurnComplete();
   recordUserResponse("No, let's leave it.");
   assert.equal(
@@ -186,6 +190,94 @@ test("does not mistake a pre-readback transcript tail for confirmation", () => {
     claimConfirmedProposal({ proposalId: staged.id, sessionId: "s" }).reason,
     "no_user_turn",
   );
+});
+
+test("a brief staged behind a barge-in can still be sent and declined", () => {
+  // The staging result never reached the model, so it has no id to quote. The
+  // user still heard the brief and answered it, which is what the gate is for.
+  resetHermesGate();
+  const staged = proposeHermesTask("Email the client", "normal", { sessionId: "s" }).proposal;
+  assert.equal(staged.idDelivered, false);
+  for (const chunk of FULL_READBACK.match(/.{1,12}/g)) recordModelSpeech(chunk);
+  markModelTurnComplete();
+  recordUserResponse("Yes, send it.");
+
+  assert.equal(discardHermesProposal({ proposalId: "guessed", sessionId: "s" }).ok, true);
+
+  resetHermesGate();
+  proposeHermesTask("Email the client", "normal", { sessionId: "s" });
+  markModelTurnComplete();
+  recordUserResponse("Yes, send it.");
+  const claimed = claimConfirmedProposal({ proposalId: undefined, sessionId: "s" });
+  assert.equal(claimed.ok, true);
+  assert.equal(claimed.proposal.task, "Email the client");
+});
+
+test("a delivered id must still match, and the session always must", () => {
+  resetHermesGate();
+  const staged = proposeHermesTask("Task", "normal", { sessionId: "s" }).proposal;
+  noteProposalIdDelivered(staged.id);
+  markModelTurnComplete();
+  recordUserResponse("Yes.");
+  assert.equal(
+    claimConfirmedProposal({ proposalId: "stale", sessionId: "s" }).reason,
+    "proposal_mismatch",
+  );
+  assert.equal(
+    claimConfirmedProposal({ proposalId: staged.id, sessionId: "other" }).reason,
+    "session_mismatch",
+  );
+  assert.equal(claimConfirmedProposal({ proposalId: staged.id, sessionId: "s" }).ok, true);
+});
+
+test("delivery is only noted for the proposal actually sent to the model", () => {
+  resetHermesGate();
+  const first = proposeHermesTask("First", "normal", { sessionId: "s" }).proposal;
+  const second = proposeHermesTask("Second", "normal", { sessionId: "s" }).proposal;
+  noteProposalIdDelivered(first.id);
+  assert.equal(getHermesProposal().idDelivered, false);
+  noteProposalIdDelivered(second.id);
+  assert.equal(getHermesProposal().idDelivered, true);
+});
+
+test("speaking over Gemini while it stages a brief does not strand the brief", async () => {
+  // Aug 2: five submits in a row were refused with "no active proposal" and no
+  // task ever reached Hermes. Answering early cancelled the staging call, so
+  // nothing was recorded, and every restage met the same eager confirmation.
+  resetHermesGate();
+  const coordinator = new LiveToolCoordinator();
+  const sent = [];
+  const runCall = (call) =>
+    coordinator.enqueue(
+      { functionCalls: [call] },
+      {
+        execute: async (name, args) =>
+          name === "propose_hermes_task"
+            ? proposeHermesTask(args.goal, "normal", { sessionId: "s" })
+            : { status: "ok" },
+        send: async (batch) => {
+          sent.push(batch);
+          for (const response of batch) {
+            if (response.name !== "propose_hermes_task") continue;
+            noteProposalIdDelivered(response.response.result.proposal?.id);
+          }
+        },
+        survivesCancellation: (name) => name === "propose_hermes_task",
+      },
+    );
+
+  coordinator.cancel(["staging"]);
+  await runCall({ id: "staging", name: "propose_hermes_task", args: { goal: "Email Glean" } });
+  assert.deepEqual(sent, [], "a cancelled call gets no response");
+  assert.equal(getHermesProposal().task, "Email Glean", "but the brief is recorded");
+
+  for (const chunk of FULL_READBACK.match(/.{1,12}/g)) recordModelSpeech(chunk);
+  markModelTurnComplete();
+  recordUserResponse("Yes, send it.");
+
+  const claimed = claimConfirmedProposal({ proposalId: undefined, sessionId: "s" });
+  assert.equal(claimed.ok, true);
+  assert.equal(claimed.proposal.task, "Email Glean");
 });
 
 test("expired proposals are discarded", () => {

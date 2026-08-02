@@ -116,6 +116,19 @@ and IPC surfaces.
   the proposal was staged, and ignores an interruption that arrives before a
   word of it has been read. Submitting still requires a read-back that finishes
   and an answer that follows it.
+- **Answering before Iris finishes staging a brief no longer loses it.** Speaking
+  over Gemini cancels its turn along with every tool call still in flight, and
+  the call being cancelled was the one recording what the user was about to
+  confirm — so the confirmation arrived, found nothing staged, and was refused
+  with "no active proposal", five times in a row on one brief, with nothing
+  reaching Hermes. Staging now survives the cancellation that discards the rest,
+  and because the model is never told the id of a brief staged that way, a
+  submit that cannot quote the id is accepted for it. An id the model *was*
+  given must still match, and the read-back and answer are still required.
+- **Staging, dispatch, and cancelled tool calls are recorded** in
+  `~/.iris/session-log.jsonl`. The gate refused five dispatches leaving no trace
+  of whether a brief had ever been staged, which is most of what made the
+  failure above hard to place.
 
 ## [0.4.0] — 2026-07-25
 

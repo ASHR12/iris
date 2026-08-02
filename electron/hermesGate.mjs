@@ -40,8 +40,18 @@ export function proposeHermesTask(task, urgency = "normal", options = {}) {
     userResponse: "",
     userTurnObserved: false,
     spokenChars: 0,
+    idDelivered: false,
   });
   return { ok: true, proposal };
+}
+
+/**
+ * The staging result actually reached the model, so it can quote the id back.
+ * Until it does, the model has no way of knowing what to quote.
+ */
+export function noteProposalIdDelivered(proposalId) {
+  if (!proposal || !proposalId || proposalId !== proposal.id) return;
+  if (!proposal.idDelivered) replaceProposal({ idDelivered: true });
 }
 
 /** Advance only after the model completed the read-back turn. */
@@ -133,7 +143,7 @@ export function discardHermesProposal(options = {}) {
   const now = options.now ?? Date.now();
   expire(now);
   if (!proposal) return { ok: false, reason: "no_proposal" };
-  if (!options.proposalId || options.proposalId !== proposal.id) {
+  if (proposal.idDelivered && options.proposalId !== proposal.id) {
     return { ok: false, reason: "proposal_mismatch" };
   }
   if (proposal.sessionId && options.sessionId !== proposal.sessionId) {
@@ -152,7 +162,13 @@ export function claimConfirmedProposal(options = {}) {
   const now = typeof options === "number" ? options : options.now ?? Date.now();
   expire(now);
   if (!proposal) return { ok: false, reason: "no_proposal" };
-  if (!options.proposalId || options.proposalId !== proposal.id) {
+  // The id binds the submit to the brief the user heard. When the staging
+  // result never reached the model — a barge-in cancelled it — the model cannot
+  // quote an id it was never given, and holding out for one leaves a brief the
+  // user has already approved permanently unsendable. The substantive
+  // guarantees below are unchanged: one proposal is staged at a time, it was
+  // read out in full, and the user answered it.
+  if (proposal.idDelivered && options.proposalId !== proposal.id) {
     return { ok: false, reason: "proposal_mismatch" };
   }
   if (proposal.sessionId && options.sessionId !== proposal.sessionId) {

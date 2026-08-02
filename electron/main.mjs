@@ -9,6 +9,7 @@ import {
   markUserSpoke,
   recordModelSpeech,
   readbackAudible,
+  noteProposalIdDelivered,
   resetHermesGate,
   hasPendingProposal,
   getHermesProposal,
@@ -1160,6 +1161,7 @@ function proposeHermesTask(args = {}) {
   const brief = formatHermesBrief(args);
   const staged = gatePropose(brief, urgency, { sessionId: hermesSessionId() });
   if (!staged.ok) return { status: "error", error: "A complete task brief is required." };
+  sessionLog.record("hermes_proposed", { proposalId: staged.proposal.id });
   return {
     status: "proposed",
     proposal_id: staged.proposal.id,
@@ -2077,7 +2079,7 @@ async function waitForUserConfirmationTurn(proposalId, sessionId, timeoutMs = 16
     const proposal = getHermesProposal();
     if (
       !proposal ||
-      proposal.id !== proposalId ||
+      (proposal.idDelivered && proposal.id !== proposalId) ||
       (proposal.sessionId && proposal.sessionId !== sessionId)
     ) {
       return;
@@ -2167,6 +2169,10 @@ async function executeTool(name, args = {}) {
                   : "Do not claim the task was sent.",
         };
       }
+      sessionLog.record("hermes_dispatched", {
+        proposalId: claim.proposal.id,
+        idDelivered: claim.proposal.idDelivered,
+      });
       return submitHermesTask({
         task: claim.proposal.task,
         urgency: claim.proposal.urgency,
@@ -3317,6 +3323,7 @@ async function handleToolCall(toolCall) {
       execute: executeTool,
       onCall: ({ name, args }) => emitEvent({ type: "tool_call", name, args }),
       isCancelled: (id) => liveTurnState.isToolCancelled(id),
+      survivesCancellation: (name) => name === "propose_hermes_task",
       send: async (functionResponses) => {
         if (!liveSession || liveSession !== sessionForCall) {
           throw new Error("Gemini Live changed before the tool response was ready.");
@@ -3324,6 +3331,10 @@ async function handleToolCall(toolCall) {
         bumpVoiceActivity();
         liveSession.sendToolResponse({ functionResponses });
         liveTurnState.toolResponse(functionResponses.map((response) => response.id));
+        for (const response of functionResponses) {
+          if (response.name !== "propose_hermes_task") continue;
+          noteProposalIdDelivered(response.response?.result?.proposal_id);
+        }
       },
     });
   } finally {
@@ -3336,6 +3347,7 @@ function handleLiveMessage(message) {
     const ids = message.toolCallCancellation.ids || [];
     liveTurnState.cancelTools(ids);
     liveToolCoordinator.cancel(ids);
+    sessionLog.record("tools_cancelled", { count: ids.length });
     emitEvent({ type: "log", level: "info", message: `Gemini cancelled ${ids.length} interrupted tool call${ids.length === 1 ? "" : "s"}.` });
   }
 
