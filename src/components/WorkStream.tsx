@@ -63,8 +63,123 @@ function PersonalOsTasks({ result }: { result: JarvisTasksResult | null }) {
   );
 }
 
+// German labels reused verbatim from Jarvis-Desktop's own
+// CommandCenter.jsx AutonomyView (JOB_STATUS_LABELS) — same source of
+// truth, same wording, no re-derivation.
+const JOB_STATUS_LABELS: Record<string, string> = {
+  pending: "AUSSTEHEND",
+  scheduled: "GEPLANT",
+  preparing: "WIRD VORBEREITET",
+  running: "LÄUFT",
+  verifying: "WIRD VERIFIZIERT",
+  ready_for_approval: "BEREIT ZUR FREIGABE",
+  needs_human: "MENSCHLICHE ENTSCHEIDUNG NÖTIG",
+  completed: "ABGESCHLOSSEN",
+  partial: "TEILWEISE",
+  failed: "FEHLGESCHLAGEN",
+  timeout: "ZEITÜBERSCHREITUNG",
+  cancelled: "ABGEBROCHEN",
+  not_configured: "NICHT KONFIGURIERT",
+};
+function jobStatusLabel(status: string): string {
+  return JOB_STATUS_LABELS[status] || status?.toUpperCase() || "UNBEKANNT";
+}
+function jobStatusTone(status: string): "pos-ready" | "pos-human" | "pos-progress" | "" {
+  if (status === "ready_for_approval") return "pos-ready";
+  if (status === "needs_human" || ["failed", "timeout", "cancelled", "not_configured"].includes(status)) return "pos-human";
+  if (["running", "preparing", "verifying", "pending", "scheduled"].includes(status)) return "pos-progress";
+  return "";
+}
+
+// Real autonomous engineering job state (window.iris.getJarvisEngineeringJob
+// -> jarvisBridge.getLatestEngineeringJob() -> job-store.cjs/job-events.cjs,
+// see Jarvis-Desktop/app/adapter/iris-bridge.cjs). Read-only, same boundary
+// as Jarvis's own CommandCenter.jsx AutonomyView: shows lifecycle, worker,
+// attempts, verification and approval state, never a merge/push/promote
+// control. `result` is null before the first load, {ok:false} when the
+// bridge/store is unavailable, or {ok:true,data:null} when no job exists
+// yet — each a distinct, honest state, never fabricated.
+function EngineeringJobBlock({ result }: { result: JarvisEngineeringJobResult | null }) {
+  if (!result) return null;
+  if (!result.ok) {
+    return (
+      <div className="pos-block">
+        <span className="pos-block-head">Autonomie</span>
+        <p className="pos-empty-text">{result.error || "Engineering-Job-Daten nicht verfügbar."}</p>
+      </div>
+    );
+  }
+  const job = result.data;
+  if (!job) {
+    return (
+      <div className="pos-block">
+        <span className="pos-block-head">Autonomie</span>
+        <p className="pos-empty-text">Kein autonomer Engineering-Job vorhanden.</p>
+      </div>
+    );
+  }
+  const verification = job.verification?.result;
+  const changedFileCount =
+    job.promotion?.actualChangedFiles?.length ?? verification?.actualChangedFiles?.length ?? null;
+  const warnings = [...(verification?.warnings || []), ...(verification?.reasons || [])];
+  const approvalReason =
+    job.budgetState?.reason || verification?.reasons?.join("; ") || job.error?.message || null;
+
+  return (
+    <div className="pos-block">
+      <span className="pos-block-head">Autonomie</span>
+      <div className="pos-group">
+        <span className={`pos-group-label ${jobStatusTone(job.status)}`}>{jobStatusLabel(job.status)}</span>
+        <div className="pos-row">
+          <span className="pos-title">{job.task?.length > 72 ? `${job.task.slice(0, 72)}…` : job.task}</span>
+          <span className="pos-meta">{job.id.slice(0, 8)}</span>
+        </div>
+        <div className="pos-row">
+          <span className="pos-title">Worker: {job.workerKind || "nicht zugewiesen"}</span>
+          <span className="pos-meta">
+            {job.attemptCount ?? 0} / {job.budgetState?.maxAttempts ?? 3} Versuche
+          </span>
+        </div>
+        {job.status === "ready_for_approval" ? (
+          <div className="pos-row">
+            <span className="pos-title">
+              {job.promotion?.commitHash ? `Commit ${job.promotion.commitHash.slice(0, 10)}` : "Verifiziert"} · kein
+              automatisches Merge/Push
+            </span>
+            {changedFileCount !== null ? <span className="pos-meta">{changedFileCount} Dateien</span> : null}
+          </div>
+        ) : null}
+        {job.status === "needs_human" && approvalReason ? (
+          <div className="pos-row">
+            <span className="pos-title">{approvalReason}</span>
+          </div>
+        ) : null}
+        {warnings.map((warning, index) => (
+          <div className="pos-row" key={`warn-${index}`}>
+            <span className="pos-title">{warning}</span>
+          </div>
+        ))}
+      </div>
+      {job.events?.length ? (
+        <div className="pos-group">
+          <span className="pos-group-label">Work Stream</span>
+          {job.events.slice(-5).map((event, index) => (
+            <div className="pos-row" key={`${event.type}-${index}`}>
+              <span className="pos-title">{event.message}</span>
+              <span className="pos-meta">
+                {new Date(event.timestamp).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export default function WorkStream({
   personalTasks,
+  engineeringJob,
   tasks,
   sortedTasks,
   scrollRef,
@@ -82,6 +197,7 @@ export default function WorkStream({
   onApproveTask,
 }: {
   personalTasks: JarvisTasksResult | null;
+  engineeringJob: JarvisEngineeringJobResult | null;
   tasks: TaskCard[];
   sortedTasks: TaskCard[];
   scrollRef: RefObject<HTMLDivElement | null>;
@@ -128,6 +244,7 @@ export default function WorkStream({
       ) : null}
       <div className="work-scroll" ref={scrollRef}>
         <PersonalOsTasks result={personalTasks} />
+        <EngineeringJobBlock result={engineeringJob} />
         {tasks.length === 0 ? (
           <div className="empty">
             <span className="empty-icon">

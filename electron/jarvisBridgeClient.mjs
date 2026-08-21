@@ -98,6 +98,31 @@ export async function getCurrentContextForRenderer(bridge) {
   }
 }
 
+// getLatestEngineeringJobForRenderer/getActiveGoalForRenderer — same
+// never-throws, forward-the-bridge's-{ok,...}-result-as-is contract as the
+// three Personal OS readers above, for Jarvis V1's autonomous engineering
+// read surface (bridge.getLatestEngineeringJob/getActiveGoal — see
+// Jarvis-Desktop/app/adapter/iris-bridge.cjs). A job already carries
+// status/workerKind/attemptCount/verification/promotion/events verbatim;
+// no re-derivation here, no invented "no job"/"no goal" fallback data.
+export async function getLatestEngineeringJobForRenderer(bridge) {
+  if (!bridge) return { ok: false, error: "Jarvis Bridge nicht verfügbar." };
+  try {
+    return bridge.getLatestEngineeringJob();
+  } catch (error) {
+    return { ok: false, error: String(error?.message ?? error) };
+  }
+}
+
+export async function getActiveGoalForRenderer(bridge) {
+  if (!bridge) return { ok: false, error: "Jarvis Bridge nicht verfügbar." };
+  try {
+    return bridge.getActiveGoal();
+  } catch (error) {
+    return { ok: false, error: String(error?.message ?? error) };
+  }
+}
+
 // Pure: builds the [you, jarvis|jarvis-error] pair the renderer appends to
 // the existing Comms transcript for a request/response askJarvis call.
 // "jarvis-error" is a distinct speaker value (never silently reused as

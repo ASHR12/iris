@@ -7,9 +7,11 @@ import { Target } from "lucide-react";
 export default function PersonalFocusPanel({
   topFocus,
   context,
+  activeGoal,
 }: {
   topFocus: JarvisTopFocusResult | null;
   context: JarvisCurrentContextResult | null;
+  activeGoal: JarvisActiveGoalResult | null;
 }) {
   const focusItem = topFocus?.ok ? topFocus.data?.top?.[0] ?? null : null;
   const focusError = topFocus && !topFocus.ok ? topFocus.error : null;
@@ -18,6 +20,9 @@ export default function PersonalFocusPanel({
   const contextError = context && !context.ok ? context.error : null;
   const recommended = ctx?.recommended ?? null;
 
+  const goal = activeGoal?.ok ? activeGoal.data ?? null : null;
+  const goalError = activeGoal && !activeGoal.ok ? activeGoal.error : null;
+
   return (
     <aside className="deck-panel focus-panel">
       <div className="col-head">
@@ -25,6 +30,20 @@ export default function PersonalFocusPanel({
         <span>Focus</span>
       </div>
       <div className="focus-body">
+        <section className="focus-section">
+          <span className="focus-label">Mission</span>
+          {goal ? (
+            <>
+              <p className="focus-title">{goal.title}</p>
+              {goal.nextAction ? <p className="focus-sub">{goal.nextAction}</p> : null}
+            </>
+          ) : (
+            <p className="focus-empty">
+              {goalError || (activeGoal ? "Kein Ziel definiert." : "…")}
+            </p>
+          )}
+        </section>
+
         <section className="focus-section">
           <span className="focus-label">Top Focus</span>
           {focusItem ? (

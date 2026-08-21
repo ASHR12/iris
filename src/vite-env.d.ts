@@ -240,6 +240,8 @@ type IrisApi = {
   getJarvisTasks: () => Promise<JarvisTasksResult>;
   getJarvisTopFocus: () => Promise<JarvisTopFocusResult>;
   getJarvisCurrentContext: () => Promise<JarvisCurrentContextResult>;
+  getJarvisEngineeringJob: () => Promise<JarvisEngineeringJobResult>;
+  getJarvisActiveGoal: () => Promise<JarvisActiveGoalResult>;
   onUiAction: (callback: (action: IrisUiAction) => void) => () => void;
   onAudioChunk: (callback: (chunk: LiveAudioChunk) => void) => () => void;
   onAudioInterrupt: (callback: () => void) => () => void;
@@ -337,6 +339,82 @@ type JarvisCurrentContextResult = {
     };
     recommended: JarvisNextAction;
   };
+};
+
+// Jarvis V1 Autonomy read surface — verbatim field shapes from
+// Jarvis's own job-model.cjs/job-store.cjs/job-events.cjs/goal-store.cjs
+// (reached via getLatestEngineeringJob/getActiveGoal), never re-derived.
+// Promotion stops at ready_for_approval; there is no merge/push/promote
+// control anywhere in Iris — read-only, same boundary as Jarvis's own
+// CommandCenter.jsx AutonomyView.
+type JarvisJobStatus =
+  | "pending" | "scheduled" | "preparing" | "running" | "verifying"
+  | "ready_for_approval" | "needs_human" | "completed" | "partial"
+  | "failed" | "timeout" | "cancelled" | "not_configured";
+
+type JarvisJobEvent = {
+  timestamp: string;
+  jobId: string;
+  type: string;
+  status: string;
+  message: string;
+  metadata: Record<string, unknown> | null;
+};
+
+type JarvisJobVerification = {
+  result?: {
+    actualChangedFiles?: string[];
+    reportedChangedFiles?: string[];
+    steps?: Array<{ name: string; passed: boolean; exitCode?: number }>;
+    warnings?: string[];
+    reasons?: string[];
+  };
+};
+
+type JarvisJobPromotion = {
+  commitHash?: string;
+  actualChangedFiles?: string[];
+  attempts?: number;
+};
+
+type JarvisEngineeringJob = {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
+  status: JarvisJobStatus;
+  executionMode: string;
+  task: string;
+  source: string;
+  workerKind: string | null;
+  attemptCount: number | null;
+  budgetState: { maxAttempts?: number; reason?: string } | null;
+  verification: JarvisJobVerification | null;
+  promotion: JarvisJobPromotion | null;
+  metadata: { execution?: { branchName?: string; worktreePath?: string; baseRef?: string; preparedAt?: string } } | null;
+  error: { message: string } | null;
+  events: JarvisJobEvent[];
+};
+
+type JarvisEngineeringJobResult = {
+  ok: boolean;
+  error?: string;
+  data?: JarvisEngineeringJob | null;
+};
+
+type JarvisGoal = {
+  id: string;
+  title: string;
+  status: "active" | "paused" | "done";
+  nextAction: string | null;
+  linkedJobIds: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+type JarvisActiveGoalResult = {
+  ok: boolean;
+  error?: string;
+  data?: JarvisGoal | null;
 };
 
 interface Window {

@@ -8,6 +8,8 @@ import {
   getTasksForRenderer,
   getTopFocusForRenderer,
   getCurrentContextForRenderer,
+  getLatestEngineeringJobForRenderer,
+  getActiveGoalForRenderer,
 } from "./jarvisBridgeClient.mjs";
 import {
   proposeHermesTask as gatePropose,
@@ -3989,6 +3991,14 @@ app.whenReady().then(() => {
   trustedHandle("jarvisBridge:getTasks", () => getTasksForRenderer(jarvisBridge()));
   trustedHandle("jarvisBridge:getTopFocus", () => getTopFocusForRenderer(jarvisBridge()));
   trustedHandle("jarvisBridge:getCurrentContext", () => getCurrentContextForRenderer(jarvisBridge()));
+  // Jarvis V1 Autonomy read surface — real goal/job/lifecycle/worker/
+  // attempts/verification/approval/Work Stream state via the same
+  // in-process jarvisBridge() instance (bridge.getLatestEngineeringJob/
+  // getActiveGoal — see Jarvis-Desktop/app/adapter/iris-bridge.cjs). Iris
+  // never reads job-store.cjs/goal-store.cjs files directly, and never gets
+  // a second job/memory system — this is the only path.
+  trustedHandle("jarvisBridge:getLatestEngineeringJob", () => getLatestEngineeringJobForRenderer(jarvisBridge()));
+  trustedHandle("jarvisBridge:getActiveGoal", () => getActiveGoalForRenderer(jarvisBridge()));
   trustedHandle("app:open-external", (_event, url) => {
     const target = safeExternalUrl(url);
     if (target) return shell.openExternal(target);

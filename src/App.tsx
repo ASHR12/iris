@@ -61,6 +61,12 @@ export default function App() {
   const [jarvisTasks, setJarvisTasks] = useState<JarvisTasksResult | null>(null);
   const [jarvisTopFocus, setJarvisTopFocus] = useState<JarvisTopFocusResult | null>(null);
   const [jarvisContext, setJarvisContext] = useState<JarvisCurrentContextResult | null>(null);
+  // Jarvis V1 Autonomy read surface — real goal + latest engineering job
+  // (Jarvis-Desktop/app/adapter/iris-bridge.cjs getActiveGoal/
+  // getLatestEngineeringJob). Same null/{ok:false}/{ok:true} contract as
+  // the Personal OS states above, never demo data.
+  const [jarvisEngineeringJob, setJarvisEngineeringJob] = useState<JarvisEngineeringJobResult | null>(null);
+  const [jarvisActiveGoal, setJarvisActiveGoal] = useState<JarvisActiveGoalResult | null>(null);
   const [geminiStatus, setGeminiStatus] = useState("offline");
   const [hermesStatus, setHermesStatus] = useState("offline");
   const [audioState, setAudioState] = useState("idle");
@@ -276,6 +282,8 @@ export default function App() {
     window.iris.getJarvisTasks().then(setJarvisTasks);
     window.iris.getJarvisTopFocus().then(setJarvisTopFocus);
     window.iris.getJarvisCurrentContext().then(setJarvisContext);
+    window.iris.getJarvisEngineeringJob().then(setJarvisEngineeringJob);
+    window.iris.getJarvisActiveGoal().then(setJarvisActiveGoal);
   }, [hasBridge]);
 
   useEffect(() => {
@@ -1591,7 +1599,7 @@ export default function App() {
         <div className="deck-body">
           {/* LEFT — You */}
           <div className="deck-left">
-            <PersonalFocusPanel topFocus={jarvisTopFocus} context={jarvisContext} />
+            <PersonalFocusPanel topFocus={jarvisTopFocus} context={jarvisContext} activeGoal={jarvisActiveGoal} />
             <CommsPanel
               transcript={transcript}
               scrollRef={commsScrollRef}
@@ -1641,6 +1649,7 @@ export default function App() {
           {/* RIGHT — Work */}
           <WorkStream
             personalTasks={jarvisTasks}
+            engineeringJob={jarvisEngineeringJob}
             tasks={sessionTasks}
             sortedTasks={sortedTasks}
             scrollRef={workScrollRef}

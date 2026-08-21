@@ -1237,6 +1237,9 @@
 .pos-group-label.pos-now { color: var(--amber); }
 .pos-group-label.pos-next { color: var(--cyan-bright); }
 .pos-group-label.pos-waiting { color: var(--violet-soft); }
+.pos-group-label.pos-ready { color: var(--mint); }
+.pos-group-label.pos-human { color: var(--amber); }
+.pos-group-label.pos-progress { color: var(--violet-soft); }
 
 .pos-row {
   display: flex;
