@@ -16,7 +16,7 @@
   "type": "module",
   "main": "electron/main.mjs",
   "scripts": {
-    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on tcp:5173 && node scripts/run-electron.mjs\"",
+    "dev": "node scripts/dev-electron.mjs",
     "build": "tsc --noEmit && vite build",
     "test": "node --test test/*.test.mjs",
     "check:electron": "node scripts/check-electron.mjs",
