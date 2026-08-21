@@ -235,10 +235,108 @@ type IrisApi = {
   sendUiContext: (context: Record<string, unknown>) => void;
   sendAudioChunk: (chunk: ArrayBuffer) => void;
   notifyBootDone: () => void;
+  reportVoiceState: (state: JarvisVoiceState) => void;
+  askJarvis: (text: string) => Promise<JarvisAskResult>;
+  getJarvisTasks: () => Promise<JarvisTasksResult>;
+  getJarvisTopFocus: () => Promise<JarvisTopFocusResult>;
+  getJarvisCurrentContext: () => Promise<JarvisCurrentContextResult>;
   onUiAction: (callback: (action: IrisUiAction) => void) => () => void;
   onAudioChunk: (callback: (chunk: LiveAudioChunk) => void) => () => void;
   onAudioInterrupt: (callback: () => void) => () => void;
   onSidecarEvent: (callback: (event: SidecarEvent) => void) => () => void;
+};
+
+// Iris Bridge — request/response contract for window.iris.askJarvis(text),
+// reached via Iris's own main process (electron/jarvisBridgeClient.mjs),
+// never a second parallel event bus.
+type JarvisVoiceState = "idle" | "listening" | "thinking" | "speaking" | "error";
+type JarvisAskResult = { ok: boolean; answer?: string; error?: string };
+
+// Personal OS bridge — verbatim field shapes from Jarvis's own
+// personal-os-reader.cjs / daily-top-focus.cjs / daily-chief-of-staff.cjs
+// (reached via getTasks/getTopFocus/getCurrentContext), never re-derived.
+type JarvisTaskItem = {
+  title: string;
+  path: string;
+  status: string;
+  due: string;
+  priority: string;
+  project: string;
+  area: string;
+  overdue: boolean;
+  dueToday: boolean;
+  dueTomorrow: boolean;
+  nextAction: string;
+};
+
+type JarvisWaitingItem = {
+  title: string;
+  path: string;
+  status: "WAITING";
+  waitingFor: string;
+  since: string;
+  followUp: string;
+  followUpDue: boolean;
+  project: string;
+  expected: string;
+};
+
+type JarvisTasksResult = {
+  ok: boolean;
+  error?: string;
+  data?: {
+    now: JarvisTaskItem[];
+    next: JarvisTaskItem[];
+    waiting: JarvisWaitingItem[];
+    overdue: JarvisTaskItem[];
+  };
+};
+
+type JarvisTopFocusItem = {
+  id: string;
+  title: string;
+  project: string | null;
+  area: string | null;
+  priority: string | null;
+  whyNow: string;
+  nextAction: string | null;
+  deadline: string | null;
+  blocker: string | null;
+  tier: string;
+};
+
+type JarvisTopFocusResult = {
+  ok: boolean;
+  error?: string;
+  data?: { top: JarvisTopFocusItem[] };
+};
+
+type JarvisNextAction = {
+  id: string;
+  source: string;
+  kind: string;
+  title: string;
+  when: string | null;
+  reason: string;
+  blocked: boolean;
+  blocker: string | null;
+} | null;
+
+type JarvisCurrentContextResult = {
+  ok: boolean;
+  error?: string;
+  data?: {
+    today: string;
+    status: string;
+    summary: {
+      tasksOverdue: number;
+      tasksDueToday: number;
+      waitingFollowUpDue: number;
+      decisionsOpen: number;
+      projectsAttention: number;
+    };
+    recommended: JarvisNextAction;
+  };
 };
 
 interface Window {

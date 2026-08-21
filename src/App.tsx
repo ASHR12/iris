@@ -17,6 +17,7 @@ import { useHandControl, type HandState } from "./hooks/useHandControl";
 import { useWakeWord } from "./hooks/useWakeWord";
 import TopBar from "./components/TopBar";
 import CommsPanel from "./components/CommsPanel";
+import PersonalFocusPanel from "./components/PersonalFocusPanel";
 import CameraDock from "./components/CameraDock";
 import CenterStage from "./components/CenterStage";
 import { ORB_ACCENT } from "./components/ReactorCore";
@@ -34,6 +35,19 @@ import ApprovalPrompt from "./components/ApprovalPrompt";
 import HermesInteractionPrompt from "./components/HermesInteractionPrompt";
 
 const MAX_LOGS = 80;
+
+// Harmless, read-only smoke question — triggers no Action/Write/Approval.
+const JARVIS_SMOKE_QUESTION = "Wie heißt du?";
+
+// Canonical Jarvis voice.state vocabulary Iris's own ReactorState maps onto
+// when reporting outward (see the "Iris Bridge v0.2" block in App()).
+const CANONICAL_VOICE_STATE: Record<ReactorState, "idle" | "listening" | "thinking" | "speaking"> = {
+  idle: "idle",
+  online: "idle",
+  listening: "listening",
+  working: "thinking",
+  speaking: "speaking",
+};
 const MAX_TASKS_TOTAL = 100;
 // Point-and-hold duration before the finger pointer "clicks" what it's over.
 const DWELL_MS = 300;
@@ -41,6 +55,12 @@ const DWELL_MS = 300;
 export default function App() {
   const [sidecarRunning, setSidecarRunning] = useState(false);
   const [sidecarPid, setSidecarPid] = useState<number | null>(null);
+  // Work Stream (right) + compact focus panel (left) — real Jarvis Bridge
+  // Personal OS data. null = not yet loaded; {ok:false} = bridge/reader
+  // unavailable; never demo data or an invented fallback.
+  const [jarvisTasks, setJarvisTasks] = useState<JarvisTasksResult | null>(null);
+  const [jarvisTopFocus, setJarvisTopFocus] = useState<JarvisTopFocusResult | null>(null);
+  const [jarvisContext, setJarvisContext] = useState<JarvisCurrentContextResult | null>(null);
   const [geminiStatus, setGeminiStatus] = useState("offline");
   const [hermesStatus, setHermesStatus] = useState("offline");
   const [audioState, setAudioState] = useState("idle");
@@ -249,6 +269,13 @@ export default function App() {
       setSidecarPid(status.pid);
     });
     return window.iris.onSidecarEvent((event) => handleSidecarEvent(event));
+  }, [hasBridge]);
+
+  useEffect(() => {
+    if (!hasBridge) return;
+    window.iris.getJarvisTasks().then(setJarvisTasks);
+    window.iris.getJarvisTopFocus().then(setJarvisTopFocus);
+    window.iris.getJarvisCurrentContext().then(setJarvisContext);
   }, [hasBridge]);
 
   useEffect(() => {
@@ -477,7 +504,14 @@ export default function App() {
         );
       }
     },
-    (message) => pushLog("error", `Wake word: ${message}`),
+    (message) => {
+      pushLog("error", `Wake word: ${message}`);
+      // Iris has no visible error/attention UI today (pushLog's own `logs`
+      // state is never rendered — see integration report). Per instruction
+      // #6, the error must not silently vanish from the canonical model even
+      // though the UI itself stays unchanged.
+      if (hasBridge) window.iris.reportVoiceState("error");
+    },
     wakeThreshold,
     fullConfig?.micDevice || "",
   );
@@ -533,6 +567,9 @@ export default function App() {
       } else if (key === "g" && testDataEnabled) {
         event.preventDefault();
         simulateHandoff();
+      } else if (key === "j" && testDataEnabled) {
+        event.preventDefault();
+        void runJarvisSmoke();
       }
     }
     window.addEventListener("keydown", onKey);
@@ -605,6 +642,41 @@ export default function App() {
     if (geminiStatus === "connected") return "online";
     return "idle";
   }, [audioState, geminiStatus, sidecarRunning, webSearching, hermesSummarizing, working]);
+
+  // Iris Bridge v0.2 — Iris is voice-first and owns the real voice/turn
+  // pipeline; Jarvis runs in a separate Electron app/process, so there is no
+  // window.jarvisBridge in this renderer (that was round 1's incorrect
+  // assumption — corrected here rather than left as dead code). Iris instead
+  // REPORTS its own already-computed ReactorState outward, canonicalized to
+  // Jarvis's voice.state vocabulary, via window.iris.reportVoiceState ->
+  // main process -> electron/jarvisBridgeClient.mjs -> the in-process
+  // required Jarvis bridge module. The reverse direction (Jarvis's own
+  // voice.state driving Iris's UI) is not wired this round.
+  useEffect(() => {
+    if (!hasBridge) return;
+    window.iris.reportVoiceState(CANONICAL_VOICE_STATE[reactorState]);
+  }, [hasBridge, reactorState]);
+
+  // Iris Bridge v0.3 — real request/response smoke path: renderer -> preload
+  // -> main -> Jarvis Bridge -> askJarvis -> result -> back here, appended to
+  // the existing Comms transcript. No mic/Gemini dependency; triggered via
+  // the existing dev testDataEnabled shortcut (see keydown handler below),
+  // not a new UI element. Mirrors jarvisBridgeClient.mjs's
+  // describeSmokeTranscript pairing (tested) so both paths render identically.
+  async function runJarvisSmoke() {
+    if (!hasBridge) return;
+    const result = await window.iris.askJarvis(JARVIS_SMOKE_QUESTION);
+    const jarvisLine = result.ok
+      ? { speaker: "jarvis", text: result.answer ?? "" }
+      : { speaker: "jarvis-error", text: `Jarvis-Anfrage fehlgeschlagen: ${result.error}` };
+    setTranscript((current) =>
+      [
+        ...current,
+        { id: crypto.randomUUID(), speaker: "you", text: JARVIS_SMOKE_QUESTION },
+        { id: crypto.randomUUID(), ...jarvisLine },
+      ].slice(-40),
+    );
+  }
 
   function handleSidecarEvent(event: SidecarEvent) {
     if (event.type === "sidecar_status") {
@@ -1519,6 +1591,7 @@ export default function App() {
         <div className="deck-body">
           {/* LEFT — You */}
           <div className="deck-left">
+            <PersonalFocusPanel topFocus={jarvisTopFocus} context={jarvisContext} />
             <CommsPanel
               transcript={transcript}
               scrollRef={commsScrollRef}
@@ -1567,6 +1640,7 @@ export default function App() {
 
           {/* RIGHT — Work */}
           <WorkStream
+            personalTasks={jarvisTasks}
             tasks={sessionTasks}
             sortedTasks={sortedTasks}
             scrollRef={workScrollRef}

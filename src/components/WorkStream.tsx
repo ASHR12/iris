@@ -5,7 +5,66 @@ import { acceptedKey } from "../lib/tasks";
 import WorkCard from "./WorkCard";
 import SessionSwitcher from "./SessionSwitcher";
 
+const POS_GROUPS: Array<{ key: "now" | "next" | "waiting" | "overdue"; label: string }> = [
+  { key: "now", label: "NOW" },
+  { key: "next", label: "NEXT" },
+  { key: "waiting", label: "WAITING" },
+  { key: "overdue", label: "OVERDUE" },
+];
+
+// Real Personal OS NOW/NEXT/WAITING/OVERDUE tasks, from the same
+// window.iris.getJarvisTasks() bridge call — never demo data. `result` is
+// null before the first load, {ok:false} when the bridge/reader is
+// unavailable, or {ok:true, data} with the four real groups (possibly all
+// empty, which is itself a real, honest state).
+function PersonalOsTasks({ result }: { result: JarvisTasksResult | null }) {
+  if (!result) return null;
+  if (!result.ok) {
+    return (
+      <div className="pos-block">
+        <span className="pos-block-head">Personal OS</span>
+        <p className="pos-empty-text">{result.error || "Personal OS Daten nicht verfügbar."}</p>
+      </div>
+    );
+  }
+  const data = result.data ?? { now: [], next: [], waiting: [], overdue: [] };
+  const total = data.now.length + data.next.length + data.waiting.length + data.overdue.length;
+  if (total === 0) {
+    return (
+      <div className="pos-block">
+        <span className="pos-block-head">Personal OS</span>
+        <p className="pos-empty-text">Keine offenen Aufgaben.</p>
+      </div>
+    );
+  }
+  return (
+    <div className="pos-block">
+      <span className="pos-block-head">Personal OS</span>
+      {POS_GROUPS.map(({ key, label }) => {
+        const items = data[key];
+        if (!items.length) return null;
+        return (
+          <div className="pos-group" key={key}>
+            <span className={`pos-group-label pos-${key}`}>
+              {label} <span className="pos-group-count">{items.length}</span>
+            </span>
+            {items.map((item) => (
+              <div className="pos-row" key={item.path}>
+                <span className="pos-title">{item.title}</span>
+                <span className="pos-meta">
+                  {key === "waiting" ? (item as JarvisWaitingItem).waitingFor : (item as JarvisTaskItem).due}
+                </span>
+              </div>
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function WorkStream({
+  personalTasks,
   tasks,
   sortedTasks,
   scrollRef,
@@ -22,6 +81,7 @@ export default function WorkStream({
   onOpenTask,
   onApproveTask,
 }: {
+  personalTasks: JarvisTasksResult | null;
   tasks: TaskCard[];
   sortedTasks: TaskCard[];
   scrollRef: RefObject<HTMLDivElement | null>;
@@ -67,6 +127,7 @@ export default function WorkStream({
         />
       ) : null}
       <div className="work-scroll" ref={scrollRef}>
+        <PersonalOsTasks result={personalTasks} />
         {tasks.length === 0 ? (
           <div className="empty">
             <span className="empty-icon">

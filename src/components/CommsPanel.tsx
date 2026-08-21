@@ -36,9 +36,13 @@ export default function CommsPanel({
         ) : (
           transcript.map((line) => {
             const self = /you|user/i.test(line.speaker);
+            const jarvisError = line.speaker === "jarvis-error";
+            const fromJarvis = !jarvisError && /jarvis/i.test(line.speaker);
+            const who = self ? "You" : jarvisError ? "Jarvis ⚠" : fromJarvis ? "Jarvis" : "Iris";
+            const kind = self ? "self" : jarvisError ? "jarvis-error" : fromJarvis ? "jarvis" : "iris";
             return (
-              <div className={`bubble ${self ? "self" : "iris"}`} key={line.id}>
-                <span className="who">{self ? "You" : "Iris"}</span>
+              <div className={`bubble ${kind}`} key={line.id}>
+                <span className="who">{who}</span>
                 {line.text}
               </div>
             );

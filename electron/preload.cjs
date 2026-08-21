@@ -54,6 +54,11 @@ contextBridge.exposeInMainWorld("iris", {
   sendUiContext: (context) => ipcRenderer.send("iris:ui-context", context),
   sendAudioChunk: (chunk) => ipcRenderer.send("live:audio", chunk),
   notifyBootDone: () => ipcRenderer.send("iris:boot-done"),
+  reportVoiceState: (state) => ipcRenderer.send("jarvisBridge:voiceState", state),
+  askJarvis: (text) => ipcRenderer.invoke("jarvisBridge:askJarvis", text),
+  getJarvisTasks: () => ipcRenderer.invoke("jarvisBridge:getTasks"),
+  getJarvisTopFocus: () => ipcRenderer.invoke("jarvisBridge:getTopFocus"),
+  getJarvisCurrentContext: () => ipcRenderer.invoke("jarvisBridge:getCurrentContext"),
   onUiAction: (callback) => {
     const handler = (_event, payload) => callback(payload);
     ipcRenderer.on("iris:ui-action", handler);

@@ -25,6 +25,7 @@
     "test:live-sleep": "npm run build && node scripts/test-live-sleep-resume.mjs",
     "test:live-speech": "npm run build && node scripts/test-live-speech-standby.mjs",
     "test:hermes-wake": "npm run build && node scripts/test-live-hermes-wake.mjs",
+    "test:jarvis-bridge-smoke": "npm run build && node scripts/test-jarvis-bridge-smoke.mjs",
     "soak": "node scripts/soak-runtime.mjs",
     "preview": "vite preview",
     "start": "npm run build && node scripts/run-electron.mjs --prod",

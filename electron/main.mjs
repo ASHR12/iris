@@ -1,6 +1,15 @@
 import electron from "electron";
 import { GoogleGenAI } from "@google/genai";
 import {
+  shouldAskJarvis,
+  loadJarvisBridge,
+  askJarvisForTurn,
+  describeSmokeTranscript,
+  getTasksForRenderer,
+  getTopFocusForRenderer,
+  getCurrentContextForRenderer,
+} from "./jarvisBridgeClient.mjs";
+import {
   proposeHermesTask as gatePropose,
   claimConfirmedProposal,
   discardHermesProposal,
@@ -42,7 +51,7 @@ import {
   formatHermesCompletionEvent,
   normalizeHermesEvent,
 } from "./hermesEvents.mjs";
-import { classifyRoute, routingGuidance } from "./routingPolicy.mjs";
+import { classifyRoute, routingGuidance, decideTurnOwner } from "./routingPolicy.mjs";
 import {
   APPROVAL_CHOICES,
   approvalAuthorized,
@@ -110,6 +119,7 @@ let modelTranscriptTimer = null;
 let modelTranscriptSettled = false;
 const MIN_AUDIBLE_READBACK_CHARS = 48;
 let lastUserRoute = "direct";
+let lastTurnOwner = "gemini";
 const hermesRuns = new Map();
 const runRegistry = new RunRegistry();
 const pendingHermesApprovals = new Map();
@@ -302,16 +312,46 @@ function isInternalSystemTranscript(text) {
   return /^\s*SYSTEM_EVENT_[A-Z_]+/i.test(String(text || ""));
 }
 
+// Iris Bridge v0.2 — the point where a completed user turn's final
+// transcript text exists. Gated on the existing "memory" route
+// (routingPolicy.mjs — no new classification), so only Personal-OS-shaped
+// questions reach Jarvis; every other turn is untouched. Jarvis's answer is
+// pushed into the same Comms transcript stream as a distinctly-labeled
+// "jarvis" line — never through TTS/live:audio — so it can never audibly
+// compete with Gemini's own spoken turn for the same utterance. Gemini's own
+// conversational reply (voice + its own memory tools) is NOT suppressed;
+// see the integration report for why that overlap is a documented, not yet
+// resolved, risk rather than something silently fixed here.
+let cachedJarvisBridge;
+function jarvisBridge() {
+  if (cachedJarvisBridge === undefined) {
+    cachedJarvisBridge = loadJarvisBridge(repoRoot, {
+      onUnavailable: (reason) =>
+        emitEvent({
+          type: "log",
+          level: "warn",
+          message: `Jarvis Bridge unavailable (${reason}); Ask Jarvis relay disabled this session.`,
+        }),
+    });
+  }
+  return cachedJarvisBridge;
+}
+
+async function relayTurnToJarvis(text) {
+  const result = await askJarvisForTurn(jarvisBridge(), text);
+  const [, jarvisLine] = describeSmokeTranscript(text, result);
+  emitEvent({ type: "transcript", ...jarvisLine });
+}
+
 function flushUserTranscript() {
   if (userTranscriptTimer) {
     clearTimeout(userTranscriptTimer);
     userTranscriptTimer = null;
   }
-  if (
-    userTranscriptBuffer.trim() &&
-    !isInternalSystemTranscript(userTranscriptBuffer)
-  ) {
-    emitEvent({ type: "transcript", speaker: "you", text: userTranscriptBuffer.trim() });
+  const text = userTranscriptBuffer.trim();
+  if (text && !isInternalSystemTranscript(text)) {
+    emitEvent({ type: "transcript", speaker: "you", text });
+    if (shouldAskJarvis(lastUserRoute)) void relayTurnToJarvis(text);
   }
   userTranscriptBuffer = "";
 }
@@ -2084,8 +2124,26 @@ async function executeTool(name, args = {}) {
     case "read_hermes_task_result":
       return readHermesTaskResult(args);
     case "search_brain":
+      if (lastTurnOwner === "jarvis") {
+        return {
+          ok: true,
+          results: [],
+          deferredToJarvis: true,
+          instructions:
+            "This question is being answered by Jarvis directly this turn. Do not answer from memory. Acknowledge briefly (e.g. 'Jarvis übernimmt das') and stop.",
+        };
+      }
       return searchBrain(args.query, args.top_k);
     case "search_memory":
+      if (lastTurnOwner === "jarvis") {
+        return {
+          ok: true,
+          results: [],
+          deferredToJarvis: true,
+          instructions:
+            "This question is being answered by Jarvis directly this turn. Do not answer from memory. Acknowledge briefly (e.g. 'Jarvis übernimmt das') and stop.",
+        };
+      }
       return searchMemory(args.query, args.top_k);
     case "read_memory_note":
       return readMemoryNote(args.path);
@@ -2446,6 +2504,11 @@ if (process.env.IRIS_TEST_HOOKS === "1") {
       resumeHandles.corruptForTest();
     },
     pendingAnnouncements: () => announcementLedger.pendingCount,
+    simulateMemoryToolCall: (route, name, args) => {
+      lastUserRoute = route;
+      lastTurnOwner = decideTurnOwner(route);
+      return executeTool(name, args);
+    },
   };
 }
 
@@ -3132,6 +3195,7 @@ function handleLiveMessage(message) {
     scheduleUserTranscriptFlush();
     if (userTranscriptBuffer.trim()) {
       lastUserRoute = classifyRoute(userTranscriptBuffer);
+      lastTurnOwner = decideTurnOwner(lastUserRoute);
       markUserSpoke(userTranscriptBuffer, {
         allowDuringReadback:
           modelTranscriptBuffer.trim().length >= MIN_AUDIBLE_READBACK_CHARS,
@@ -3911,6 +3975,20 @@ app.whenReady().then(() => {
       return { ok: false, error: error?.message || String(error) };
     }
   });
+  // Iris Bridge v0.3 — real request/response contract for the renderer,
+  // completing the reverse direction: Renderer -> preload -> main -> Jarvis
+  // Bridge -> askJarvis -> result -> main -> preload -> Renderer. Reuses the
+  // same askJarvisForTurn/jarvisBridge as the voice-triggered path above
+  // (relayTurnToJarvis); no second bridge, no second contract.
+  trustedHandle("jarvisBridge:askJarvis", (_event, text) => askJarvisForTurn(jarvisBridge(), String(text || "")));
+  // Work Stream (right) + compact focus panel (left) — real Personal OS data
+  // via the same in-process jarvisBridge() instance, never a second
+  // retrieval path. Each handler forwards the bridge's own {ok, data|error}
+  // result unchanged (see jarvisBridgeClient.mjs); an unavailable bridge or
+  // reader surfaces as ok:false, never invented/demo data.
+  trustedHandle("jarvisBridge:getTasks", () => getTasksForRenderer(jarvisBridge()));
+  trustedHandle("jarvisBridge:getTopFocus", () => getTopFocusForRenderer(jarvisBridge()));
+  trustedHandle("jarvisBridge:getCurrentContext", () => getCurrentContextForRenderer(jarvisBridge()));
   trustedHandle("app:open-external", (_event, url) => {
     const target = safeExternalUrl(url);
     if (target) return shell.openExternal(target);
@@ -3934,6 +4012,14 @@ app.whenReady().then(() => {
           ? chunk.byteLength
           : 0;
     if (byteLength > 0 && byteLength <= 256 * 1024) sendAudioChunk(chunk);
+  });
+  // Iris Bridge v0.2 — Iris reports its own (already-computed, renderer-side)
+  // canonical voice.state into the same in-process Jarvis bridge instance
+  // used for askJarvis above. publishVoiceState() itself validates against
+  // the canonical VOICE_STATES set; an invalid/unknown value is dropped, not
+  // forwarded — never a crash, never a silent new state invented here.
+  trustedOn("jarvisBridge:voiceState", (_event, state) => {
+    jarvisBridge()?.publishVoiceState(state);
   });
   trustedOn("iris:boot-done", () => sendWelcomeGreeting());
   trustedOn("iris:ui-context", (_event, context) => {

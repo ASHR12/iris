@@ -249,6 +249,54 @@
   min-height: 0;
 }
 
+/* Compact Personal OS focus readout, above Comms in the left column. */
+.focus-panel {
+  flex: 0 0 auto;
+}
+
+.focus-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: 0 var(--s-4) var(--s-4);
+}
+
+.focus-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-05);
+}
+
+.focus-label {
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs);
+  font-weight: var(--w-medium);
+  letter-spacing: var(--tr-wide);
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.focus-title {
+  margin: 0;
+  font-size: var(--t-sm);
+  font-weight: var(--w-medium);
+  line-height: var(--lh-snug);
+  color: var(--text);
+}
+
+.focus-sub {
+  margin: 0;
+  font-size: var(--t-xs);
+  line-height: var(--lh-body);
+  color: var(--text-soft);
+}
+
+.focus-empty {
+  margin: 0;
+  font-size: var(--t-xs);
+  color: var(--muted);
+}
+
 .comms {
   flex: 1;
   min-height: 0;
@@ -1134,6 +1182,84 @@
   flex-direction: column;
   gap: var(--s-2);
   padding: var(--s-05) var(--s-3) var(--s-3);
+}
+
+/* Real NOW/NEXT/WAITING/OVERDUE Personal OS tasks, above the Hermes run
+   list in the same scrollable Work Stream column. */
+.pos-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: var(--s-3);
+  border-radius: var(--r-md);
+  background: var(--panel-raised);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+
+.pos-block-head {
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs);
+  font-weight: var(--w-semi);
+  letter-spacing: var(--tr-wide);
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.pos-empty-text {
+  margin: 0;
+  font-size: var(--t-xs);
+  color: var(--muted);
+}
+
+.pos-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+
+.pos-group-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs);
+  font-weight: var(--w-semi);
+  letter-spacing: var(--tr-wide);
+  text-transform: uppercase;
+  color: var(--text-soft);
+}
+
+.pos-group-count {
+  color: var(--muted);
+}
+
+.pos-group-label.pos-overdue { color: var(--coral); }
+.pos-group-label.pos-now { color: var(--amber); }
+.pos-group-label.pos-next { color: var(--cyan-bright); }
+.pos-group-label.pos-waiting { color: var(--violet-soft); }
+
+.pos-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-2);
+  padding: var(--s-1) 0;
+}
+
+.pos-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--t-sm);
+  color: var(--text);
+}
+
+.pos-meta {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs);
+  color: var(--muted);
 }
 
 /* ===== Work cards =====
