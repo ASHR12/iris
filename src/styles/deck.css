@@ -315,6 +315,60 @@
   padding: var(--s-05) var(--s-4) var(--s-4);
 }
 
+.comms-composer {
+  flex: 0 0 auto;
+  display: flex;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+  border-top: 1px solid var(--hairline);
+}
+
+.comms-composer input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-sm);
+  font-size: var(--t-sm);
+  font-family: var(--font-ui);
+  color: var(--text);
+  background: rgba(3, 8, 16, 0.55);
+  border: 1px solid var(--hairline);
+  outline: none;
+  transition: border-color var(--dur-fast) ease, box-shadow var(--dur-fast) ease;
+}
+
+.comms-composer input::placeholder {
+  color: rgba(100, 116, 142, 0.6);
+}
+
+.comms-composer input:focus {
+  border-color: rgba(var(--cyan-rgb), 0.5);
+  box-shadow: 0 0 0 3px rgba(var(--cyan-rgb), 0.12);
+}
+
+.comms-composer button {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  border-radius: var(--r-sm);
+  color: var(--cyan-bright);
+  background: rgba(var(--cyan-rgb), 0.1);
+  box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb), 0.25);
+  transition: background var(--dur-fast) ease, box-shadow var(--dur-fast) ease, opacity var(--dur-fast) ease;
+}
+
+.comms-composer button:hover:not(:disabled) {
+  background: rgba(var(--cyan-rgb), 0.18);
+  box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb), 0.4);
+}
+
+.comms-composer button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .bubble {
   flex: 0 0 auto;
   max-width: 88%;
@@ -930,6 +984,14 @@
   gap: var(--s-3);
 }
 
+/* Voice-not-configured status — deliberately NOT .wake-say's large glowing
+   pill: this is a secondary, truthful status line, not a call to action. */
+.voice-status-subtle {
+  font-size: var(--t-xs);
+  color: var(--muted);
+  text-align: center;
+}
+
 .wake-say {
   display: inline-flex;
   align-items: center;
@@ -1209,6 +1271,21 @@
   margin: 0;
   font-size: var(--t-xs);
   color: var(--muted);
+}
+
+/* A completed worker's real result text — unlike .pos-title (single-line,
+   ellipsis-truncated), this must stay fully readable: wraps, keeps line
+   breaks, no truncation. */
+.pos-result-text {
+  margin: 0;
+  padding: var(--s-2);
+  border-radius: var(--r-sm);
+  background: rgba(255, 255, 255, 0.03);
+  font-size: var(--t-sm);
+  line-height: var(--lh-body);
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .pos-group {

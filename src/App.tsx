@@ -289,10 +289,12 @@ export default function App() {
   useEffect(() => {
     if (!hasBridge) return;
     window.iris.getAppConfig().then((config) => {
+      // IRIS_LOAD_TEST_DATA only unlocks the manual "Load demo" affordances
+      // (button/hotkeys) below — it must never auto-load fixture content on
+      // its own. Real Hermes history restore always runs on boot.
       setTestDataEnabled(Boolean(config.loadTestData));
       setSoundsEnabled(config.sounds !== false);
-      if (config.loadTestData) loadUiTestData();
-      else initHermesSession();
+      initHermesSession();
     });
   }, [hasBridge]);
 
@@ -383,7 +385,9 @@ export default function App() {
       setWakeWordEnabled(config.wakeWord);
       setWakeSensitivity(config.wakeSensitivity || "balanced");
       setShowWakeDiagnostics(config.showWakeDiagnostics);
-      if (!config.configured) setSetup({ mode: "onboarding" });
+      // A missing Gemini key is a normal, fully-usable state (text/Jarvis
+      // works without it) — it must never force the onboarding wizard open.
+      // Setup remains reachable any time via the Settings button.
     });
   }, [hasBridge]);
 
@@ -665,25 +669,47 @@ export default function App() {
     window.iris.reportVoiceState(CANONICAL_VOICE_STATE[reactorState]);
   }, [hasBridge, reactorState]);
 
-  // Iris Bridge v0.3 — real request/response smoke path: renderer -> preload
+  // Iris Bridge v0.3 — real request/response text path: renderer -> preload
   // -> main -> Jarvis Bridge -> askJarvis -> result -> back here, appended to
-  // the existing Comms transcript. No mic/Gemini dependency; triggered via
-  // the existing dev testDataEnabled shortcut (see keydown handler below),
-  // not a new UI element. Mirrors jarvisBridgeClient.mjs's
+  // the existing Comms transcript. No mic/Gemini dependency at all — this is
+  // the primary text-to-Jarvis path (composer below) and is also reused by
+  // the dev smoke hotkey. Mirrors jarvisBridgeClient.mjs's
   // describeSmokeTranscript pairing (tested) so both paths render identically.
-  async function runJarvisSmoke() {
-    if (!hasBridge) return;
-    const result = await window.iris.askJarvis(JARVIS_SMOKE_QUESTION);
+  async function askJarvisText(question: string) {
+    const trimmed = question.trim();
+    if (!hasBridge || !trimmed) return;
+    const result = await window.iris.askJarvis(trimmed);
     const jarvisLine = result.ok
       ? { speaker: "jarvis", text: result.answer ?? "" }
       : { speaker: "jarvis-error", text: `Jarvis-Anfrage fehlgeschlagen: ${result.error}` };
     setTranscript((current) =>
       [
         ...current,
-        { id: crypto.randomUUID(), speaker: "you", text: JARVIS_SMOKE_QUESTION },
+        { id: crypto.randomUUID(), speaker: "you", text: trimmed },
         { id: crypto.randomUUID(), ...jarvisLine },
       ].slice(-40),
     );
+  }
+
+  async function runJarvisSmoke() {
+    await askJarvisText(JARVIS_SMOKE_QUESTION);
+  }
+
+  // Text composer: fully independent of sidecarRunning/voice state — the
+  // user can type to Jarvis immediately after startup, asleep or awake,
+  // with or without a configured Gemini key.
+  const [textDraft, setTextDraft] = useState("");
+  const [textSending, setTextSending] = useState(false);
+  async function handleComposerSubmit(text: string) {
+    const trimmed = text.trim();
+    if (!trimmed || textSending) return;
+    setTextDraft("");
+    setTextSending(true);
+    try {
+      await askJarvisText(trimmed);
+    } finally {
+      setTextSending(false);
+    }
   }
 
   function handleSidecarEvent(event: SidecarEvent) {
@@ -977,6 +1003,10 @@ export default function App() {
     const operation = (async () => {
       if (!hasBridge) {
         pushLog("error", "Electron bridge unavailable. Launch with `npm run dev`.");
+        return;
+      }
+      if (!fullConfig?.geminiApiKeyConfigured) {
+        pushLog("info", "Voice is not configured — add a Gemini API key in Settings to enable it. Text still works.");
         return;
       }
       setWakeStarting(true);
@@ -1588,6 +1618,7 @@ export default function App() {
         <TopBar
           geminiDot={dotState(geminiStatus, ["connected"])}
           hermesDot={dotState(hermesStatus, ["ready"])}
+          hermesAvailable={hermesStatus === "ready"}
           audioDot={audioDot}
           linked={sidecarRunning}
           pid={sidecarPid}
@@ -1605,6 +1636,10 @@ export default function App() {
               scrollRef={commsScrollRef}
               testDataEnabled={testDataEnabled}
               onLoadDemo={loadUiTestData}
+              textDraft={textDraft}
+              onTextDraftChange={setTextDraft}
+              onSendText={handleComposerSubmit}
+              textSending={textSending}
             />
             <CameraDock
               handControl={handControl}
@@ -1630,6 +1665,7 @@ export default function App() {
             orbFlash={orbFlash}
             onOrbFlashEnd={clearOrbFlash}
             awake={sidecarRunning}
+            voiceConfigured={Boolean(fullConfig?.geminiApiKeyConfigured)}
             geminiStatus={geminiStatus}
             hermesStatus={hermesStatus}
             runs={sessionTasks.length}

@@ -392,6 +392,11 @@ type JarvisEngineeringJob = {
   promotion: JarvisJobPromotion | null;
   metadata: { execution?: { branchName?: string; worktreePath?: string; baseRef?: string; preparedAt?: string } } | null;
   error: { message: string } | null;
+  // The worker's own final report — real text a completed/ready_for_approval
+  // job's worker actually wrote (job-store.cjs's job.result, unmodified;
+  // see engineering-job-runner.cjs / autonomous-engineering-job.cjs). null
+  // until a worker attempt has actually produced one.
+  result: { text?: string; changedFiles?: string[]; commitHash?: string | null } | null;
   events: JarvisJobEvent[];
 };
 

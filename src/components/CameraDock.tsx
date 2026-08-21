@@ -70,8 +70,8 @@ export default function CameraDock({
     <section className={`deck-panel camera-dock ${handControl ? "" : "off"}`}>
       <div className="col-head">
         <Camera size={13} />
-        <span>Camera / Gesture</span>
-        {!handControl ? <span className="head-state">off</span> : null}
+        <span>Kamera / Geste</span>
+        {!handControl ? <span className="head-state">aus</span> : null}
         {/* Right-aligned + opens downward: the menu overlays the camera feed
             itself, never the conversation text above the panel. */}
         <DevicePicker
@@ -98,7 +98,7 @@ export default function CameraDock({
           </span>
         </div>
       ) : (
-        <div className="camera-off">Gesture control is off. Tap the hand icon to enable the camera.</div>
+        <div className="camera-off">Gestensteuerung ist aus. Tippe auf das Handsymbol, um die Kamera zu aktivieren.</div>
       )}
     </section>
   );

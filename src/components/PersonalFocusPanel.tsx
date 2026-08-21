@@ -27,7 +27,7 @@ export default function PersonalFocusPanel({
     <aside className="deck-panel focus-panel">
       <div className="col-head">
         <Target size={13} />
-        <span>Focus</span>
+        <span>Fokus</span>
       </div>
       <div className="focus-body">
         <section className="focus-section">
@@ -45,7 +45,7 @@ export default function PersonalFocusPanel({
         </section>
 
         <section className="focus-section">
-          <span className="focus-label">Top Focus</span>
+          <span className="focus-label">Top-Fokus</span>
           {focusItem ? (
             <>
               <p className="focus-title">{focusItem.title}</p>
@@ -53,13 +53,13 @@ export default function PersonalFocusPanel({
             </>
           ) : (
             <p className="focus-empty">
-              {focusError || (topFocus ? "Kein Top Focus." : "…")}
+              {focusError || (topFocus ? "Kein Top-Fokus." : "…")}
             </p>
           )}
         </section>
 
         <section className="focus-section">
-          <span className="focus-label">Current Context</span>
+          <span className="focus-label">Aktueller Kontext</span>
           {ctx ? (
             <>
               <p className="focus-title">
@@ -78,7 +78,7 @@ export default function PersonalFocusPanel({
         </section>
 
         <section className="focus-section">
-          <span className="focus-label">Next</span>
+          <span className="focus-label">Nächste Aktion</span>
           {recommended ? (
             <>
               <p className="focus-title">{recommended.title}</p>

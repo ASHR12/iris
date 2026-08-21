@@ -44,6 +44,7 @@ export default function SessionSwitcher({
   const [open, setOpen] = useState(false);
   const [sessions, setSessions] = useState<HermesSessionInfo[]>([]);
   const [loading, setLoading] = useState(false);
+  const [hasFetched, setHasFetched] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   async function refresh() {
@@ -52,6 +53,8 @@ export default function SessionSwitcher({
       setSessions(result.ok ? result.sessions : []);
     } catch {
       setSessions([]);
+    } finally {
+      setHasFetched(true);
     }
   }
 
@@ -90,7 +93,14 @@ export default function SessionSwitcher({
   }
 
   const currentSession = sessions.find((session) => session.id === current);
-  const chipLabel = currentSession ? sessionLabel(currentSession) : current || "iris-voice";
+
+  // Nothing real to switch between (Hermes not installed/reachable) — hide
+  // entirely rather than exposing an internal default session id like
+  // "iris-voice" to the user. Functionality is unchanged: as soon as a real
+  // session exists, this renders exactly as before.
+  if (hasFetched && sessions.length === 0 && !currentSession) return null;
+
+  const chipLabel = currentSession ? sessionLabel(currentSession) : current;
 
   // A thread can be missing from the list briefly (e.g. Hermes unreachable);
   // pin the current id on top so the selection is always visible.

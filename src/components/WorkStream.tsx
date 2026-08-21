@@ -160,9 +160,15 @@ function EngineeringJobBlock({ result }: { result: JarvisEngineeringJobResult | 
           </div>
         ))}
       </div>
+      {job.result?.text ? (
+        <div className="pos-group">
+          <span className="pos-group-label">Ergebnis</span>
+          <p className="pos-result-text">{job.result.text}</p>
+        </div>
+      ) : null}
       {job.events?.length ? (
         <div className="pos-group">
-          <span className="pos-group-label">Work Stream</span>
+          <span className="pos-group-label">Ereignisverlauf</span>
           {job.events.slice(-5).map((event, index) => (
             <div className="pos-row" key={`${event.type}-${index}`}>
               <span className="pos-title">{event.message}</span>
@@ -221,7 +227,7 @@ export default function WorkStream({
     <aside className="deck-panel deck-right">
       <div className="col-head">
         <Terminal size={13} />
-        <span>Work Stream</span>
+        <span>Ereignisverlauf</span>
         {tasks.length > 0 ? <span className="count">{tasks.length}</span> : null}
         {testDataEnabled ? (
           <button className="view-all" onClick={onLoadDemo} title="Load UI test fixture data">
@@ -230,7 +236,7 @@ export default function WorkStream({
         ) : null}
         {tasks.length > 3 ? (
           <button className="view-all" onClick={onShowHistory}>
-            View all <ChevronRight size={12} />
+            Alle anzeigen <ChevronRight size={12} />
           </button>
         ) : null}
       </div>
@@ -250,8 +256,8 @@ export default function WorkStream({
             <span className="empty-icon">
               <Terminal size={19} />
             </span>
-            <p>No Hermes runs yet</p>
-            <small>Ask Iris to take on a task and it will stream in here.</small>
+            <p>Noch keine Aktivität</p>
+            <small>Gib Jarvis eine Aufgabe – sie erscheint hier.</small>
             {testDataEnabled ? (
               <button className="demo-load" onClick={onLoadDemo}>
                 Load demo tasks

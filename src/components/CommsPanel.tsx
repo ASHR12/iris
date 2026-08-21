@@ -1,5 +1,5 @@
-import { type RefObject } from "react";
-import { MessageSquare } from "lucide-react";
+import { type FormEvent, type RefObject } from "react";
+import { MessageSquare, Send } from "lucide-react";
 import type { TranscriptLine } from "../types";
 
 export default function CommsPanel({
@@ -7,17 +7,30 @@ export default function CommsPanel({
   scrollRef,
   testDataEnabled,
   onLoadDemo,
+  textDraft,
+  onTextDraftChange,
+  onSendText,
+  textSending,
 }: {
   transcript: TranscriptLine[];
   scrollRef: RefObject<HTMLDivElement | null>;
   testDataEnabled: boolean;
   onLoadDemo: () => void;
+  textDraft: string;
+  onTextDraftChange: (value: string) => void;
+  onSendText: (text: string) => void;
+  textSending: boolean;
 }) {
+  function handleSubmit(event: FormEvent) {
+    event.preventDefault();
+    onSendText(textDraft);
+  }
+
   return (
     <section className="deck-panel comms">
       <div className="col-head">
         <MessageSquare size={13} />
-        <span>Comms</span>
+        <span>Kommunikation</span>
       </div>
       <div className="comms-scroll" ref={scrollRef}>
         {transcript.length === 0 ? (
@@ -25,8 +38,8 @@ export default function CommsPanel({
             <span className="empty-icon">
               <MessageSquare size={19} />
             </span>
-            <p>No conversation yet</p>
-            <small>Wake Iris and start talking — everything you say lands here.</small>
+            <p>Noch kein Gespräch</p>
+            <small>Schreib unten, oder weck Iris und sprich – alles landet hier.</small>
             {testDataEnabled ? (
               <button className="demo-load" onClick={onLoadDemo}>
                 Load demo comms
@@ -49,6 +62,21 @@ export default function CommsPanel({
           })
         )}
       </div>
+      {/* Always enabled — independent of voice/sidecar/wake state, so Jarvis
+          stays usable by text with no Gemini key and no active voice session. */}
+      <form className="comms-composer" onSubmit={handleSubmit}>
+        <input
+          type="text"
+          value={textDraft}
+          onChange={(event) => onTextDraftChange(event.target.value)}
+          placeholder="Nachricht an Jarvis…"
+          disabled={textSending}
+          aria-label="Nachricht an Jarvis"
+        />
+        <button type="submit" disabled={textSending || !textDraft.trim()} title="Send to Jarvis">
+          <Send size={15} />
+        </button>
+      </form>
     </section>
   );
 }
