@@ -2,7 +2,7 @@ import electron from "electron";
 import { GoogleGenAI } from "@google/genai";
 import {
   shouldAskJarvis,
-  loadJarvisBridge,
+  createJarvisBridge,
   askJarvisForTurn,
   describeSmokeTranscript,
   getTasksForRenderer,
@@ -338,17 +338,40 @@ function isInternalSystemTranscript(text) {
 // conversational reply (voice + its own memory tools) is NOT suppressed;
 // see the integration report for why that overlap is a documented, not yet
 // resolved, risk rather than something silently fixed here.
-let cachedJarvisBridge;
-function jarvisBridge() {
-  if (cachedJarvisBridge === undefined) {
-    cachedJarvisBridge = loadJarvisBridge(repoRoot, {
-      onUnavailable: (reason) =>
+//
+// P2.6: the bridge no longer require()s Jarvis's adapter out of a sibling
+// source checkout (which a packaged Iris.app does not have and which ran a
+// second Jarvis runtime inside this process). Reads travel the SAME loopback
+// endpoint as the write actions below — one running Jarvis backend, one
+// pipeline — through the shared descriptor reader.
+//
+// One reader for BOTH halves: the descriptor is re-read per request (a
+// restarted Jarvis has a new port and a new token), but the "no Jarvis
+// running" warning is logged only once so a backend that never came up
+// cannot flood the event log on every panel refresh.
+let cachedEndpointReader;
+function jarvisEndpointReader() {
+  if (cachedEndpointReader === undefined) {
+    let warned = false;
+    cachedEndpointReader = loadActionEndpointReader({
+      onUnavailable: (reason) => {
+        if (warned) return;
+        warned = true;
         emitEvent({
           type: "log",
           level: "warn",
-          message: `Jarvis Bridge unavailable (${reason}); Ask Jarvis relay disabled this session.`,
-        }),
+          message: `Jarvis backend endpoint unavailable (${reason}); Ask Jarvis, Connections Status and approvals are disabled until it publishes one.`,
+        });
+      },
     });
+  }
+  return cachedEndpointReader;
+}
+
+let cachedJarvisBridge;
+function jarvisBridge() {
+  if (cachedJarvisBridge === undefined) {
+    cachedJarvisBridge = createJarvisBridge({ readEndpoint: jarvisEndpointReader() });
   }
   return cachedJarvisBridge;
 }
@@ -366,16 +389,7 @@ function jarvisBridge() {
 let cachedJarvisActionClient;
 function jarvisActionClient() {
   if (cachedJarvisActionClient === undefined) {
-    cachedJarvisActionClient = createJarvisActionClient({
-      readEndpoint: loadActionEndpointReader(repoRoot, {
-        onUnavailable: (reason) =>
-          emitEvent({
-            type: "log",
-            level: "warn",
-            message: `Jarvis Action endpoint unavailable (${reason}); approvals disabled this session.`,
-          }),
-      }),
-    });
+    cachedJarvisActionClient = createJarvisActionClient({ readEndpoint: jarvisEndpointReader() });
   }
   return cachedJarvisActionClient;
 }

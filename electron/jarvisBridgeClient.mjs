@@ -2,49 +2,80 @@
  * Jarvis Bridge client — the Iris-side half of the thin adapter between
  * Iris's voice pipeline and Jarvis's existing Ask Jarvis pipeline.
  *
- * Jarvis and Iris are two separate local Electron apps/processes. There is
- * no cross-process transport built for this round, so this module reaches
- * Jarvis's already-shipped, already-tested askJarvis() the most direct way
- * available: a plain Node require() of Jarvis's own adapter module
- * (Jarvis-Desktop/app/adapter/iris-bridge.cjs), loaded in-process from
- * Iris's Electron main process. This executes Jarvis's real code, unmodified
- * and unduplicated — never a second retrieval/model/memory pipeline.
+ * HOW THIS USED TO WORK, AND WHY IT CHANGED (P2.6). Jarvis and Iris are two
+ * separate local Electron apps. This module used to reach Jarvis's
+ * already-shipped askJarvis() with a plain Node require() of Jarvis's adapter
+ * (Jarvis-Desktop/app/adapter/iris-bridge.cjs) IN THE IRIS MAIN PROCESS.
+ * Two things were wrong with that:
+ *
+ *  1. It only ever resolved from a SOURCE CHECKOUT. A packaged Iris.app has
+ *     no sibling Jarvis-Desktop directory, so every read — Ask Jarvis,
+ *     Connections Status, Work Stream, jobs, goals — failed there while
+ *     working perfectly in dev.
+ *  2. It booted a SECOND in-process Jarvis runtime inside Iris. Reads touch
+ *     no approval state, so that was survivable, but it was still a second
+ *     retrieval/model/memory pipeline in the wrong process — and one with no
+ *     access to Jarvis's safeStorage/Keychain-scoped credentials.
+ *
+ * Reads now travel the SAME loopback endpoint the write actions already use
+ * (jarvisActionClient.mjs, Jarvis's action-bridge-server.cjs): one running
+ * Jarvis backend process, one bearer token, one pipeline. Iris requires no
+ * Jarvis file at all any more.
+ *
+ * WHAT DID NOT CHANGE. Every *ForRenderer function below keeps its exact
+ * never-throws, forward-{ok,...}-as-is contract, and the bridge object they
+ * take still exposes the same method names as Jarvis's own bridge — so the
+ * IPC contract, the renderer and the security boundary are untouched.
  */
-import { createRequire } from "node:module";
-import path from "node:path";
-import fs from "node:fs";
 import { decideTurnOwner } from "./routingPolicy.mjs";
+import { createEndpointRequest } from "./jarvisEndpoint.mjs";
 
-const defaultRequire = createRequire(import.meta.url);
+/* Ask Jarvis runs real retrieval and a model call, so it needs far more room
+ * than an approval round-trip. Still bounded: a wedged backend must surface
+ * as an honest error, never as a Comms bubble that spins forever. */
+const ASK_TIMEOUT_MS = 120_000;
+
+// The route table Jarvis's action-bridge-server.cjs serves (READ_BRIDGE_ROUTES
+// there). Kept next to the calls so a rename on either side fails loudly in
+// the smoke test rather than silently degrading to "Jarvis not available".
+const READ_ROUTES = Object.freeze({
+  ask: "/read/ask",
+  connectionsStatus: "/read/connections-status",
+  tasks: "/read/tasks",
+  topFocus: "/read/top-focus",
+  currentContext: "/read/current-context",
+  latestEngineeringJob: "/read/latest-engineering-job",
+  activeGoal: "/read/active-goal",
+});
 
 export function shouldAskJarvis(route) {
   return decideTurnOwner(route) === "jarvis";
 }
 
-export function defaultJarvisBridgePath(repoRoot) {
-  if (process.env.JARVIS_BRIDGE_PATH) return process.env.JARVIS_BRIDGE_PATH;
-  return path.resolve(repoRoot, "..", "Jarvis-Desktop", "app", "adapter", "iris-bridge.cjs");
+/**
+ * createJarvisBridge({ readEndpoint, request }) -> bridge
+ *
+ * Returns an object with the SAME method names as Jarvis's own in-process
+ * bridge, so every *ForRenderer function below (and their tests) stay
+ * unaware of the transport. It holds no state, no credentials and no cached
+ * endpoint: the descriptor is re-read per request, because a restarted
+ * Jarvis has a new port and a new token.
+ */
+export function createJarvisBridge({ readEndpoint, request } = {}) {
+  const send = request || createEndpointRequest({ readEndpoint });
+  const readData = (route) => send(route, {});
+  return {
+    askJarvis: (question) => send(READ_ROUTES.ask, { question }, { timeoutMs: ASK_TIMEOUT_MS }),
+    getConnectionsStatus: () => readData(READ_ROUTES.connectionsStatus),
+    getTasks: () => readData(READ_ROUTES.tasks),
+    getTopFocus: () => readData(READ_ROUTES.topFocus),
+    getCurrentContext: () => readData(READ_ROUTES.currentContext),
+    getLatestEngineeringJob: () => readData(READ_ROUTES.latestEngineeringJob),
+    getActiveGoal: () => readData(READ_ROUTES.activeGoal),
+  };
 }
 
-// Never throws: an unreachable/missing Jarvis checkout must degrade to "no
-// bridge", not crash Iris's voice pipeline.
-export function loadJarvisBridge(
-  repoRoot,
-  { requireFn = defaultRequire, existsFn = fs.existsSync, onUnavailable = () => {} } = {}
-) {
-  const bridgePath = defaultJarvisBridgePath(repoRoot);
-  if (!existsFn(bridgePath)) {
-    onUnavailable("missing");
-    return null;
-  }
-  try {
-    const { createIrisBridge } = requireFn(bridgePath);
-    return createIrisBridge();
-  } catch {
-    onUnavailable("require-error");
-    return null;
-  }
-}
+export { READ_ROUTES as JARVIS_READ_ROUTES, ASK_TIMEOUT_MS };
 
 // Never throws, never returns a blank/empty answer as success — a Comms
 // bubble with no text would be a silent, confusing failure. Also the

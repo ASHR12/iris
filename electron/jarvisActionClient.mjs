@@ -25,16 +25,13 @@
  * renderer can show it. None of them may ever look like a successful
  * approval.
  */
-import { createRequire } from "node:module";
-import path from "node:path";
-import fs from "node:fs";
-
-const defaultRequire = createRequire(import.meta.url);
-
-// 10s is generous for a local vault write and still short enough that a
-// wedged backend never leaves an approval button spinning forever. Drive/
-// Calendar executions go through Jarvis's own already-bounded HTTP calls.
-const DEFAULT_TIMEOUT_MS = 10000;
+import {
+  createEndpointRequest,
+  createJarvisEndpointReader,
+  defaultActionEndpointPath,
+  DEFAULT_TIMEOUT_MS,
+  NO_BACKEND_ERROR,
+} from "./jarvisEndpoint.mjs";
 
 const ROUTES = Object.freeze({
   propose: "/action/propose",
@@ -43,46 +40,26 @@ const ROUTES = Object.freeze({
   cancel: "/action/cancel",
 });
 
-const NO_BACKEND_ERROR = "Jarvis-Backend läuft nicht — keine Action möglich.";
-
-/** Mirrors defaultJarvisBridgePath() in jarvisBridgeClient.mjs, one file over. */
-export function defaultActionEndpointStorePath(repoRoot) {
-  if (process.env.JARVIS_ACTION_ENDPOINT_STORE) return process.env.JARVIS_ACTION_ENDPOINT_STORE;
-  return path.resolve(repoRoot, "..", "Jarvis-Desktop", "app", "action-endpoint-store.cjs");
-}
-
 /**
- * loadActionEndpointReader(repoRoot) -> () => endpoint|null
+ * loadActionEndpointReader() -> () => endpoint|null
  *
- * Deliberately require()s JARVIS's own action-endpoint-store.cjs rather than
- * re-deriving the descriptor path and re-implementing its validation here:
- * that module is pure fs+JSON (no action state, no credentials, no approval
- * logic), so reusing it keeps ONE path rule and ONE validation rule across
- * both processes. A missing Jarvis checkout degrades to "no endpoint" —
- * never a crash, never a guessed path.
+ * P2.6: this used to require() JARVIS's own action-endpoint-store.cjs out of
+ * a sibling source checkout, to keep ONE path rule across both processes.
+ * That reasoning was right and the mechanism was wrong: a packaged Iris.app
+ * has no Jarvis checkout to require(), so approvals were dead in the very
+ * build that matters. The shared rule now lives in jarvisEndpoint.mjs, which
+ * derives the SAME descriptor path from the OS Application Support dir (and
+ * honors the same JARVIS_ENGINEERING_DIR override Jarvis honors) without
+ * touching a single Jarvis file.
  */
-export function loadActionEndpointReader(
-  repoRoot,
-  { requireFn = defaultRequire, existsFn = fs.existsSync, onUnavailable = () => {} } = {},
-) {
-  const storeModulePath = defaultActionEndpointStorePath(repoRoot);
-  if (!existsFn(storeModulePath)) {
-    onUnavailable("missing");
-    return () => null;
-  }
-  try {
-    const { readActionEndpoint, DEFAULT_ACTION_ENDPOINT_PATH } = requireFn(storeModulePath);
-    return () => {
-      try {
-        return readActionEndpoint({ storePath: DEFAULT_ACTION_ENDPOINT_PATH });
-      } catch {
-        return null;
-      }
-    };
-  } catch {
-    onUnavailable("require-error");
-    return () => null;
-  }
+export function loadActionEndpointReader({ onUnavailable = () => {} } = {}) {
+  const storePath = defaultActionEndpointPath();
+  const read = createJarvisEndpointReader({ storePath });
+  return () => {
+    const endpoint = read();
+    if (!endpoint) onUnavailable("no-endpoint");
+    return endpoint;
+  };
 }
 
 function failure(error) {
@@ -101,44 +78,11 @@ export function createJarvisActionClient({
   fetchImpl = globalThis.fetch,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 } = {}) {
-  async function send(route, payload) {
-    let endpoint = null;
-    try {
-      endpoint = readEndpoint?.();
-    } catch {
-      endpoint = null;
-    }
-    if (!endpoint?.url || !endpoint?.token) return failure(NO_BACKEND_ERROR);
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const response = await fetchImpl(`${endpoint.url}${route}`, {
-        method: "POST",
-        // No Origin header: Jarvis's endpoint refuses any request that
-        // carries one (that is its guard against local browser pages).
-        headers: { "content-type": "application/json", authorization: `Bearer ${endpoint.token}` },
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
-      let body;
-      try {
-        body = await response.json();
-      } catch {
-        return failure(`Jarvis-Backend antwortete unlesbar (HTTP ${response.status}).`);
-      }
-      if (!response.ok) {
-        return failure(body?.error ? `${body.error} (HTTP ${response.status})` : `Jarvis-Backend antwortete HTTP ${response.status}.`);
-      }
-      return body;
-    } catch (error) {
-      return failure(error?.name === "AbortError"
-        ? `Jarvis-Backend hat nicht innerhalb von ${timeoutMs} ms geantwortet.`
-        : String(error?.message ?? error));
-    } finally {
-      clearTimeout(timer);
-    }
-  }
+  // The transport (bearer token, the deliberately absent Origin header, the
+  // timeout, the error shape) lives in jarvisEndpoint.mjs and is shared with
+  // the read client — one implementation, so a security property can never
+  // hold on one path and not the other.
+  const send = createEndpointRequest({ readEndpoint, fetchImpl, timeoutMs });
 
   function withPreviewId(route, previewId) {
     const id = typeof previewId === "string" ? previewId.trim() : "";

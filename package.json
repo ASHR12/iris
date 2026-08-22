@@ -27,6 +27,7 @@
     "test:hermes-wake": "npm run build && node scripts/test-live-hermes-wake.mjs",
     "test:jarvis-bridge-smoke": "npm run build && node scripts/test-jarvis-bridge-smoke.mjs",
     "test:jarvis-action-smoke": "npm run build && node scripts/test-jarvis-action-smoke.mjs",
+    "test:packaged-runtime-smoke": "node scripts/test-packaged-runtime-smoke.mjs",
     "soak": "node scripts/soak-runtime.mjs",
     "preview": "vite preview",
     "start": "npm run build && node scripts/run-electron.mjs --prod",

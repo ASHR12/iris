@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import path from "node:path";
 import {
   shouldAskJarvis,
-  defaultJarvisBridgePath,
-  loadJarvisBridge,
+  createJarvisBridge,
+  JARVIS_READ_ROUTES,
+  ASK_TIMEOUT_MS,
   askJarvisForTurn,
   describeSmokeTranscript,
   getTasksForRenderer,
@@ -12,18 +12,6 @@ import {
   getCurrentContextForRenderer,
   getConnectionsStatusForRenderer,
 } from "../electron/jarvisBridgeClient.mjs";
-
-function withEnv(key, value, fn) {
-  const original = process.env[key];
-  if (value === undefined) delete process.env[key];
-  else process.env[key] = value;
-  try {
-    return fn();
-  } finally {
-    if (original === undefined) delete process.env[key];
-    else process.env[key] = original;
-  }
-}
 
 test("shouldAskJarvis: only the existing 'memory' route reaches Jarvis (reuses routingPolicy classification, no new rule)", () => {
   assert.equal(shouldAskJarvis("memory"), true);
@@ -34,68 +22,81 @@ test("shouldAskJarvis: only the existing 'memory' route reaches Jarvis (reuses r
   assert.equal(shouldAskJarvis(undefined), false);
 });
 
-test("defaultJarvisBridgePath: honors a JARVIS_BRIDGE_PATH override", () => {
-  withEnv("JARVIS_BRIDGE_PATH", "/tmp/custom-bridge.cjs", () => {
-    assert.equal(defaultJarvisBridgePath("/whatever/repo"), "/tmp/custom-bridge.cjs");
-  });
-});
+/* ------------------------------------------------------------------ *
+ * P2.6 — createJarvisBridge()
+ *
+ * REPLACES loadJarvisBridge(), which require()d Jarvis's adapter out of a
+ * sibling SOURCE CHECKOUT and ran it in the Iris process. A packaged
+ * Iris.app has no such checkout, so every read failed there. Reads now go
+ * to the one running Jarvis backend over the same loopback endpoint the
+ * write actions already use.
+ *
+ * These tests inject `request`, so they assert the ROUTE and the PAYLOAD
+ * that actually go on the wire — not a stub method name.
+ * ------------------------------------------------------------------ */
 
-test("defaultJarvisBridgePath: defaults to the sibling Jarvis-Desktop adapter path", () => {
-  withEnv("JARVIS_BRIDGE_PATH", undefined, () => {
-    const resolved = defaultJarvisBridgePath("/Users/x/Development/iris-test");
-    assert.equal(
-      resolved,
-      path.resolve("/Users/x/Development/Jarvis-Desktop/app/adapter/iris-bridge.cjs"),
-    );
-  });
-});
-
-test("loadJarvisBridge: never throws and returns null when the bridge file does not exist", () => {
-  const bridge = loadJarvisBridge("/does/not/exist", {
-    existsFn: () => false,
-    requireFn: () => { throw new Error("must not be called when the file is missing"); },
-  });
-  assert.equal(bridge, null);
-});
-
-test("loadJarvisBridge: requires the resolved path and returns createIrisBridge()'s instance", () => {
-  let seenPath = null;
-  const fakeInstance = { askJarvis: async () => ({}) };
-  const bridge = loadJarvisBridge("/whatever/repo", {
-    existsFn: () => true,
-    requireFn: (resolvedPath) => {
-      seenPath = resolvedPath;
-      return { createIrisBridge: () => fakeInstance };
+function recordingBridge(reply = { ok: true, data: {} }) {
+  const sent = [];
+  const bridge = createJarvisBridge({
+    request: async (route, payload, options) => {
+      sent.push({ route, payload, options });
+      return typeof reply === "function" ? reply(route) : reply;
     },
   });
-  assert.equal(seenPath, path.resolve("/whatever/repo", "..", "Jarvis-Desktop", "app", "adapter", "iris-bridge.cjs"));
-  assert.equal(bridge, fakeInstance);
+  return { bridge, sent };
+}
+
+test("createJarvisBridge: needs no repo root, no filesystem and no Jarvis source file to be constructed", () => {
+  const bridge = createJarvisBridge({ readEndpoint: () => null });
+  assert.equal(typeof bridge.askJarvis, "function");
+  assert.equal(typeof bridge.getConnectionsStatus, "function");
 });
 
-test("loadJarvisBridge: never throws, returns null if require() itself throws", () => {
-  const bridge = loadJarvisBridge("/whatever/repo", {
-    existsFn: () => true,
-    requireFn: () => { throw new Error("module not found"); },
-  });
-  assert.equal(bridge, null);
+test("createJarvisBridge: askJarvis posts the question to /read/ask with a model-sized timeout", async () => {
+  const { bridge, sent } = recordingBridge({ ok: true, answer: "Heute: 2 Termine." });
+  const result = await bridge.askJarvis("was steht heute an");
+  assert.deepEqual(result, { ok: true, answer: "Heute: 2 Termine." });
+  assert.equal(sent[0].route, JARVIS_READ_ROUTES.ask);
+  assert.deepEqual(sent[0].payload, { question: "was steht heute an" });
+  assert.equal(sent[0].options.timeoutMs, ASK_TIMEOUT_MS);
+  assert.ok(ASK_TIMEOUT_MS >= 60_000, "a real retrieval + model call must not be cut off by an approval-sized timeout");
 });
 
-// Gap 2 ROT: loadJarvisBridge() currently swallows a require() failure
-// silently — no diagnostics, no reason code. The approved fix adds a 3rd
-// optional `onUnavailable(reasonCode)` option, called with exactly
-// "require-error" here (never the resolved path, the raw Error, its
-// message, or a stack trace — those can leak local absolute paths).
-test("loadJarvisBridge: calls onUnavailable('require-error') when require() throws, without leaking the path/error", () => {
-  const seen = [];
-  const bridge = loadJarvisBridge("/fake/repo", {
-    existsFn: () => true,
-    requireFn: () => {
-      throw new Error("/Users/cd/Development/Jarvis-Desktop/app/adapter/iris-bridge.cjs: boom");
-    },
-    onUnavailable: (reason) => seen.push(reason),
-  });
-  assert.equal(bridge, null);
-  assert.deepEqual(seen, ["require-error"]);
+test("createJarvisBridge: every read method hits its own documented route", async () => {
+  const expected = [
+    ["getConnectionsStatus", JARVIS_READ_ROUTES.connectionsStatus],
+    ["getTasks", JARVIS_READ_ROUTES.tasks],
+    ["getTopFocus", JARVIS_READ_ROUTES.topFocus],
+    ["getCurrentContext", JARVIS_READ_ROUTES.currentContext],
+    ["getLatestEngineeringJob", JARVIS_READ_ROUTES.latestEngineeringJob],
+    ["getActiveGoal", JARVIS_READ_ROUTES.activeGoal],
+  ];
+  for (const [method, route] of expected) {
+    const { bridge, sent } = recordingBridge({ ok: true, data: { marker: method } });
+    // eslint-disable-next-line no-await-in-loop
+    const result = await bridge[method]();
+    assert.equal(sent[0].route, route, `${method} must call ${route}`);
+    assert.deepEqual(result, { ok: true, data: { marker: method } });
+  }
+});
+
+test("createJarvisBridge: a backend error is forwarded untouched, never turned into empty data", async () => {
+  const { bridge } = recordingBridge({ ok: false, error: "Jarvis-Backend läuft nicht — keine Verbindung möglich." });
+  const result = await bridge.getConnectionsStatus();
+  assert.equal(result.ok, false);
+  assert.match(result.error, /Jarvis-Backend/);
+});
+
+// The whole point of the *ForRenderer contract still holding after the
+// transport swap: the bridge object is duck-typed, so a remote bridge and
+// the old in-process one are indistinguishable to everything downstream.
+test("createJarvisBridge: the remote bridge satisfies the existing *ForRenderer contract unchanged", async () => {
+  const { bridge } = recordingBridge((route) =>
+    (route === JARVIS_READ_ROUTES.tasks
+      ? { ok: true, data: { now: [{ title: "A" }], next: [], waiting: [], overdue: [] } }
+      : { ok: true, data: {} }));
+  const result = await getTasksForRenderer(bridge);
+  assert.deepEqual(result, { ok: true, data: { now: [{ title: "A" }], next: [], waiting: [], overdue: [] } });
 });
 
 test("askJarvisForTurn: returns ok+answer when the bridge resolves a real answer (mocked final transcript -> bridge -> answer)", async () => {
