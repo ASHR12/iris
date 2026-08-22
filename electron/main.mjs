@@ -18,6 +18,10 @@ import {
   stopJarvisBackend,
 } from "./jarvisBackend.mjs";
 import {
+  createJarvisActionClient,
+  loadActionEndpointReader,
+} from "./jarvisActionClient.mjs";
+import {
   proposeHermesTask as gatePropose,
   claimConfirmedProposal,
   discardHermesProposal,
@@ -347,6 +351,33 @@ function jarvisBridge() {
     });
   }
   return cachedJarvisBridge;
+}
+
+// Action Transport v2 (P2.5) — write actions do NOT go through
+// jarvisBridge() above. That path require()s Jarvis's adapter in THIS
+// process, which for actions would mean a second actionPreviews Map, a
+// second approval state machine and a secondary-approval gate nobody else
+// can see (and which could not execute a Drive/Calendar write anyway —
+// those credentials belong to the Jarvis app identity). Instead every
+// propose/approve/secondaryApprove/cancel is sent to the ONE running Jarvis
+// backend process over its loopback Action endpoint and executed there.
+// Iris holds no previewId list and no approval state of its own; a
+// previewId is an opaque handle into Jarvis's Action Service.
+let cachedJarvisActionClient;
+function jarvisActionClient() {
+  if (cachedJarvisActionClient === undefined) {
+    cachedJarvisActionClient = createJarvisActionClient({
+      readEndpoint: loadActionEndpointReader(repoRoot, {
+        onUnavailable: (reason) =>
+          emitEvent({
+            type: "log",
+            level: "warn",
+            message: `Jarvis Action endpoint unavailable (${reason}); approvals disabled this session.`,
+          }),
+      }),
+    });
+  }
+  return cachedJarvisActionClient;
 }
 
 async function relayTurnToJarvis(text) {
@@ -4027,6 +4058,18 @@ app.whenReady().then(() => {
   // second health engine — see Jarvis-Desktop/app/adapter/iris-bridge.cjs
   // getConnectionsStatus().
   trustedHandle("jarvisBridge:getConnectionsStatus", () => getConnectionsStatusForRenderer(jarvisBridge()));
+  // Jarvis Actions & Approvals (P2.5) — the renderer's only path to a write
+  // action. Each handler is a pure forward into the running Jarvis backend
+  // process (electron/jarvisActionClient.mjs -> Jarvis's loopback Action
+  // endpoint -> personal-os-action-service.cjs). Nothing is decided here:
+  // no risk classification, no approval state, no execution. A high-risk
+  // action still stops at Jarvis's own secondary_approval_required gate and
+  // needs the separate jarvisAction:secondaryApprove call to complete.
+  trustedHandle("jarvisAction:propose", (_event, payload = {}) =>
+    jarvisActionClient().proposeAction(String(payload.question || ""), { source: payload.source === "voice" ? "voice" : "text" }));
+  trustedHandle("jarvisAction:approve", (_event, previewId) => jarvisActionClient().approveAction(String(previewId || "")));
+  trustedHandle("jarvisAction:secondaryApprove", (_event, previewId) => jarvisActionClient().secondaryApproveAction(String(previewId || "")));
+  trustedHandle("jarvisAction:cancel", (_event, previewId) => jarvisActionClient().cancelAction(String(previewId || "")));
   trustedHandle("app:open-external", (_event, url) => {
     const target = safeExternalUrl(url);
     if (target) return shell.openExternal(target);

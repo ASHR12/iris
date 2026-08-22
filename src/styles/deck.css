@@ -1903,3 +1903,108 @@
     animation: none;
   }
 }
+
+/* Jarvis Actions & Approvals (P2.5) — the approval card inside the existing
+   Ask Jarvis surface (CommsPanel), between the transcript and the composer.
+   Reuses the panel's own tokens/hairlines rather than introducing a new
+   visual language: this is an addition to the existing UI, not a redesign.
+   The `.danger` variant marks an action Jarvis has escalated to
+   secondary_approval_required, so a destructive confirmation can never look
+   like an ordinary one. */
+.jarvis-actions {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4) 0;
+}
+
+.jarvis-action {
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-md);
+  background: rgba(3, 8, 16, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb), 0.28);
+}
+
+.jarvis-action.danger {
+  box-shadow: inset 0 0 0 1px rgba(240, 120, 90, 0.55);
+}
+
+.jarvis-action-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+  margin-bottom: var(--s-1);
+}
+
+.jarvis-action-label {
+  font-size: var(--t-sm);
+  font-weight: 600;
+  color: var(--cyan-bright);
+}
+
+.jarvis-action-risk {
+  font-size: var(--t-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(150, 166, 190, 0.85);
+}
+
+.jarvis-action-risk.risk-high {
+  color: rgb(240, 140, 110);
+}
+
+.jarvis-action-summary {
+  margin: 0;
+  font-size: var(--t-sm);
+  color: var(--text);
+}
+
+.jarvis-action-warning {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: var(--s-1) 0 0;
+  font-size: var(--t-xs);
+  color: rgb(240, 170, 120);
+}
+
+.jarvis-action-buttons {
+  display: flex;
+  gap: var(--s-2);
+  margin-top: var(--s-2);
+}
+
+.jarvis-action-buttons button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: var(--r-sm);
+  font-size: var(--t-xs);
+  font-family: var(--font-ui);
+  transition: background var(--dur-fast) ease, box-shadow var(--dur-fast) ease, opacity var(--dur-fast) ease;
+}
+
+.jarvis-action-confirm {
+  color: var(--cyan-bright);
+  background: rgba(var(--cyan-rgb), 0.12);
+  box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb), 0.3);
+}
+
+.jarvis-action-confirm.danger {
+  color: rgb(255, 190, 165);
+  background: rgba(240, 120, 90, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(240, 120, 90, 0.5);
+}
+
+.jarvis-action-reject {
+  color: rgba(150, 166, 190, 0.9);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+
+.jarvis-action-buttons button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}

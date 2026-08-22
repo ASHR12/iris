@@ -1,6 +1,7 @@
 import { type FormEvent, type RefObject } from "react";
 import { MessageSquare, Send } from "lucide-react";
 import type { TranscriptLine } from "../types";
+import JarvisActionApproval from "./JarvisActionApproval";
 
 export default function CommsPanel({
   transcript,
@@ -11,6 +12,11 @@ export default function CommsPanel({
   onTextDraftChange,
   onSendText,
   textSending,
+  actionPreviews = [],
+  actionBusyId = null,
+  onApproveAction = () => {},
+  onSecondaryApproveAction = () => {},
+  onCancelAction = () => {},
 }: {
   transcript: TranscriptLine[];
   scrollRef: RefObject<HTMLDivElement | null>;
@@ -20,6 +26,15 @@ export default function CommsPanel({
   onTextDraftChange: (value: string) => void;
   onSendText: (text: string) => void;
   textSending: boolean;
+  // Jarvis Actions & Approvals (P2.5) — rendered inside the existing Ask
+  // Jarvis surface, directly above the composer, so the approval sits next
+  // to the sentence that produced it. All optional with safe defaults, so
+  // nothing about the existing transcript/composer behaviour changes.
+  actionPreviews?: JarvisActionPreview[];
+  actionBusyId?: string | null;
+  onApproveAction?: (preview: JarvisActionPreview) => void;
+  onSecondaryApproveAction?: (preview: JarvisActionPreview) => void;
+  onCancelAction?: (preview: JarvisActionPreview) => void;
 }) {
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -62,6 +77,13 @@ export default function CommsPanel({
           })
         )}
       </div>
+      <JarvisActionApproval
+        previews={actionPreviews}
+        busyPreviewId={actionBusyId}
+        onApprove={onApproveAction}
+        onSecondaryApprove={onSecondaryApproveAction}
+        onCancel={onCancelAction}
+      />
       {/* Always enabled — independent of voice/sidecar/wake state, so Jarvis
           stays usable by text with no Gemini key and no active voice session. */}
       <form className="comms-composer" onSubmit={handleSubmit}>

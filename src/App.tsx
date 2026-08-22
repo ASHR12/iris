@@ -700,20 +700,115 @@ export default function App() {
   // the primary text-to-Jarvis path (composer below) and is also reused by
   // the dev smoke hotkey. Mirrors jarvisBridgeClient.mjs's
   // describeSmokeTranscript pairing (tested) so both paths render identically.
+  function appendTranscriptLine(speaker: string, text: string) {
+    setTranscript((current) => [...current, { id: crypto.randomUUID(), speaker, text }].slice(-40));
+  }
+
+  // Jarvis Actions & Approvals (P2.5) — the previews Jarvis has proposed and
+  // is waiting on a human for. This is a RENDER LIST, not state Iris owns:
+  // every entry is just the display view of a preview that lives in Jarvis's
+  // Action Service, keyed by an opaque previewId. Iris never decides risk,
+  // never advances an approval stage, and never executes anything.
+  const [pendingActions, setPendingActions] = useState<JarvisActionPreview[]>([]);
+  const [actionBusyId, setActionBusyId] = useState<string | null>(null);
+
+  function dropPendingAction(previewId: string) {
+    setPendingActions((current) => current.filter((preview) => preview.previewId !== previewId));
+  }
+
+  // askJarvisText — one natural request, two possible outcomes.
+  //
+  // Jarvis is asked FIRST whether the text is a write action (propose). If it
+  // is, the proposal is rendered for approval and nothing is executed; if it
+  // is not (kind "none"), the text falls through to the normal Ask Jarvis
+  // answer path exactly as before. Both the classification and the proposal
+  // are Jarvis's own (personal-os-capture-engine / action engines, reached
+  // through the running backend process) — Iris parses nothing.
   async function askJarvisText(question: string) {
     const trimmed = question.trim();
     if (!hasBridge || !trimmed) return;
+    appendTranscriptLine("you", trimmed);
+
+    const proposal = await window.iris.proposeJarvisAction(trimmed, "text");
+    if (!proposal.ok) {
+      // Visible and unambiguous: a text that MIGHT have been "notiere …"
+      // must never look like it was quietly handled. The read-only answer
+      // path below still runs, so Jarvis stays usable.
+      appendTranscriptLine("jarvis-error", `Aktionen nicht verfügbar: ${proposal.error}`);
+    } else if (proposal.kind === "clarification" && proposal.question) {
+      appendTranscriptLine("jarvis", proposal.question);
+      return;
+    } else if (proposal.previews?.length) {
+      setPendingActions(proposal.previews);
+      appendTranscriptLine(
+        "jarvis",
+        proposal.previews.length === 1
+          ? "Ich habe eine Aktion vorbereitet — bitte freigeben oder verwerfen."
+          : `Ich habe ${proposal.previews.length} Aktionen vorbereitet — bitte einzeln freigeben oder verwerfen.`,
+      );
+      return;
+    }
+
     const result = await window.iris.askJarvis(trimmed);
-    const jarvisLine = result.ok
-      ? { speaker: "jarvis", text: result.answer ?? "" }
-      : { speaker: "jarvis-error", text: `Jarvis-Anfrage fehlgeschlagen: ${result.error}` };
-    setTranscript((current) =>
-      [
-        ...current,
-        { id: crypto.randomUUID(), speaker: "you", text: trimmed },
-        { id: crypto.randomUUID(), ...jarvisLine },
-      ].slice(-40),
+    appendTranscriptLine(
+      result.ok ? "jarvis" : "jarvis-error",
+      result.ok ? (result.answer ?? "") : `Jarvis-Anfrage fehlgeschlagen: ${result.error}`,
     );
+  }
+
+  // Approval handlers. Each one is a single call into the running Jarvis
+  // backend process; the outcome it renders is whatever Jarvis reports.
+  // requiresSecondaryApproval means NOTHING was written — the preview stays
+  // in the list, now in Jarvis's secondary_approval_required state, and the
+  // UI switches to the separate second button.
+  async function runActionCall(
+    preview: JarvisActionPreview,
+    call: (previewId: string) => Promise<JarvisActionExecutionResult>,
+  ) {
+    setActionBusyId(preview.previewId);
+    try {
+      const result = await call(preview.previewId);
+      if (!result.ok) {
+        appendTranscriptLine("jarvis-error", `Aktion fehlgeschlagen: ${result.error}`);
+        dropPendingAction(preview.previewId);
+        return;
+      }
+      if (result.requiresSecondaryApproval && result.preview) {
+        const advanced = result.preview;
+        setPendingActions((current) =>
+          current.map((entry) => (entry.previewId === advanced.previewId ? advanced : entry)),
+        );
+        appendTranscriptLine("jarvis", "Diese Aktion ist nicht umkehrbar und braucht eine zweite Freigabe.");
+        return;
+      }
+      dropPendingAction(preview.previewId);
+      const target = typeof result.object?.title === "string" ? result.object.title : preview.title;
+      appendTranscriptLine("jarvis", `${result.answer || "Erledigt."} (${result.action || preview.type}: ${target})`);
+    } finally {
+      setActionBusyId(null);
+    }
+  }
+
+  function handleApproveAction(preview: JarvisActionPreview) {
+    void runActionCall(preview, (previewId) => window.iris.approveJarvisAction(previewId));
+  }
+
+  function handleSecondaryApproveAction(preview: JarvisActionPreview) {
+    void runActionCall(preview, (previewId) => window.iris.secondaryApproveJarvisAction(previewId));
+  }
+
+  async function handleCancelAction(preview: JarvisActionPreview) {
+    setActionBusyId(preview.previewId);
+    try {
+      const result = await window.iris.cancelJarvisAction(preview.previewId);
+      dropPendingAction(preview.previewId);
+      appendTranscriptLine(
+        result.ok ? "jarvis" : "jarvis-error",
+        result.ok ? "Aktion verworfen." : `Aktion konnte nicht verworfen werden: ${result.error}`,
+      );
+    } finally {
+      setActionBusyId(null);
+    }
   }
 
   async function runJarvisSmoke() {
@@ -1666,6 +1761,11 @@ export default function App() {
               onTextDraftChange={setTextDraft}
               onSendText={handleComposerSubmit}
               textSending={textSending}
+              actionPreviews={pendingActions}
+              actionBusyId={actionBusyId}
+              onApproveAction={handleApproveAction}
+              onSecondaryApproveAction={handleSecondaryApproveAction}
+              onCancelAction={handleCancelAction}
             />
             <CameraDock
               handControl={handControl}

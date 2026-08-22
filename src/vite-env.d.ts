@@ -243,6 +243,10 @@ type IrisApi = {
   getJarvisEngineeringJob: () => Promise<JarvisEngineeringJobResult>;
   getJarvisActiveGoal: () => Promise<JarvisActiveGoalResult>;
   getJarvisConnectionsStatus: () => Promise<JarvisConnectionsStatusResult>;
+  proposeJarvisAction: (question: string, source?: "text" | "voice") => Promise<JarvisActionProposeResult>;
+  approveJarvisAction: (previewId: string) => Promise<JarvisActionExecutionResult>;
+  secondaryApproveJarvisAction: (previewId: string) => Promise<JarvisActionExecutionResult>;
+  cancelJarvisAction: (previewId: string) => Promise<JarvisActionCancelResult>;
   onUiAction: (callback: (action: IrisUiAction) => void) => () => void;
   onAudioChunk: (callback: (chunk: LiveAudioChunk) => void) => () => void;
   onAudioInterrupt: (callback: () => void) => () => void;
@@ -254,6 +258,55 @@ type IrisApi = {
 // never a second parallel event bus.
 type JarvisVoiceState = "idle" | "listening" | "thinking" | "speaking" | "error";
 type JarvisAskResult = { ok: boolean; answer?: string; error?: string };
+
+// Jarvis Actions & Approvals (P2.5) — the whitelisted preview VIEW Jarvis's
+// Action endpoint puts on the wire (Jarvis-Desktop/app/action-bridge-
+// server.cjs toActionPreviewView). Display fields only: the live preview
+// object, its execution context and every credential stay inside Jarvis's
+// process. `previewId` is an opaque handle that is only ever meaningful to
+// Jarvis's own Action Service — Iris stores no action state of its own.
+type JarvisActionPreview = {
+  previewId: string;
+  domain: string;
+  type: string;
+  label: string;
+  title: string;
+  summary: string;
+  riskLevel: string;
+  requiresApproval: boolean;
+  requiresSecondaryApproval: boolean;
+  status: string;
+  target: Record<string, unknown>;
+  changes: Record<string, unknown>;
+  validation: { valid: boolean; errors: string[]; warnings: string[] };
+  classification?: string;
+  duplicate?: boolean;
+};
+
+// kind "none" means "this text is not an action" — the caller then falls
+// through to the normal Ask Jarvis answer path.
+type JarvisActionProposeResult = {
+  ok: boolean;
+  kind?: "preview" | "capture-preview" | "clarification" | "none" | "existing";
+  previews?: JarvisActionPreview[];
+  question?: string;
+  error?: string;
+};
+
+// requiresSecondaryApproval:true means NOTHING was written yet — the action
+// is waiting for the second, distinct approval.
+type JarvisActionExecutionResult = {
+  ok: boolean;
+  requiresSecondaryApproval?: boolean;
+  preview?: JarvisActionPreview;
+  answer?: string;
+  action?: string;
+  object?: Record<string, unknown>;
+  verified?: boolean;
+  error?: string;
+};
+
+type JarvisActionCancelResult = { ok: boolean; cancelled?: boolean; error?: string };
 
 // Personal OS bridge — verbatim field shapes from Jarvis's own
 // personal-os-reader.cjs / daily-top-focus.cjs / daily-chief-of-staff.cjs
