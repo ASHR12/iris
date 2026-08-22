@@ -51,8 +51,15 @@ const failureScreenshot = path.join(failureDir, "packaged-runtime-smoke-failure.
 
 const IRIS_APP = process.env.IRIS_APP_PATH || path.join(root, "release", "mac-arm64", "Iris.app");
 const IRIS_BINARY = path.join(IRIS_APP, "Contents", "MacOS", "Iris");
-const JARVIS_APP = process.env.JARVIS_APP_PATH
-  || path.resolve(root, "..", "Jarvis-Desktop", "app", "dist-electron", "mac-arm64", "Jarvis.app");
+// PINNED_JARVIS_APP_PATH is only ever set here from the CALLER's own
+// environment. When absent, this smoke does NOT default to (and does NOT
+// inject) a dist-electron sibling build — it leaves JARVIS_APP_PATH unset in
+// the spawned Iris process too, so resolveJarvisLauncher() runs its real
+// production fallback chain and must land on the installed
+// /Applications/Jarvis.app, exactly like a real user's Iris. JARVIS_APP below
+// is then only the binary the GUARDS inspect to know what will actually run.
+const PINNED_JARVIS_APP_PATH = process.env.JARVIS_APP_PATH || null;
+const JARVIS_APP = PINNED_JARVIS_APP_PATH || "/Applications/Jarvis.app";
 const JARVIS_BINARY = path.join(JARVIS_APP, "Contents", "MacOS", "Jarvis");
 const JARVIS_ASAR = path.join(JARVIS_APP, "Contents", "Resources", "app.asar");
 
@@ -86,10 +93,11 @@ const env = {
   JARVIS_VAULT_PATH: vaultPath,
   JARVIS_ENGINEERING_DIR: engineeringDir,
   JARVIS_ACTION_AUDIT_PATH: auditPath,
-  // Pin the backend to the FRESHLY BUILT bundle instead of whatever happens
-  // to sit in /Applications, so this smoke tests the code under review. The
-  // no-env default (/Applications/Jarvis.app) is asserted separately below.
-  JARVIS_APP_PATH: JARVIS_APP,
+  // Only forwarded when the CALLER set it (e.g. to pin a not-yet-installed
+  // build before it replaces /Applications/Jarvis.app). Otherwise omitted
+  // entirely, so resolveJarvisLauncher() in the spawned Iris process runs its
+  // real fallback chain — see the PINNED_JARVIS_APP_PATH comment above.
+  ...(PINNED_JARVIS_APP_PATH ? { JARVIS_APP_PATH: PINNED_JARVIS_APP_PATH } : {}),
 };
 delete env.ELECTRON_RUN_AS_NODE;
 
