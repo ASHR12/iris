@@ -10,6 +10,7 @@ import {
   getTasksForRenderer,
   getTopFocusForRenderer,
   getCurrentContextForRenderer,
+  getConnectionsStatusForRenderer,
 } from "../electron/jarvisBridgeClient.mjs";
 
 function withEnv(key, value, fn) {
@@ -239,6 +240,29 @@ test("getCurrentContextForRenderer: returns ok:false without crashing when no br
 test("getCurrentContextForRenderer: catches a thrown error from the bridge and returns ok:false", async () => {
   const bridge = { getCurrentContext: async () => { throw new Error("boom"); } };
   const result = await getCurrentContextForRenderer(bridge);
+  assert.equal(result.ok, false);
+  assert.match(result.error, /boom/);
+});
+
+// Connections Status (P2.4) — same never-throws, forward-as-is contract as
+// the other *ForRenderer functions above.
+
+test("getConnectionsStatusForRenderer: forwards the bridge's real {ok, data} result as-is", async () => {
+  const connections = [{ id: "personalOS", label: "Personal OS", status: "connected", detail: "" }];
+  const bridge = { getConnectionsStatus: async () => ({ ok: true, data: { connections, checkedAt: "2026-08-22T00:00:00.000Z" } }) };
+  const result = await getConnectionsStatusForRenderer(bridge);
+  assert.deepEqual(result, { ok: true, data: { connections, checkedAt: "2026-08-22T00:00:00.000Z" } });
+});
+
+test("getConnectionsStatusForRenderer: returns ok:false without crashing when no bridge is connected", async () => {
+  const result = await getConnectionsStatusForRenderer(null);
+  assert.equal(result.ok, false);
+  assert.ok(result.error);
+});
+
+test("getConnectionsStatusForRenderer: catches a thrown error from the bridge and returns ok:false", async () => {
+  const bridge = { getConnectionsStatus: async () => { throw new Error("boom"); } };
+  const result = await getConnectionsStatusForRenderer(bridge);
   assert.equal(result.ok, false);
   assert.match(result.error, /boom/);
 });

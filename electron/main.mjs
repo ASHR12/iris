@@ -10,7 +10,13 @@ import {
   getCurrentContextForRenderer,
   getLatestEngineeringJobForRenderer,
   getActiveGoalForRenderer,
+  getConnectionsStatusForRenderer,
 } from "./jarvisBridgeClient.mjs";
+import {
+  resolveJarvisLauncher,
+  startJarvisBackend,
+  stopJarvisBackend,
+} from "./jarvisBackend.mjs";
 import {
   proposeHermesTask as gatePropose,
   claimConfirmedProposal,
@@ -91,6 +97,10 @@ const { app, BrowserWindow, ipcMain, session, nativeImage, Menu, Tray, screen, g
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
+// The headless Jarvis backend this Iris session started (null when Jarvis
+// is not installed, or when starting it failed). Only ever a backend WE
+// spawned — an already-running Jarvis is never touched.
+let jarvisBackendProcess = null;
 
 // Name the app "Iris" (menu bar / about panel). The Dock tile fully reflects this
 // only in a packaged build; in dev the generic Electron bundle name is used.
@@ -3880,6 +3890,18 @@ app.whenReady().then(() => {
   }
   installAppMenu();
 
+  // Jarvis backend — started headless so Iris stays the only visible shell.
+  // Jarvis owns the Connections Status producer (only its own process can
+  // read its safeStorage/Keychain-backed credentials), and its own
+  // single-instance lock guarantees exactly one Jarvis: a duplicate launch
+  // exits immediately. Never fatal — if Jarvis cannot be found or started,
+  // Iris boots anyway and Connections Status honestly reports that nothing
+  // was published.
+  jarvisBackendProcess = startJarvisBackend({
+    launcher: resolveJarvisLauncher({ repoRoot }),
+    onLog: (message) => emitEvent({ type: "log", level: "info", message }),
+  });
+
   const devUrl = process.env.VITE_DEV_SERVER_URL ?? "http://127.0.0.1:5173";
   const ipcTrust = { repoRoot, devUrl };
   const trustedHandle = (channel, handler) => {
@@ -3999,6 +4021,12 @@ app.whenReady().then(() => {
   // a second job/memory system — this is the only path.
   trustedHandle("jarvisBridge:getLatestEngineeringJob", () => getLatestEngineeringJobForRenderer(jarvisBridge()));
   trustedHandle("jarvisBridge:getActiveGoal", () => getActiveGoalForRenderer(jarvisBridge()));
+  // Connections Status v1 (P2.4) — compact Jarvis integrations/connections
+  // readout (Personal OS/Drive/Calendar/GitHub/Web Research/Mail/Claude
+  // Worker) via the same in-process jarvisBridge() instance. Read-only, no
+  // second health engine — see Jarvis-Desktop/app/adapter/iris-bridge.cjs
+  // getConnectionsStatus().
+  trustedHandle("jarvisBridge:getConnectionsStatus", () => getConnectionsStatusForRenderer(jarvisBridge()));
   trustedHandle("app:open-external", (_event, url) => {
     const target = safeExternalUrl(url);
     if (target) return shell.openExternal(target);
@@ -4099,7 +4127,13 @@ app.whenReady().then(() => {
   });
 });
 
-app.on("will-quit", () => globalShortcut.unregisterAll());
+app.on("will-quit", () => {
+  globalShortcut.unregisterAll();
+  // Iris is the visible shell and owns its backend's lifetime: the headless
+  // Jarvis it started goes away with it, so no orphan backend survives.
+  stopJarvisBackend(jarvisBackendProcess);
+  jarvisBackendProcess = null;
+});
 app.on("before-quit", () => {
   isQuitting = true;
   shuttingDown = true;

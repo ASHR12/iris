@@ -242,6 +242,7 @@ type IrisApi = {
   getJarvisCurrentContext: () => Promise<JarvisCurrentContextResult>;
   getJarvisEngineeringJob: () => Promise<JarvisEngineeringJobResult>;
   getJarvisActiveGoal: () => Promise<JarvisActiveGoalResult>;
+  getJarvisConnectionsStatus: () => Promise<JarvisConnectionsStatusResult>;
   onUiAction: (callback: (action: IrisUiAction) => void) => () => void;
   onAudioChunk: (callback: (chunk: LiveAudioChunk) => void) => () => void;
   onAudioInterrupt: (callback: () => void) => () => void;
@@ -420,6 +421,26 @@ type JarvisActiveGoalResult = {
   ok: boolean;
   error?: string;
   data?: JarvisGoal | null;
+};
+
+// Connections Status v1 (P2.4) — verbatim field shapes from Jarvis's own
+// adapter/iris-bridge.cjs getConnectionsStatus(), never re-derived. A
+// read-only "which integrations are available right now" readout — no
+// write/reconnect control exists here.
+type JarvisConnectionId = "personalOS" | "drive" | "calendar" | "github" | "webResearch" | "mail" | "claudeWorker";
+type JarvisConnectionStatusValue = "connected" | "not_connected" | "unavailable";
+
+type JarvisConnectionEntry = {
+  id: JarvisConnectionId;
+  label: string;
+  status: JarvisConnectionStatusValue;
+  detail: string;
+};
+
+type JarvisConnectionsStatusResult = {
+  ok: boolean;
+  error?: string;
+  data?: { connections: JarvisConnectionEntry[]; checkedAt: string };
 };
 
 interface Window {

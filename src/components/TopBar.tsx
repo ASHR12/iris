@@ -1,4 +1,5 @@
 import { Hand, PictureInPicture2, Radio, Settings } from "lucide-react";
+import ConnectionsStatus from "./ConnectionsStatus";
 
 function StatusDot({ tone, state, label }: { tone: string; state: string; label: string }) {
   return (
@@ -19,6 +20,7 @@ export default function TopBar({
   handControl,
   onToggleHand,
   onOpenSettings,
+  connectionsStatus,
 }: {
   geminiDot: string;
   hermesDot: string;
@@ -29,6 +31,7 @@ export default function TopBar({
   handControl: boolean;
   onToggleHand: () => void;
   onOpenSettings: () => void;
+  connectionsStatus: JarvisConnectionsStatusResult | null;
 }) {
   return (
     <header className="deck-top">
@@ -48,6 +51,7 @@ export default function TopBar({
         <span className="brand-mark">I.R.I.S</span>
       </div>
       <div className="deck-top-right">
+        <ConnectionsStatus result={connectionsStatus} />
         <button
           className="theme-toggle"
           onClick={() => window.iris?.toggleHud()}

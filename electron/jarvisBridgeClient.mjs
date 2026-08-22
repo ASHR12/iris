@@ -123,6 +123,19 @@ export async function getActiveGoalForRenderer(bridge) {
   }
 }
 
+// getConnectionsStatusForRenderer() — Jarvis Integrations/Connections
+// readout (P2.4). Same never-throws, forward-the-bridge's-{ok,...}-result-
+// as-is contract as every other *ForRenderer function above: no bridge is
+// itself a distinct, honest {ok:false} rather than a silently empty list.
+export async function getConnectionsStatusForRenderer(bridge) {
+  if (!bridge) return { ok: false, error: "Jarvis Bridge nicht verfügbar." };
+  try {
+    return await bridge.getConnectionsStatus();
+  } catch (error) {
+    return { ok: false, error: String(error?.message ?? error) };
+  }
+}
+
 // Pure: builds the [you, jarvis|jarvis-error] pair the renderer appends to
 // the existing Comms transcript for a request/response askJarvis call.
 // "jarvis-error" is a distinct speaker value (never silently reused as

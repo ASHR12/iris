@@ -67,6 +67,11 @@ export default function App() {
   // the Personal OS states above, never demo data.
   const [jarvisEngineeringJob, setJarvisEngineeringJob] = useState<JarvisEngineeringJobResult | null>(null);
   const [jarvisActiveGoal, setJarvisActiveGoal] = useState<JarvisActiveGoalResult | null>(null);
+  // Connections Status v1 (P2.4) — real Jarvis integrations/connections
+  // readout (Jarvis-Desktop/app/adapter/iris-bridge.cjs
+  // getConnectionsStatus()). Same null/{ok:false}/{ok:true} contract as the
+  // Personal OS states above, never demo data.
+  const [connectionsStatus, setConnectionsStatus] = useState<JarvisConnectionsStatusResult | null>(null);
   const [geminiStatus, setGeminiStatus] = useState("offline");
   const [hermesStatus, setHermesStatus] = useState("offline");
   const [audioState, setAudioState] = useState("idle");
@@ -284,6 +289,26 @@ export default function App() {
     window.iris.getJarvisCurrentContext().then(setJarvisContext);
     window.iris.getJarvisEngineeringJob().then(setJarvisEngineeringJob);
     window.iris.getJarvisActiveGoal().then(setJarvisActiveGoal);
+  }, [hasBridge]);
+
+  // Connections Status v1 (P2.4) — refreshed on mount and then on a slow
+  // poll (integrations rarely flip mid-session, but this stays honest
+  // without requiring a manual reload). No live-write path exists here.
+  const CONNECTIONS_STATUS_POLL_MS = 60_000;
+  useEffect(() => {
+    if (!hasBridge) return;
+    let cancelled = false;
+    const refresh = () => {
+      window.iris.getJarvisConnectionsStatus().then((result) => {
+        if (!cancelled) setConnectionsStatus(result);
+      });
+    };
+    refresh();
+    const id = window.setInterval(refresh, CONNECTIONS_STATUS_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
   }, [hasBridge]);
 
   useEffect(() => {
@@ -1625,6 +1650,7 @@ export default function App() {
           handControl={handControl}
           onToggleHand={() => setHandControl((current) => !current)}
           onOpenSettings={openSettings}
+          connectionsStatus={connectionsStatus}
         />
 
         <div className="deck-body">

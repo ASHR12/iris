@@ -61,6 +61,7 @@ contextBridge.exposeInMainWorld("iris", {
   getJarvisCurrentContext: () => ipcRenderer.invoke("jarvisBridge:getCurrentContext"),
   getJarvisEngineeringJob: () => ipcRenderer.invoke("jarvisBridge:getLatestEngineeringJob"),
   getJarvisActiveGoal: () => ipcRenderer.invoke("jarvisBridge:getActiveGoal"),
+  getJarvisConnectionsStatus: () => ipcRenderer.invoke("jarvisBridge:getConnectionsStatus"),
   onUiAction: (callback) => {
     const handler = (_event, payload) => callback(payload);
     ipcRenderer.on("iris:ui-action", handler);
