@@ -201,6 +201,7 @@ export default function WorkStream({
   onFocusTask,
   onOpenTask,
   onApproveTask,
+  pendingApprovalTaskId,
 }: {
   personalTasks: JarvisTasksResult | null;
   engineeringJob: JarvisEngineeringJobResult | null;
@@ -222,6 +223,7 @@ export default function WorkStream({
     task: TaskCard,
     choice: "once" | "session" | "always" | "deny",
   ) => void;
+  pendingApprovalTaskId: string | null;
 }) {
   return (
     <aside className="deck-panel deck-right">
@@ -275,6 +277,7 @@ export default function WorkStream({
               onFocus={() => onFocusTask(task.id)}
               onOpen={() => onOpenTask(task)}
               onApprove={(choice) => onApproveTask(task, choice)}
+              pendingApprovalTaskId={pendingApprovalTaskId}
             />
           ))
         )}

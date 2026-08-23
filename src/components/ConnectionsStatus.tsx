@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Plug } from "lucide-react";
+import { LOADING_PLACEHOLDER } from "../lib/loadingState";
 
 // Jarvis Integrations/Connections readout (P2.4) — a compact, read-only
 // popover over the real getJarvisConnectionsStatus() bridge result (see
@@ -41,7 +42,7 @@ export default function ConnectionsStatus({
 
   const connections = result?.ok ? (result.data?.connections ?? []) : [];
   const connectedCount = connections.filter((entry) => entry.status === "connected").length;
-  const summary = result === null ? "…" : `${connectedCount}/${connections.length}`;
+  const summary = result === null ? LOADING_PLACEHOLDER : `${connectedCount}/${connections.length}`;
 
   return (
     <div className="connections-status" ref={rootRef}>

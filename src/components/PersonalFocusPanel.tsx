@@ -1,4 +1,5 @@
 import { Target } from "lucide-react";
+import { LOADING_PLACEHOLDER } from "../lib/loadingState";
 
 // Compact left-column readout of real Jarvis Bridge Personal OS data: Top
 // Focus, Current Context, Next. No demo data, no invented fallback — a
@@ -39,7 +40,7 @@ export default function PersonalFocusPanel({
             </>
           ) : (
             <p className="focus-empty">
-              {goalError || (activeGoal ? "Kein Ziel definiert." : "…")}
+              {goalError || (activeGoal ? "Kein Ziel definiert." : LOADING_PLACEHOLDER)}
             </p>
           )}
         </section>
@@ -53,7 +54,7 @@ export default function PersonalFocusPanel({
             </>
           ) : (
             <p className="focus-empty">
-              {focusError || (topFocus ? "Kein Top-Fokus." : "…")}
+              {focusError || (topFocus ? "Kein Top-Fokus." : LOADING_PLACEHOLDER)}
             </p>
           )}
         </section>
@@ -72,7 +73,7 @@ export default function PersonalFocusPanel({
             </>
           ) : (
             <p className="focus-empty">
-              {contextError || (context ? "Kein Kontext." : "…")}
+              {contextError || (context ? "Kein Kontext." : LOADING_PLACEHOLDER)}
             </p>
           )}
         </section>
@@ -86,7 +87,7 @@ export default function PersonalFocusPanel({
             </>
           ) : (
             <p className="focus-empty">
-              {context ? (context.ok ? "Keine nächste Aktion." : contextError) : "…"}
+              {context ? (context.ok ? "Keine nächste Aktion." : contextError) : LOADING_PLACEHOLDER}
             </p>
           )}
         </section>

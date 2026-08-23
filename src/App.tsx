@@ -1389,6 +1389,7 @@ export default function App() {
       sortedTasks.find((task) => Boolean(task.approval) && !task.interaction) ?? null,
     [sortedTasks],
   );
+  const pendingApprovalTaskId = pendingApprovalTask?.id ?? null;
   const pendingInteractionTask = useMemo(
     () => sortedTasks.find((task) => Boolean(task.interaction)) ?? null,
     [sortedTasks],
@@ -1711,6 +1712,7 @@ export default function App() {
           onFocusTask={setFocusedTaskId}
           onOpenTask={openTask}
           onApproveTask={(task, choice) => void resolveTaskApproval(task, choice)}
+          pendingApprovalTaskId={pendingApprovalTaskId}
           transcript={transcript}
           commsScrollRef={commsScrollRef}
           handControl={handControl}
@@ -1827,6 +1829,7 @@ export default function App() {
             onFocusTask={setFocusedTaskId}
             onOpenTask={openTask}
             onApproveTask={(task, choice) => void resolveTaskApproval(task, choice)}
+            pendingApprovalTaskId={pendingApprovalTaskId}
           />
         </div>
 
@@ -1866,7 +1869,12 @@ export default function App() {
       ) : null}
 
       {showHistory ? (
-        <HistoryDrawer tasks={sortedTasks} onOpen={openTask} onClose={() => setShowHistory(false)} />
+        <HistoryDrawer
+          tasks={sortedTasks}
+          onOpen={openTask}
+          onClose={() => setShowHistory(false)}
+          pendingApprovalTaskId={pendingApprovalTaskId}
+        />
       ) : null}
 
       {taskChooser ? (

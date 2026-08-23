@@ -7,10 +7,12 @@ export default function HistoryDrawer({
   tasks,
   onOpen,
   onClose,
+  pendingApprovalTaskId,
 }: {
   tasks: TaskCard[];
   onOpen: (task: TaskCard) => void;
   onClose: () => void;
+  pendingApprovalTaskId: string | null;
 }) {
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -37,7 +39,7 @@ export default function HistoryDrawer({
         </div>
         <div className="history-grid">
           {tasks.map((task) => (
-            <WorkCard key={task.id} task={task} onFocus={() => undefined} onOpen={() => onOpen(task)} />
+            <WorkCard key={task.id} task={task} onFocus={() => undefined} onOpen={() => onOpen(task)} pendingApprovalTaskId={pendingApprovalTaskId} />
           ))}
         </div>
       </div>

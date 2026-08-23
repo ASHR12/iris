@@ -6,6 +6,7 @@ import {
   normalizeMarkdown,
   prettyToolName,
   shortRunId,
+  shouldRenderInlineApproval,
   stepDetail,
   stepHeadline,
   toolCategory,
@@ -60,6 +61,7 @@ export default function WorkCard({
   onFocus,
   onOpen,
   onApprove,
+  pendingApprovalTaskId = null,
 }: {
   task: TaskCard;
   accepted?: boolean;
@@ -68,6 +70,7 @@ export default function WorkCard({
   onFocus: () => void;
   onOpen: () => void;
   onApprove?: (choice: "once" | "session" | "always" | "deny") => void;
+  pendingApprovalTaskId?: string | null;
 }) {
   const [localStepsOpen, setLocalStepsOpen] = useState(false);
   const showSteps = onToggleSteps ? stepsOpen : localStepsOpen;
@@ -126,7 +129,7 @@ export default function WorkCard({
         </div>
       ) : null}
 
-      {task.approval ? (
+      {task.approval && shouldRenderInlineApproval(task.id, pendingApprovalTaskId ?? null) ? (
         <div className="approval-card" onClick={(event) => event.stopPropagation()}>
           <strong>Approval required</strong>
           {task.approval.command ? <code>{task.approval.command}</code> : null}

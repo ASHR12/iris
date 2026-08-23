@@ -79,6 +79,7 @@ export default function HudShell({
   onFocusTask,
   onOpenTask,
   onApproveTask,
+  pendingApprovalTaskId,
   transcript,
   commsScrollRef,
   handControl,
@@ -122,6 +123,7 @@ export default function HudShell({
     task: TaskCard,
     choice: "once" | "session" | "always" | "deny",
   ) => void;
+  pendingApprovalTaskId: string | null;
   transcript: TranscriptLine[];
   commsScrollRef: RefObject<HTMLDivElement | null>;
   handControl: boolean;
@@ -206,6 +208,7 @@ export default function HudShell({
                   onFocus={() => onFocusTask(task.id)}
                   onOpen={() => onOpenTask(task)}
                   onApprove={(choice) => onApproveTask(task, choice)}
+                  pendingApprovalTaskId={pendingApprovalTaskId}
                 />
               ))}
             </div>
