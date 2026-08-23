@@ -105,6 +105,17 @@ function fail(message) {
   throw new Error(message);
 }
 
+// Some new assertions below (AC3(b)) are proving a CONFIRMED, currently-open
+// gap. A hard fail() would abort the script before the other new, currently-
+// passing assertions (AC2, AC4) get a chance to run and be reported in the
+// same pass. softFail() records the failure and keeps going; the script
+// still exits non-zero at the end if anything was recorded.
+const deferredFailures = [];
+function softFail(message) {
+  deferredFailures.push(message);
+  console.error(`FAIL (recorded, continuing — see summary below): ${message}`);
+}
+
 /** Ask the PACKAGED Jarvis binary itself — not this script's assumptions, and
  *  not the source checkout — where it would write under `env`. */
 function resolveInPackagedJarvis(expression) {
@@ -200,6 +211,10 @@ if (strayBefore.length) {
   fail(`ABORT: a packaged Jarvis (pid ${strayBefore.join(", ")}) is already running. Quit it first — this smoke must own the only backend.`);
 }
 
+// Declared here (not inside the try below) so the new AC3(b)/AC4 assertions
+// after step 8 can reuse the exact same path the original backend published.
+const endpointPath = path.join(engineeringDir, "action-endpoint.json");
+
 const app = await electron.launch({
   executablePath: IRIS_BINARY,
   args: [`--user-data-dir=${path.join(tmpRoot, "iris-user-data")}`],
@@ -208,8 +223,12 @@ const app = await electron.launch({
 });
 
 let backendPid = null;
+let secondApp = null;
+let thirdApp = null;
+let thirdBackendPid = null;
 
 try {
+ try {
   const page = await app.firstWindow();
   await page.waitForSelector(".deck", { timeout: 60000 });
 
@@ -225,7 +244,6 @@ try {
 
   // 2. The backend really came up, headless, as the packaged Jarvis — and
   //    there is exactly one of it.
-  const endpointPath = path.join(engineeringDir, "action-endpoint.json");
   const endpoint = await waitFor(
     "the packaged Jarvis backend to publish its loopback endpoint descriptor",
     () => (fs.existsSync(endpointPath) ? JSON.parse(fs.readFileSync(endpointPath, "utf8")) : null),
@@ -341,7 +359,42 @@ try {
     fail("The smoke wrote into the REAL Obsidian vault. Isolation failed.");
   }
   console.log("ISOLATION OK: throwaway audit log received this run; production audit log and the real vault untouched");
-} catch (error) {
+
+  // AC2 (empirical, expected to already pass today): a SECOND, fully
+  // independent Iris instance (own --user-data-dir, so Iris's own
+  // requestSingleInstanceLock() does NOT block it — that lock is scoped per
+  // user-data-dir) must still never end up with a second Jarvis backend. The
+  // actual guard is Jarvis's OWN single-instance lock in its own
+  // electron-main.cjs: a duplicate launch is expected to exit immediately.
+  const secondUserDataDir = path.join(tmpRoot, "iris-user-data-2");
+  secondApp = await electron.launch({
+    executablePath: IRIS_BINARY,
+    args: [`--user-data-dir=${secondUserDataDir}`],
+    cwd: root,
+    env,
+  });
+  try {
+    const secondPage = await secondApp.firstWindow();
+    await secondPage.waitForSelector(".deck", { timeout: 60000 });
+
+    // Give a duplicate backend launch attempt time to appear (and be
+    // rejected by Jarvis's own lock) before asserting it never showed up.
+    let running = jarvisMainProcessPids();
+    const pollDeadline = Date.now() + 5000;
+    while (Date.now() < pollDeadline) {
+      running = jarvisMainProcessPids();
+      if (running.length !== 1 || running[0] !== backendPid) break;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    if (running.length !== 1 || running[0] !== backendPid) {
+      fail(`AC2: a second Iris instance resulted in more than one Jarvis backend. Expected only pid ${backendPid}, found: ${running.join(", ") || "none"}.`);
+    }
+    console.log(`PASS AC2 (empirical): a second, independent Iris instance did not spawn a second Jarvis backend — still exactly pid ${backendPid}`);
+  } finally {
+    await secondApp.close().catch(() => {});
+    secondApp = null;
+  }
+ } catch (error) {
   try {
     fs.mkdirSync(failureDir, { recursive: true });
     const page = await app.firstWindow();
@@ -351,26 +404,114 @@ try {
     // best-effort screenshot only
   }
   await app.close().catch(() => {});
+  if (secondApp) await secondApp.close().catch(() => {});
   throw error;
-} finally {
-  try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* best effort */ }
-}
+ }
 
-// 8. Teardown: quitting Iris must take the backend it started with it. A
-//    surviving Jarvis would hold a stale single-instance lock and an orphaned
-//    Action endpoint — the next Iris launch would silently get no backend.
-await app.close();
-const backendGone = async () => {
+ // 8. Teardown: quitting Iris must take the backend it started with it. A
+ //    surviving Jarvis would hold a stale single-instance lock and an orphaned
+ //    Action endpoint — the next Iris launch would silently get no backend.
+ await app.close();
+ const backendGone = async () => {
   const deadline = Date.now() + 20000;
   for (;;) {
     if (!jarvisMainProcessPids().includes(backendPid)) return true;
     if (Date.now() > deadline) return false;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-};
-if (!(await backendGone())) {
+ };
+ if (!(await backendGone())) {
   fail(`Quitting Iris left the Jarvis backend (pid ${backendPid}) running. Cleanup is broken.`);
-}
-console.log(`PASS 8/8: quitting Iris cleaned up the Jarvis backend (pid ${backendPid})`);
+ }
+ console.log(`PASS 8/8: quitting Iris cleaned up the Jarvis backend (pid ${backendPid})`);
 
-console.log("\nSMOKE PASS: packaged Iris.app -> one headless packaged Jarvis.app backend -> Connections Status, Ask Jarvis, Action/Approval/Result -> clean teardown");
+ // AC3(b): quitting Iris kills the Jarvis OS process (proven above), but
+ // that alone does not prove Jarvis's own will-quit cleanup
+ // (clearActionEndpoint) actually ran. electron-main.cjs installs no
+ // process.on("SIGTERM", ...) handler of its own; this was suspected to mean
+ // the endpoint file survives a SIGTERM-driven exit. EMPIRICALLY, against
+ // this build, that suspicion did NOT reproduce: Electron's own runtime
+ // already reacts to SIGTERM by running the normal quit chain (will-quit
+ // fires, clearActionEndpoint runs), confirmed both by this assertion and by
+ // a manual `kill -TERM` against the raw packaged binary. Kept as a real
+ // regression guard either way — if this ever starts failing, that is a
+ // genuine new gap.
+ if (fs.existsSync(endpointPath)) {
+  softFail(
+    `AC3(b): ${endpointPath} still exists after quitting Iris — Jarvis's ` +
+    `will-quit cleanup (clearActionEndpoint) did not run. electron-main.cjs ` +
+    `has no process.on("SIGTERM", ...) handler, so Iris's SIGTERM kills the ` +
+    `process via Node's default disposition instead of Electron's quit chain.`,
+  );
+ } else {
+  console.log(`PASS AC3(b): quitting Iris also cleared the stale action-endpoint.json (${endpointPath})`);
+ }
+
+ // AC4 (empirical, expected to already pass today): after a clean shutdown,
+ // relaunching Iris a THIRD time must produce a brand-new Jarvis backend
+ // (not reuse stale state) and the full Connections Status / Ask Jarvis path
+ // must keep working.
+ const thirdUserDataDir = path.join(tmpRoot, "iris-user-data-3");
+ thirdApp = await electron.launch({
+  executablePath: IRIS_BINARY,
+  args: [`--user-data-dir=${thirdUserDataDir}`],
+  cwd: root,
+  env,
+ });
+ try {
+  const thirdPage = await thirdApp.firstWindow();
+  await thirdPage.waitForSelector(".deck", { timeout: 60000 });
+
+  // A stale endpoint file (see AC3(b) above) may already exist with the
+  // ORIGINAL backendPid; wait specifically for a NEW pid, not just for the
+  // file to exist, so this assertion is meaningful either way.
+  const thirdEndpoint = await waitFor(
+    "a fresh packaged Jarvis backend to publish its own endpoint after a clean shutdown + restart",
+    () => {
+      if (!fs.existsSync(endpointPath)) return null;
+      const parsed = JSON.parse(fs.readFileSync(endpointPath, "utf8"));
+      return parsed.pid !== backendPid ? parsed : null;
+    },
+    90000,
+  );
+  thirdBackendPid = thirdEndpoint.pid;
+  if (thirdBackendPid === backendPid) {
+    fail(`AC4: the restarted backend reused the original pid ${backendPid} instead of starting a fresh process.`);
+  }
+
+  const thirdFromRenderer = await thirdPage.evaluate(() => window.iris.getJarvisConnectionsStatus());
+  if (!thirdFromRenderer?.ok) {
+    fail(`AC4: Connections Status failed after a clean restart: ${JSON.stringify(thirdFromRenderer)}`);
+  }
+
+  const thirdAnswer = await thirdPage.evaluate((question) => window.iris.askJarvis(question), ASK_QUESTION);
+  if (!thirdAnswer?.ok || typeof thirdAnswer.answer !== "string" || !thirdAnswer.answer.trim()) {
+    fail(`AC4: Ask Jarvis failed after a clean restart: ${JSON.stringify(thirdAnswer)}`);
+  }
+
+  console.log(`PASS AC4 (empirical): Iris restarted cleanly after shutdown — fresh backend pid ${thirdBackendPid}, Connections Status ok, Ask Jarvis answered`);
+ } finally {
+  await thirdApp.close().catch(() => {});
+ }
+
+ const thirdBackendGone = async () => {
+  const deadline = Date.now() + 20000;
+  for (;;) {
+    if (thirdBackendPid == null || !jarvisMainProcessPids().includes(thirdBackendPid)) return true;
+    if (Date.now() > deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+ };
+ if (!(await thirdBackendGone())) {
+  fail(`AC4 teardown: the restarted Jarvis backend (pid ${thirdBackendPid}) survived quitting the third Iris instance.`);
+ }
+ console.log(`PASS AC4 teardown: the restarted backend (pid ${thirdBackendPid}) also shut down cleanly`);
+
+ if (deferredFailures.length) {
+  throw new Error(`${deferredFailures.length} assertion(s) failed:\n${deferredFailures.join("\n")}`);
+ }
+
+ console.log("\nSMOKE PASS: packaged Iris.app -> one headless packaged Jarvis.app backend -> Connections Status, Ask Jarvis, Action/Approval/Result -> clean teardown");
+} finally {
+ try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* best effort */ }
+}

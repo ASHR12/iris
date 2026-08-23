@@ -151,3 +151,21 @@ test("stopJarvisBackend is a safe no-op for a missing or already-dead backend", 
   assert.doesNotThrow(() => stopJarvisBackend(null));
   assert.doesNotThrow(() => stopJarvisBackend({ killed: true, kill: () => { throw new Error("already gone"); } }));
 });
+
+// Mirrors the grace-window escalation already used for the Hermes gateway
+// child (hermesGatewayClient.mjs #stopProcess, ~line 269-280): SIGTERM first,
+// then SIGKILL after a 3000ms grace period if the child never reports exit.
+// A backend that ignores/survives SIGTERM must not be left running forever.
+test("stopJarvisBackend escalates to SIGKILL if the backend ignores SIGTERM for 3000ms", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const signals = [];
+  const child = {
+    pid: 1,
+    killed: false,
+    exitCode: null, // never set — simulates a child that survives SIGTERM
+    kill: (signal) => { signals.push(signal); },
+  };
+  stopJarvisBackend(child);
+  t.mock.timers.tick(3000);
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+});

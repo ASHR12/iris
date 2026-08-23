@@ -112,4 +112,13 @@ export function stopJarvisBackend(child) {
   } catch {
     // Already gone; nothing to clean up.
   }
+  setTimeout(() => {
+    if (child.exitCode == null) {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // Already gone; nothing to clean up.
+      }
+    }
+  }, 3000).unref();
 }
