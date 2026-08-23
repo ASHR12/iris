@@ -16,6 +16,16 @@ export function tasksForSession(
   return tasks.filter((task) => task.sessionId === sessionId);
 }
 
+// Suppresses WorkCard's inline "Approval required" box for the task that is
+// already shown as the full-screen ApprovalPrompt modal, so the same
+// approval never renders twice at once.
+export function shouldRenderInlineApproval(
+  taskId: string,
+  pendingApprovalTaskId: string | null,
+): boolean {
+  return taskId !== pendingApprovalTaskId;
+}
+
 export function taskKeyFor(task: string): string {
   return `starting:${task.toLowerCase().trim()}`;
 }

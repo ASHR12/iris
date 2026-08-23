@@ -1,4 +1,5 @@
 import { Hand, PictureInPicture2, Radio, Settings } from "lucide-react";
+import ConnectionsStatus from "./ConnectionsStatus";
 
 function StatusDot({ tone, state, label }: { tone: string; state: string; label: string }) {
   return (
@@ -12,21 +13,25 @@ function StatusDot({ tone, state, label }: { tone: string; state: string; label:
 export default function TopBar({
   geminiDot,
   hermesDot,
+  hermesAvailable,
   audioDot,
   linked,
   pid,
   handControl,
   onToggleHand,
   onOpenSettings,
+  connectionsStatus,
 }: {
   geminiDot: string;
   hermesDot: string;
+  hermesAvailable: boolean;
   audioDot: string;
   linked: boolean;
   pid: number | null;
   handControl: boolean;
   onToggleHand: () => void;
   onOpenSettings: () => void;
+  connectionsStatus: JarvisConnectionsStatusResult | null;
 }) {
   return (
     <header className="deck-top">
@@ -35,7 +40,10 @@ export default function TopBar({
             hiddenInset) — padding in .deck-top-left clears their footprint. */}
         <div className="deck-status">
           <StatusDot tone="gemini" state={geminiDot} label="Gemini" />
-          <StatusDot tone="hermes" state={hermesDot} label="Hermes" />
+          {/* Never shown until Hermes has actually reported a real status at
+              least once — an unconfigured/not-installed Hermes must not sit
+              next to Gemini implying equal, always-expected availability. */}
+          {hermesAvailable ? <StatusDot tone="hermes" state={hermesDot} label="Hermes" /> : null}
           <StatusDot tone="audio" state={audioDot} label="Audio" />
         </div>
       </div>
@@ -43,6 +51,7 @@ export default function TopBar({
         <span className="brand-mark">I.R.I.S</span>
       </div>
       <div className="deck-top-right">
+        <ConnectionsStatus result={connectionsStatus} />
         <button
           className="theme-toggle"
           onClick={() => window.iris?.toggleHud()}

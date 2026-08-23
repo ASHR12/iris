@@ -54,6 +54,23 @@ contextBridge.exposeInMainWorld("iris", {
   sendUiContext: (context) => ipcRenderer.send("iris:ui-context", context),
   sendAudioChunk: (chunk) => ipcRenderer.send("live:audio", chunk),
   notifyBootDone: () => ipcRenderer.send("iris:boot-done"),
+  reportVoiceState: (state) => ipcRenderer.send("jarvisBridge:voiceState", state),
+  askJarvis: (text) => ipcRenderer.invoke("jarvisBridge:askJarvis", text),
+  getJarvisTasks: () => ipcRenderer.invoke("jarvisBridge:getTasks"),
+  getJarvisTopFocus: () => ipcRenderer.invoke("jarvisBridge:getTopFocus"),
+  getJarvisCurrentContext: () => ipcRenderer.invoke("jarvisBridge:getCurrentContext"),
+  getJarvisEngineeringJob: () => ipcRenderer.invoke("jarvisBridge:getLatestEngineeringJob"),
+  getJarvisActiveGoal: () => ipcRenderer.invoke("jarvisBridge:getActiveGoal"),
+  getJarvisConnectionsStatus: () => ipcRenderer.invoke("jarvisBridge:getConnectionsStatus"),
+  // Jarvis Actions & Approvals (P2.5). Every one of these is executed by the
+  // running Jarvis backend process, never here and never in Iris's main
+  // process — a previewId is an opaque handle into Jarvis's own Action
+  // Service. secondaryApprove is a SEPARATE call on purpose: a destructive
+  // action (Drive Trash, Calendar Delete) is not completed by approve alone.
+  proposeJarvisAction: (question, source) => ipcRenderer.invoke("jarvisAction:propose", { question, source }),
+  approveJarvisAction: (previewId) => ipcRenderer.invoke("jarvisAction:approve", previewId),
+  secondaryApproveJarvisAction: (previewId) => ipcRenderer.invoke("jarvisAction:secondaryApprove", previewId),
+  cancelJarvisAction: (previewId) => ipcRenderer.invoke("jarvisAction:cancel", previewId),
   onUiAction: (callback) => {
     const handler = (_event, payload) => callback(payload);
     ipcRenderer.on("iris:ui-action", handler);

@@ -55,6 +55,11 @@
   min-height: 42px;
   padding: var(--s-1) var(--s-2) var(--s-2);
   -webkit-app-region: drag;
+  /* `.deck > *` gives every direct child the same z-index:1 stacking
+     context, so without this the later-in-DOM .deck-body (which contains
+     the right column) paints over anything absolutely-positioned inside
+     .deck-top, like the Connections Status popover below. */
+  z-index: 2;
 }
 
 .deck-top-left {
@@ -232,6 +237,91 @@
   50% { opacity: 0.45; }
 }
 
+/* ===== Connections Status (P2.4) =====
+   A compact popover off a TopBar icon button, same ghost-icon trigger as
+   Settings/HUD toggle and the same deck-panel surface every dropdown/card
+   in this app already uses — no new surface language introduced. */
+.connections-status {
+  position: relative;
+}
+
+.connections-popover {
+  position: absolute;
+  top: calc(100% + var(--s-2));
+  right: 0;
+  z-index: 20;
+  width: 260px;
+  padding-bottom: var(--s-2);
+  box-shadow:
+    inset 0 0 0 1px var(--hairline),
+    0 12px 32px rgba(0, 0, 0, 0.35);
+}
+
+.connections-popover .col-head {
+  padding: var(--s-3) var(--s-3) var(--s-2);
+}
+
+.connections-list {
+  display: flex;
+  flex-direction: column;
+  padding: 0 var(--s-3);
+}
+
+.connections-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-1) 0;
+}
+
+.connection-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: #273349;
+}
+
+.connections-row.status-connected .connection-dot {
+  background: var(--mint);
+  box-shadow: 0 0 10px rgba(var(--mint-rgb), 0.65);
+}
+
+.connections-row.status-unavailable .connection-dot {
+  background: var(--coral);
+  box-shadow: 0 0 10px rgba(var(--coral-rgb), 0.6);
+}
+
+.connections-label {
+  flex: 1;
+  font-size: var(--t-sm);
+  color: var(--text-soft);
+}
+
+.connections-state {
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs);
+  font-weight: var(--w-medium);
+  letter-spacing: var(--tr-caps);
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.connections-row.status-connected .connections-state {
+  color: var(--mint);
+}
+
+.connections-row.status-unavailable .connections-state {
+  color: var(--coral);
+}
+
+.connections-empty {
+  margin: 0;
+  padding: var(--s-2) var(--s-3) var(--s-3);
+  font-size: var(--t-xs);
+  color: var(--muted);
+}
+
 /* ===== Body grid ===== */
 .deck-body {
   flex: 1;
@@ -247,6 +337,54 @@
   flex-direction: column;
   gap: var(--s-3);
   min-height: 0;
+}
+
+/* Compact Personal OS focus readout, above Comms in the left column. */
+.focus-panel {
+  flex: 0 0 auto;
+}
+
+.focus-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: 0 var(--s-4) var(--s-4);
+}
+
+.focus-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-05);
+}
+
+.focus-label {
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs);
+  font-weight: var(--w-medium);
+  letter-spacing: var(--tr-wide);
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.focus-title {
+  margin: 0;
+  font-size: var(--t-sm);
+  font-weight: var(--w-medium);
+  line-height: var(--lh-snug);
+  color: var(--text);
+}
+
+.focus-sub {
+  margin: 0;
+  font-size: var(--t-xs);
+  line-height: var(--lh-body);
+  color: var(--text-soft);
+}
+
+.focus-empty {
+  margin: 0;
+  font-size: var(--t-xs);
+  color: var(--muted);
 }
 
 .comms {
@@ -265,6 +403,60 @@
   flex-direction: column;
   gap: var(--s-2);
   padding: var(--s-05) var(--s-4) var(--s-4);
+}
+
+.comms-composer {
+  flex: 0 0 auto;
+  display: flex;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+  border-top: 1px solid var(--hairline);
+}
+
+.comms-composer input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-sm);
+  font-size: var(--t-sm);
+  font-family: var(--font-ui);
+  color: var(--text);
+  background: rgba(3, 8, 16, 0.55);
+  border: 1px solid var(--hairline);
+  outline: none;
+  transition: border-color var(--dur-fast) ease, box-shadow var(--dur-fast) ease;
+}
+
+.comms-composer input::placeholder {
+  color: rgba(100, 116, 142, 0.6);
+}
+
+.comms-composer input:focus {
+  border-color: rgba(var(--cyan-rgb), 0.5);
+  box-shadow: 0 0 0 3px rgba(var(--cyan-rgb), 0.12);
+}
+
+.comms-composer button {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  border-radius: var(--r-sm);
+  color: var(--cyan-bright);
+  background: rgba(var(--cyan-rgb), 0.1);
+  box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb), 0.25);
+  transition: background var(--dur-fast) ease, box-shadow var(--dur-fast) ease, opacity var(--dur-fast) ease;
+}
+
+.comms-composer button:hover:not(:disabled) {
+  background: rgba(var(--cyan-rgb), 0.18);
+  box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb), 0.4);
+}
+
+.comms-composer button:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .bubble {
@@ -882,6 +1074,14 @@
   gap: var(--s-3);
 }
 
+/* Voice-not-configured status — deliberately NOT .wake-say's large glowing
+   pill: this is a secondary, truthful status line, not a call to action. */
+.voice-status-subtle {
+  font-size: var(--t-xs);
+  color: var(--muted);
+  text-align: center;
+}
+
 .wake-say {
   display: inline-flex;
   align-items: center;
@@ -1134,6 +1334,102 @@
   flex-direction: column;
   gap: var(--s-2);
   padding: var(--s-05) var(--s-3) var(--s-3);
+}
+
+/* Real NOW/NEXT/WAITING/OVERDUE Personal OS tasks, above the Hermes run
+   list in the same scrollable Work Stream column. */
+.pos-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: var(--s-3);
+  border-radius: var(--r-md);
+  background: var(--panel-raised);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+
+.pos-block-head {
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs);
+  font-weight: var(--w-semi);
+  letter-spacing: var(--tr-wide);
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.pos-empty-text {
+  margin: 0;
+  font-size: var(--t-xs);
+  color: var(--muted);
+}
+
+/* A completed worker's real result text — unlike .pos-title (single-line,
+   ellipsis-truncated), this must stay fully readable: wraps, keeps line
+   breaks, no truncation. */
+.pos-result-text {
+  margin: 0;
+  padding: var(--s-2);
+  border-radius: var(--r-sm);
+  background: rgba(255, 255, 255, 0.03);
+  font-size: var(--t-sm);
+  line-height: var(--lh-body);
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.pos-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+
+.pos-group-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs);
+  font-weight: var(--w-semi);
+  letter-spacing: var(--tr-wide);
+  text-transform: uppercase;
+  color: var(--text-soft);
+}
+
+.pos-group-count {
+  color: var(--muted);
+}
+
+.pos-group-label.pos-overdue { color: var(--coral); }
+.pos-group-label.pos-now { color: var(--amber); }
+.pos-group-label.pos-next { color: var(--cyan-bright); }
+.pos-group-label.pos-waiting { color: var(--violet-soft); }
+.pos-group-label.pos-ready { color: var(--mint); }
+.pos-group-label.pos-human { color: var(--amber); }
+.pos-group-label.pos-progress { color: var(--violet-soft); }
+
+.pos-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-2);
+  padding: var(--s-1) 0;
+}
+
+.pos-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--t-sm);
+  color: var(--text);
+}
+
+.pos-meta {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs);
+  color: var(--muted);
 }
 
 /* ===== Work cards =====
@@ -1606,4 +1902,109 @@
   .status-dot.audio.speaking i {
     animation: none;
   }
+}
+
+/* Jarvis Actions & Approvals (P2.5) — the approval card inside the existing
+   Ask Jarvis surface (CommsPanel), between the transcript and the composer.
+   Reuses the panel's own tokens/hairlines rather than introducing a new
+   visual language: this is an addition to the existing UI, not a redesign.
+   The `.danger` variant marks an action Jarvis has escalated to
+   secondary_approval_required, so a destructive confirmation can never look
+   like an ordinary one. */
+.jarvis-actions {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4) 0;
+}
+
+.jarvis-action {
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-md);
+  background: rgba(3, 8, 16, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb), 0.28);
+}
+
+.jarvis-action.danger {
+  box-shadow: inset 0 0 0 1px rgba(240, 120, 90, 0.55);
+}
+
+.jarvis-action-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+  margin-bottom: var(--s-1);
+}
+
+.jarvis-action-label {
+  font-size: var(--t-sm);
+  font-weight: 600;
+  color: var(--cyan-bright);
+}
+
+.jarvis-action-risk {
+  font-size: var(--t-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(150, 166, 190, 0.85);
+}
+
+.jarvis-action-risk.risk-high {
+  color: rgb(240, 140, 110);
+}
+
+.jarvis-action-summary {
+  margin: 0;
+  font-size: var(--t-sm);
+  color: var(--text);
+}
+
+.jarvis-action-warning {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: var(--s-1) 0 0;
+  font-size: var(--t-xs);
+  color: rgb(240, 170, 120);
+}
+
+.jarvis-action-buttons {
+  display: flex;
+  gap: var(--s-2);
+  margin-top: var(--s-2);
+}
+
+.jarvis-action-buttons button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: var(--r-sm);
+  font-size: var(--t-xs);
+  font-family: var(--font-ui);
+  transition: background var(--dur-fast) ease, box-shadow var(--dur-fast) ease, opacity var(--dur-fast) ease;
+}
+
+.jarvis-action-confirm {
+  color: var(--cyan-bright);
+  background: rgba(var(--cyan-rgb), 0.12);
+  box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb), 0.3);
+}
+
+.jarvis-action-confirm.danger {
+  color: rgb(255, 190, 165);
+  background: rgba(240, 120, 90, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(240, 120, 90, 0.5);
+}
+
+.jarvis-action-reject {
+  color: rgba(150, 166, 190, 0.9);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+
+.jarvis-action-buttons button:disabled {
+  opacity: 0.4;
+  cursor: default;
 }

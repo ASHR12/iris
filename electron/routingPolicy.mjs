@@ -18,6 +18,10 @@ export function classifyRoute(text) {
   return "direct";
 }
 
+export function decideTurnOwner(route) {
+  return route === "memory" ? "jarvis" : "gemini";
+}
+
 export function routingGuidance(route) {
   return {
     direct: "Answer briefly without tools unless factual uncertainty requires search.",

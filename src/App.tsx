@@ -17,6 +17,7 @@ import { useHandControl, type HandState } from "./hooks/useHandControl";
 import { useWakeWord } from "./hooks/useWakeWord";
 import TopBar from "./components/TopBar";
 import CommsPanel from "./components/CommsPanel";
+import PersonalFocusPanel from "./components/PersonalFocusPanel";
 import CameraDock from "./components/CameraDock";
 import CenterStage from "./components/CenterStage";
 import { ORB_ACCENT } from "./components/ReactorCore";
@@ -34,6 +35,19 @@ import ApprovalPrompt from "./components/ApprovalPrompt";
 import HermesInteractionPrompt from "./components/HermesInteractionPrompt";
 
 const MAX_LOGS = 80;
+
+// Harmless, read-only smoke question — triggers no Action/Write/Approval.
+const JARVIS_SMOKE_QUESTION = "Wie heißt du?";
+
+// Canonical Jarvis voice.state vocabulary Iris's own ReactorState maps onto
+// when reporting outward (see the "Iris Bridge v0.2" block in App()).
+const CANONICAL_VOICE_STATE: Record<ReactorState, "idle" | "listening" | "thinking" | "speaking"> = {
+  idle: "idle",
+  online: "idle",
+  listening: "listening",
+  working: "thinking",
+  speaking: "speaking",
+};
 const MAX_TASKS_TOTAL = 100;
 // Point-and-hold duration before the finger pointer "clicks" what it's over.
 const DWELL_MS = 300;
@@ -41,6 +55,23 @@ const DWELL_MS = 300;
 export default function App() {
   const [sidecarRunning, setSidecarRunning] = useState(false);
   const [sidecarPid, setSidecarPid] = useState<number | null>(null);
+  // Work Stream (right) + compact focus panel (left) — real Jarvis Bridge
+  // Personal OS data. null = not yet loaded; {ok:false} = bridge/reader
+  // unavailable; never demo data or an invented fallback.
+  const [jarvisTasks, setJarvisTasks] = useState<JarvisTasksResult | null>(null);
+  const [jarvisTopFocus, setJarvisTopFocus] = useState<JarvisTopFocusResult | null>(null);
+  const [jarvisContext, setJarvisContext] = useState<JarvisCurrentContextResult | null>(null);
+  // Jarvis V1 Autonomy read surface — real goal + latest engineering job
+  // (Jarvis-Desktop/app/adapter/iris-bridge.cjs getActiveGoal/
+  // getLatestEngineeringJob). Same null/{ok:false}/{ok:true} contract as
+  // the Personal OS states above, never demo data.
+  const [jarvisEngineeringJob, setJarvisEngineeringJob] = useState<JarvisEngineeringJobResult | null>(null);
+  const [jarvisActiveGoal, setJarvisActiveGoal] = useState<JarvisActiveGoalResult | null>(null);
+  // Connections Status v1 (P2.4) — real Jarvis integrations/connections
+  // readout (Jarvis-Desktop/app/adapter/iris-bridge.cjs
+  // getConnectionsStatus()). Same null/{ok:false}/{ok:true} contract as the
+  // Personal OS states above, never demo data.
+  const [connectionsStatus, setConnectionsStatus] = useState<JarvisConnectionsStatusResult | null>(null);
   const [geminiStatus, setGeminiStatus] = useState("offline");
   const [hermesStatus, setHermesStatus] = useState("offline");
   const [audioState, setAudioState] = useState("idle");
@@ -253,11 +284,42 @@ export default function App() {
 
   useEffect(() => {
     if (!hasBridge) return;
+    window.iris.getJarvisTasks().then(setJarvisTasks);
+    window.iris.getJarvisTopFocus().then(setJarvisTopFocus);
+    window.iris.getJarvisCurrentContext().then(setJarvisContext);
+    window.iris.getJarvisEngineeringJob().then(setJarvisEngineeringJob);
+    window.iris.getJarvisActiveGoal().then(setJarvisActiveGoal);
+  }, [hasBridge]);
+
+  // Connections Status v1 (P2.4) — refreshed on mount and then on a slow
+  // poll (integrations rarely flip mid-session, but this stays honest
+  // without requiring a manual reload). No live-write path exists here.
+  const CONNECTIONS_STATUS_POLL_MS = 60_000;
+  useEffect(() => {
+    if (!hasBridge) return;
+    let cancelled = false;
+    const refresh = () => {
+      window.iris.getJarvisConnectionsStatus().then((result) => {
+        if (!cancelled) setConnectionsStatus(result);
+      });
+    };
+    refresh();
+    const id = window.setInterval(refresh, CONNECTIONS_STATUS_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [hasBridge]);
+
+  useEffect(() => {
+    if (!hasBridge) return;
     window.iris.getAppConfig().then((config) => {
+      // IRIS_LOAD_TEST_DATA only unlocks the manual "Load demo" affordances
+      // (button/hotkeys) below — it must never auto-load fixture content on
+      // its own. Real Hermes history restore always runs on boot.
       setTestDataEnabled(Boolean(config.loadTestData));
       setSoundsEnabled(config.sounds !== false);
-      if (config.loadTestData) loadUiTestData();
-      else initHermesSession();
+      initHermesSession();
     });
   }, [hasBridge]);
 
@@ -348,7 +410,9 @@ export default function App() {
       setWakeWordEnabled(config.wakeWord);
       setWakeSensitivity(config.wakeSensitivity || "balanced");
       setShowWakeDiagnostics(config.showWakeDiagnostics);
-      if (!config.configured) setSetup({ mode: "onboarding" });
+      // A missing Gemini key is a normal, fully-usable state (text/Jarvis
+      // works without it) — it must never force the onboarding wizard open.
+      // Setup remains reachable any time via the Settings button.
     });
   }, [hasBridge]);
 
@@ -477,7 +541,14 @@ export default function App() {
         );
       }
     },
-    (message) => pushLog("error", `Wake word: ${message}`),
+    (message) => {
+      pushLog("error", `Wake word: ${message}`);
+      // Iris has no visible error/attention UI today (pushLog's own `logs`
+      // state is never rendered — see integration report). Per instruction
+      // #6, the error must not silently vanish from the canonical model even
+      // though the UI itself stays unchanged.
+      if (hasBridge) window.iris.reportVoiceState("error");
+    },
     wakeThreshold,
     fullConfig?.micDevice || "",
   );
@@ -533,6 +604,9 @@ export default function App() {
       } else if (key === "g" && testDataEnabled) {
         event.preventDefault();
         simulateHandoff();
+      } else if (key === "j" && testDataEnabled) {
+        event.preventDefault();
+        void runJarvisSmoke();
       }
     }
     window.addEventListener("keydown", onKey);
@@ -605,6 +679,158 @@ export default function App() {
     if (geminiStatus === "connected") return "online";
     return "idle";
   }, [audioState, geminiStatus, sidecarRunning, webSearching, hermesSummarizing, working]);
+
+  // Iris Bridge v0.2 — Iris is voice-first and owns the real voice/turn
+  // pipeline; Jarvis runs in a separate Electron app/process, so there is no
+  // window.jarvisBridge in this renderer (that was round 1's incorrect
+  // assumption — corrected here rather than left as dead code). Iris instead
+  // REPORTS its own already-computed ReactorState outward, canonicalized to
+  // Jarvis's voice.state vocabulary, via window.iris.reportVoiceState ->
+  // main process -> electron/jarvisBridgeClient.mjs -> the in-process
+  // required Jarvis bridge module. The reverse direction (Jarvis's own
+  // voice.state driving Iris's UI) is not wired this round.
+  useEffect(() => {
+    if (!hasBridge) return;
+    window.iris.reportVoiceState(CANONICAL_VOICE_STATE[reactorState]);
+  }, [hasBridge, reactorState]);
+
+  // Iris Bridge v0.3 — real request/response text path: renderer -> preload
+  // -> main -> Jarvis Bridge -> askJarvis -> result -> back here, appended to
+  // the existing Comms transcript. No mic/Gemini dependency at all — this is
+  // the primary text-to-Jarvis path (composer below) and is also reused by
+  // the dev smoke hotkey. Mirrors jarvisBridgeClient.mjs's
+  // describeSmokeTranscript pairing (tested) so both paths render identically.
+  function appendTranscriptLine(speaker: string, text: string) {
+    setTranscript((current) => [...current, { id: crypto.randomUUID(), speaker, text }].slice(-40));
+  }
+
+  // Jarvis Actions & Approvals (P2.5) — the previews Jarvis has proposed and
+  // is waiting on a human for. This is a RENDER LIST, not state Iris owns:
+  // every entry is just the display view of a preview that lives in Jarvis's
+  // Action Service, keyed by an opaque previewId. Iris never decides risk,
+  // never advances an approval stage, and never executes anything.
+  const [pendingActions, setPendingActions] = useState<JarvisActionPreview[]>([]);
+  const [actionBusyId, setActionBusyId] = useState<string | null>(null);
+
+  function dropPendingAction(previewId: string) {
+    setPendingActions((current) => current.filter((preview) => preview.previewId !== previewId));
+  }
+
+  // askJarvisText — one natural request, two possible outcomes.
+  //
+  // Jarvis is asked FIRST whether the text is a write action (propose). If it
+  // is, the proposal is rendered for approval and nothing is executed; if it
+  // is not (kind "none"), the text falls through to the normal Ask Jarvis
+  // answer path exactly as before. Both the classification and the proposal
+  // are Jarvis's own (personal-os-capture-engine / action engines, reached
+  // through the running backend process) — Iris parses nothing.
+  async function askJarvisText(question: string) {
+    const trimmed = question.trim();
+    if (!hasBridge || !trimmed) return;
+    appendTranscriptLine("you", trimmed);
+
+    const proposal = await window.iris.proposeJarvisAction(trimmed, "text");
+    if (!proposal.ok) {
+      // Visible and unambiguous: a text that MIGHT have been "notiere …"
+      // must never look like it was quietly handled. The read-only answer
+      // path below still runs, so Jarvis stays usable.
+      appendTranscriptLine("jarvis-error", `Aktionen nicht verfügbar: ${proposal.error}`);
+    } else if (proposal.kind === "clarification" && proposal.question) {
+      appendTranscriptLine("jarvis", proposal.question);
+      return;
+    } else if (proposal.previews?.length) {
+      setPendingActions(proposal.previews);
+      appendTranscriptLine(
+        "jarvis",
+        proposal.previews.length === 1
+          ? "Ich habe eine Aktion vorbereitet — bitte freigeben oder verwerfen."
+          : `Ich habe ${proposal.previews.length} Aktionen vorbereitet — bitte einzeln freigeben oder verwerfen.`,
+      );
+      return;
+    }
+
+    const result = await window.iris.askJarvis(trimmed);
+    appendTranscriptLine(
+      result.ok ? "jarvis" : "jarvis-error",
+      result.ok ? (result.answer ?? "") : `Jarvis-Anfrage fehlgeschlagen: ${result.error}`,
+    );
+  }
+
+  // Approval handlers. Each one is a single call into the running Jarvis
+  // backend process; the outcome it renders is whatever Jarvis reports.
+  // requiresSecondaryApproval means NOTHING was written — the preview stays
+  // in the list, now in Jarvis's secondary_approval_required state, and the
+  // UI switches to the separate second button.
+  async function runActionCall(
+    preview: JarvisActionPreview,
+    call: (previewId: string) => Promise<JarvisActionExecutionResult>,
+  ) {
+    setActionBusyId(preview.previewId);
+    try {
+      const result = await call(preview.previewId);
+      if (!result.ok) {
+        appendTranscriptLine("jarvis-error", `Aktion fehlgeschlagen: ${result.error}`);
+        dropPendingAction(preview.previewId);
+        return;
+      }
+      if (result.requiresSecondaryApproval && result.preview) {
+        const advanced = result.preview;
+        setPendingActions((current) =>
+          current.map((entry) => (entry.previewId === advanced.previewId ? advanced : entry)),
+        );
+        appendTranscriptLine("jarvis", "Diese Aktion ist nicht umkehrbar und braucht eine zweite Freigabe.");
+        return;
+      }
+      dropPendingAction(preview.previewId);
+      const target = typeof result.object?.title === "string" ? result.object.title : preview.title;
+      appendTranscriptLine("jarvis", `${result.answer || "Erledigt."} (${result.action || preview.type}: ${target})`);
+    } finally {
+      setActionBusyId(null);
+    }
+  }
+
+  function handleApproveAction(preview: JarvisActionPreview) {
+    void runActionCall(preview, (previewId) => window.iris.approveJarvisAction(previewId));
+  }
+
+  function handleSecondaryApproveAction(preview: JarvisActionPreview) {
+    void runActionCall(preview, (previewId) => window.iris.secondaryApproveJarvisAction(previewId));
+  }
+
+  async function handleCancelAction(preview: JarvisActionPreview) {
+    setActionBusyId(preview.previewId);
+    try {
+      const result = await window.iris.cancelJarvisAction(preview.previewId);
+      dropPendingAction(preview.previewId);
+      appendTranscriptLine(
+        result.ok ? "jarvis" : "jarvis-error",
+        result.ok ? "Aktion verworfen." : `Aktion konnte nicht verworfen werden: ${result.error}`,
+      );
+    } finally {
+      setActionBusyId(null);
+    }
+  }
+
+  async function runJarvisSmoke() {
+    await askJarvisText(JARVIS_SMOKE_QUESTION);
+  }
+
+  // Text composer: fully independent of sidecarRunning/voice state — the
+  // user can type to Jarvis immediately after startup, asleep or awake,
+  // with or without a configured Gemini key.
+  const [textDraft, setTextDraft] = useState("");
+  const [textSending, setTextSending] = useState(false);
+  async function handleComposerSubmit(text: string) {
+    const trimmed = text.trim();
+    if (!trimmed || textSending) return;
+    setTextDraft("");
+    setTextSending(true);
+    try {
+      await askJarvisText(trimmed);
+    } finally {
+      setTextSending(false);
+    }
+  }
 
   function handleSidecarEvent(event: SidecarEvent) {
     if (event.type === "sidecar_status") {
@@ -899,6 +1125,10 @@ export default function App() {
         pushLog("error", "Electron bridge unavailable. Launch with `npm run dev`.");
         return;
       }
+      if (!fullConfig?.geminiApiKeyConfigured) {
+        pushLog("info", "Voice is not configured — add a Gemini API key in Settings to enable it. Text still works.");
+        return;
+      }
       setWakeStarting(true);
       setAutoSlept(false);
       try {
@@ -1159,6 +1389,7 @@ export default function App() {
       sortedTasks.find((task) => Boolean(task.approval) && !task.interaction) ?? null,
     [sortedTasks],
   );
+  const pendingApprovalTaskId = pendingApprovalTask?.id ?? null;
   const pendingInteractionTask = useMemo(
     () => sortedTasks.find((task) => Boolean(task.interaction)) ?? null,
     [sortedTasks],
@@ -1481,6 +1712,7 @@ export default function App() {
           onFocusTask={setFocusedTaskId}
           onOpenTask={openTask}
           onApproveTask={(task, choice) => void resolveTaskApproval(task, choice)}
+          pendingApprovalTaskId={pendingApprovalTaskId}
           transcript={transcript}
           commsScrollRef={commsScrollRef}
           handControl={handControl}
@@ -1508,22 +1740,34 @@ export default function App() {
         <TopBar
           geminiDot={dotState(geminiStatus, ["connected"])}
           hermesDot={dotState(hermesStatus, ["ready"])}
+          hermesAvailable={hermesStatus === "ready"}
           audioDot={audioDot}
           linked={sidecarRunning}
           pid={sidecarPid}
           handControl={handControl}
           onToggleHand={() => setHandControl((current) => !current)}
           onOpenSettings={openSettings}
+          connectionsStatus={connectionsStatus}
         />
 
         <div className="deck-body">
           {/* LEFT — You */}
           <div className="deck-left">
+            <PersonalFocusPanel topFocus={jarvisTopFocus} context={jarvisContext} activeGoal={jarvisActiveGoal} />
             <CommsPanel
               transcript={transcript}
               scrollRef={commsScrollRef}
               testDataEnabled={testDataEnabled}
               onLoadDemo={loadUiTestData}
+              textDraft={textDraft}
+              onTextDraftChange={setTextDraft}
+              onSendText={handleComposerSubmit}
+              textSending={textSending}
+              actionPreviews={pendingActions}
+              actionBusyId={actionBusyId}
+              onApproveAction={handleApproveAction}
+              onSecondaryApproveAction={handleSecondaryApproveAction}
+              onCancelAction={handleCancelAction}
             />
             <CameraDock
               handControl={handControl}
@@ -1549,6 +1793,7 @@ export default function App() {
             orbFlash={orbFlash}
             onOrbFlashEnd={clearOrbFlash}
             awake={sidecarRunning}
+            voiceConfigured={Boolean(fullConfig?.geminiApiKeyConfigured)}
             geminiStatus={geminiStatus}
             hermesStatus={hermesStatus}
             runs={sessionTasks.length}
@@ -1567,6 +1812,8 @@ export default function App() {
 
           {/* RIGHT — Work */}
           <WorkStream
+            personalTasks={jarvisTasks}
+            engineeringJob={jarvisEngineeringJob}
             tasks={sessionTasks}
             sortedTasks={sortedTasks}
             scrollRef={workScrollRef}
@@ -1582,6 +1829,7 @@ export default function App() {
             onFocusTask={setFocusedTaskId}
             onOpenTask={openTask}
             onApproveTask={(task, choice) => void resolveTaskApproval(task, choice)}
+            pendingApprovalTaskId={pendingApprovalTaskId}
           />
         </div>
 
@@ -1621,7 +1869,12 @@ export default function App() {
       ) : null}
 
       {showHistory ? (
-        <HistoryDrawer tasks={sortedTasks} onOpen={openTask} onClose={() => setShowHistory(false)} />
+        <HistoryDrawer
+          tasks={sortedTasks}
+          onOpen={openTask}
+          onClose={() => setShowHistory(false)}
+          pendingApprovalTaskId={pendingApprovalTaskId}
+        />
       ) : null}
 
       {taskChooser ? (

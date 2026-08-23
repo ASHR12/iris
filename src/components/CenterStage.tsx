@@ -63,6 +63,7 @@ export default function CenterStage({
   orbFlash,
   onOrbFlashEnd,
   awake,
+  voiceConfigured,
   geminiStatus,
   hermesStatus,
   runs,
@@ -88,6 +89,7 @@ export default function CenterStage({
   orbFlash: { id: string; tone: HandoffTone } | null;
   onOrbFlashEnd: () => void;
   awake: boolean;
+  voiceConfigured: boolean;
   geminiStatus: string;
   hermesStatus: string;
   runs: number;
@@ -168,36 +170,44 @@ export default function CenterStage({
         </>
       ) : (
         <div className="wake-prompt">
-          {autoSlept ? (
+          {!voiceConfigured ? (
+            // Small, secondary status only — the orb stays the visual focus.
+            // Truthful about voice being unconfigured, without pretending
+            // it's ready and without dominating the screen the way the
+            // wake-prompt's large .wake-say pill does for configured states.
+            <div className="voice-status-subtle">Sprache nicht konfiguriert — Text funktioniert weiterhin</div>
+          ) : autoSlept ? (
             <div className="wake-say">
               {hermesWorking
-                ? "On standby — Hermes is working; I'll wake when it's done"
+                ? "Standby — Jarvis arbeitet; ich wecke, sobald es fertig ist"
                 : wakeWordEnabled
-                  ? "On standby, saving tokens — say “Hey Iris”"
-                  : "On standby, saving tokens"}
+                  ? "Standby, spart Tokens — sag „Hey Iris“"
+                  : "Standby, spart Tokens"}
             </div>
           ) : wakeWordEnabled ? (
             <div className="wake-say">
               <Mic size={15} />
-              Say <b>“Hey Iris”</b>
+              Sag <b>„Hey Iris“</b>
             </div>
           ) : (
-            <div className="wake-say">Iris is asleep</div>
+            <div className="wake-say">Sprache im Ruhemodus</div>
           )}
-          <div className="wake-keys">
-            <span>{wakeWordEnabled ? "or press" : "press"}</span>
-            <span className="combo">
-              <span className="key">⌥</span>
-              <span className="key">W</span>
-            </span>
-            <span>wake</span>
-            <span className="wake-sep">·</span>
-            <span className="combo">
-              <span className="key">⌥</span>
-              <span className="key">S</span>
-            </span>
-            <span>sleep</span>
-          </div>
+          {voiceConfigured ? (
+            <div className="wake-keys">
+              <span>{wakeWordEnabled ? "oder drücke" : "drücke"}</span>
+              <span className="combo">
+                <span className="key">⌥</span>
+                <span className="key">W</span>
+              </span>
+              <span>wecken</span>
+              <span className="wake-sep">·</span>
+              <span className="combo">
+                <span className="key">⌥</span>
+                <span className="key">S</span>
+              </span>
+              <span>ruhen</span>
+            </div>
+          ) : null}
         </div>
       )}
     </div>

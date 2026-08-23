@@ -1,6 +1,27 @@
 import electron from "electron";
 import { GoogleGenAI } from "@google/genai";
 import {
+  shouldAskJarvis,
+  createJarvisBridge,
+  askJarvisForTurn,
+  describeSmokeTranscript,
+  getTasksForRenderer,
+  getTopFocusForRenderer,
+  getCurrentContextForRenderer,
+  getLatestEngineeringJobForRenderer,
+  getActiveGoalForRenderer,
+  getConnectionsStatusForRenderer,
+} from "./jarvisBridgeClient.mjs";
+import {
+  resolveJarvisLauncher,
+  startJarvisBackend,
+  stopJarvisBackend,
+} from "./jarvisBackend.mjs";
+import {
+  createJarvisActionClient,
+  loadActionEndpointReader,
+} from "./jarvisActionClient.mjs";
+import {
   proposeHermesTask as gatePropose,
   claimConfirmedProposal,
   discardHermesProposal,
@@ -42,7 +63,7 @@ import {
   formatHermesCompletionEvent,
   normalizeHermesEvent,
 } from "./hermesEvents.mjs";
-import { classifyRoute, routingGuidance } from "./routingPolicy.mjs";
+import { classifyRoute, routingGuidance, decideTurnOwner } from "./routingPolicy.mjs";
 import {
   APPROVAL_CHOICES,
   approvalAuthorized,
@@ -80,6 +101,10 @@ const { app, BrowserWindow, ipcMain, session, nativeImage, Menu, Tray, screen, g
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
+// The headless Jarvis backend this Iris session started (null when Jarvis
+// is not installed, or when starting it failed). Only ever a backend WE
+// spawned — an already-running Jarvis is never touched.
+let jarvisBackendProcess = null;
 
 // Name the app "Iris" (menu bar / about panel). The Dock tile fully reflects this
 // only in a packaged build; in dev the generic Electron bundle name is used.
@@ -110,6 +135,7 @@ let modelTranscriptTimer = null;
 let modelTranscriptSettled = false;
 const MIN_AUDIBLE_READBACK_CHARS = 48;
 let lastUserRoute = "direct";
+let lastTurnOwner = "gemini";
 const hermesRuns = new Map();
 const runRegistry = new RunRegistry();
 const pendingHermesApprovals = new Map();
@@ -302,16 +328,87 @@ function isInternalSystemTranscript(text) {
   return /^\s*SYSTEM_EVENT_[A-Z_]+/i.test(String(text || ""));
 }
 
+// Iris Bridge v0.2 — the point where a completed user turn's final
+// transcript text exists. Gated on the existing "memory" route
+// (routingPolicy.mjs — no new classification), so only Personal-OS-shaped
+// questions reach Jarvis; every other turn is untouched. Jarvis's answer is
+// pushed into the same Comms transcript stream as a distinctly-labeled
+// "jarvis" line — never through TTS/live:audio — so it can never audibly
+// compete with Gemini's own spoken turn for the same utterance. Gemini's own
+// conversational reply (voice + its own memory tools) is NOT suppressed;
+// see the integration report for why that overlap is a documented, not yet
+// resolved, risk rather than something silently fixed here.
+//
+// P2.6: the bridge no longer require()s Jarvis's adapter out of a sibling
+// source checkout (which a packaged Iris.app does not have and which ran a
+// second Jarvis runtime inside this process). Reads travel the SAME loopback
+// endpoint as the write actions below — one running Jarvis backend, one
+// pipeline — through the shared descriptor reader.
+//
+// One reader for BOTH halves: the descriptor is re-read per request (a
+// restarted Jarvis has a new port and a new token), but the "no Jarvis
+// running" warning is logged only once so a backend that never came up
+// cannot flood the event log on every panel refresh.
+let cachedEndpointReader;
+function jarvisEndpointReader() {
+  if (cachedEndpointReader === undefined) {
+    let warned = false;
+    cachedEndpointReader = loadActionEndpointReader({
+      onUnavailable: (reason) => {
+        if (warned) return;
+        warned = true;
+        emitEvent({
+          type: "log",
+          level: "warn",
+          message: `Jarvis backend endpoint unavailable (${reason}); Ask Jarvis, Connections Status and approvals are disabled until it publishes one.`,
+        });
+      },
+    });
+  }
+  return cachedEndpointReader;
+}
+
+let cachedJarvisBridge;
+function jarvisBridge() {
+  if (cachedJarvisBridge === undefined) {
+    cachedJarvisBridge = createJarvisBridge({ readEndpoint: jarvisEndpointReader() });
+  }
+  return cachedJarvisBridge;
+}
+
+// Action Transport v2 (P2.5) — write actions do NOT go through
+// jarvisBridge() above. That path require()s Jarvis's adapter in THIS
+// process, which for actions would mean a second actionPreviews Map, a
+// second approval state machine and a secondary-approval gate nobody else
+// can see (and which could not execute a Drive/Calendar write anyway —
+// those credentials belong to the Jarvis app identity). Instead every
+// propose/approve/secondaryApprove/cancel is sent to the ONE running Jarvis
+// backend process over its loopback Action endpoint and executed there.
+// Iris holds no previewId list and no approval state of its own; a
+// previewId is an opaque handle into Jarvis's Action Service.
+let cachedJarvisActionClient;
+function jarvisActionClient() {
+  if (cachedJarvisActionClient === undefined) {
+    cachedJarvisActionClient = createJarvisActionClient({ readEndpoint: jarvisEndpointReader() });
+  }
+  return cachedJarvisActionClient;
+}
+
+async function relayTurnToJarvis(text) {
+  const result = await askJarvisForTurn(jarvisBridge(), text);
+  const [, jarvisLine] = describeSmokeTranscript(text, result);
+  emitEvent({ type: "transcript", ...jarvisLine });
+}
+
 function flushUserTranscript() {
   if (userTranscriptTimer) {
     clearTimeout(userTranscriptTimer);
     userTranscriptTimer = null;
   }
-  if (
-    userTranscriptBuffer.trim() &&
-    !isInternalSystemTranscript(userTranscriptBuffer)
-  ) {
-    emitEvent({ type: "transcript", speaker: "you", text: userTranscriptBuffer.trim() });
+  const text = userTranscriptBuffer.trim();
+  if (text && !isInternalSystemTranscript(text)) {
+    emitEvent({ type: "transcript", speaker: "you", text });
+    if (shouldAskJarvis(lastUserRoute)) void relayTurnToJarvis(text);
   }
   userTranscriptBuffer = "";
 }
@@ -2084,8 +2181,26 @@ async function executeTool(name, args = {}) {
     case "read_hermes_task_result":
       return readHermesTaskResult(args);
     case "search_brain":
+      if (lastTurnOwner === "jarvis") {
+        return {
+          ok: true,
+          results: [],
+          deferredToJarvis: true,
+          instructions:
+            "This question is being answered by Jarvis directly this turn. Do not answer from memory. Acknowledge briefly (e.g. 'Jarvis übernimmt das') and stop.",
+        };
+      }
       return searchBrain(args.query, args.top_k);
     case "search_memory":
+      if (lastTurnOwner === "jarvis") {
+        return {
+          ok: true,
+          results: [],
+          deferredToJarvis: true,
+          instructions:
+            "This question is being answered by Jarvis directly this turn. Do not answer from memory. Acknowledge briefly (e.g. 'Jarvis übernimmt das') and stop.",
+        };
+      }
       return searchMemory(args.query, args.top_k);
     case "read_memory_note":
       return readMemoryNote(args.path);
@@ -2446,6 +2561,11 @@ if (process.env.IRIS_TEST_HOOKS === "1") {
       resumeHandles.corruptForTest();
     },
     pendingAnnouncements: () => announcementLedger.pendingCount,
+    simulateMemoryToolCall: (route, name, args) => {
+      lastUserRoute = route;
+      lastTurnOwner = decideTurnOwner(route);
+      return executeTool(name, args);
+    },
   };
 }
 
@@ -3132,6 +3252,7 @@ function handleLiveMessage(message) {
     scheduleUserTranscriptFlush();
     if (userTranscriptBuffer.trim()) {
       lastUserRoute = classifyRoute(userTranscriptBuffer);
+      lastTurnOwner = decideTurnOwner(lastUserRoute);
       markUserSpoke(userTranscriptBuffer, {
         allowDuringReadback:
           modelTranscriptBuffer.trim().length >= MIN_AUDIBLE_READBACK_CHARS,
@@ -3814,6 +3935,18 @@ app.whenReady().then(() => {
   }
   installAppMenu();
 
+  // Jarvis backend — started headless so Iris stays the only visible shell.
+  // Jarvis owns the Connections Status producer (only its own process can
+  // read its safeStorage/Keychain-backed credentials), and its own
+  // single-instance lock guarantees exactly one Jarvis: a duplicate launch
+  // exits immediately. Never fatal — if Jarvis cannot be found or started,
+  // Iris boots anyway and Connections Status honestly reports that nothing
+  // was published.
+  jarvisBackendProcess = startJarvisBackend({
+    launcher: resolveJarvisLauncher({ repoRoot }),
+    onLog: (message) => emitEvent({ type: "log", level: "info", message }),
+  });
+
   const devUrl = process.env.VITE_DEV_SERVER_URL ?? "http://127.0.0.1:5173";
   const ipcTrust = { repoRoot, devUrl };
   const trustedHandle = (channel, handler) => {
@@ -3911,6 +4044,46 @@ app.whenReady().then(() => {
       return { ok: false, error: error?.message || String(error) };
     }
   });
+  // Iris Bridge v0.3 — real request/response contract for the renderer,
+  // completing the reverse direction: Renderer -> preload -> main -> Jarvis
+  // Bridge -> askJarvis -> result -> main -> preload -> Renderer. Reuses the
+  // same askJarvisForTurn/jarvisBridge as the voice-triggered path above
+  // (relayTurnToJarvis); no second bridge, no second contract.
+  trustedHandle("jarvisBridge:askJarvis", (_event, text) => askJarvisForTurn(jarvisBridge(), String(text || "")));
+  // Work Stream (right) + compact focus panel (left) — real Personal OS data
+  // via the same in-process jarvisBridge() instance, never a second
+  // retrieval path. Each handler forwards the bridge's own {ok, data|error}
+  // result unchanged (see jarvisBridgeClient.mjs); an unavailable bridge or
+  // reader surfaces as ok:false, never invented/demo data.
+  trustedHandle("jarvisBridge:getTasks", () => getTasksForRenderer(jarvisBridge()));
+  trustedHandle("jarvisBridge:getTopFocus", () => getTopFocusForRenderer(jarvisBridge()));
+  trustedHandle("jarvisBridge:getCurrentContext", () => getCurrentContextForRenderer(jarvisBridge()));
+  // Jarvis V1 Autonomy read surface — real goal/job/lifecycle/worker/
+  // attempts/verification/approval/Work Stream state via the same
+  // in-process jarvisBridge() instance (bridge.getLatestEngineeringJob/
+  // getActiveGoal — see Jarvis-Desktop/app/adapter/iris-bridge.cjs). Iris
+  // never reads job-store.cjs/goal-store.cjs files directly, and never gets
+  // a second job/memory system — this is the only path.
+  trustedHandle("jarvisBridge:getLatestEngineeringJob", () => getLatestEngineeringJobForRenderer(jarvisBridge()));
+  trustedHandle("jarvisBridge:getActiveGoal", () => getActiveGoalForRenderer(jarvisBridge()));
+  // Connections Status v1 (P2.4) — compact Jarvis integrations/connections
+  // readout (Personal OS/Drive/Calendar/GitHub/Web Research/Mail/Claude
+  // Worker) via the same in-process jarvisBridge() instance. Read-only, no
+  // second health engine — see Jarvis-Desktop/app/adapter/iris-bridge.cjs
+  // getConnectionsStatus().
+  trustedHandle("jarvisBridge:getConnectionsStatus", () => getConnectionsStatusForRenderer(jarvisBridge()));
+  // Jarvis Actions & Approvals (P2.5) — the renderer's only path to a write
+  // action. Each handler is a pure forward into the running Jarvis backend
+  // process (electron/jarvisActionClient.mjs -> Jarvis's loopback Action
+  // endpoint -> personal-os-action-service.cjs). Nothing is decided here:
+  // no risk classification, no approval state, no execution. A high-risk
+  // action still stops at Jarvis's own secondary_approval_required gate and
+  // needs the separate jarvisAction:secondaryApprove call to complete.
+  trustedHandle("jarvisAction:propose", (_event, payload = {}) =>
+    jarvisActionClient().proposeAction(String(payload.question || ""), { source: payload.source === "voice" ? "voice" : "text" }));
+  trustedHandle("jarvisAction:approve", (_event, previewId) => jarvisActionClient().approveAction(String(previewId || "")));
+  trustedHandle("jarvisAction:secondaryApprove", (_event, previewId) => jarvisActionClient().secondaryApproveAction(String(previewId || "")));
+  trustedHandle("jarvisAction:cancel", (_event, previewId) => jarvisActionClient().cancelAction(String(previewId || "")));
   trustedHandle("app:open-external", (_event, url) => {
     const target = safeExternalUrl(url);
     if (target) return shell.openExternal(target);
@@ -3934,6 +4107,14 @@ app.whenReady().then(() => {
           ? chunk.byteLength
           : 0;
     if (byteLength > 0 && byteLength <= 256 * 1024) sendAudioChunk(chunk);
+  });
+  // Iris Bridge v0.2 — Iris reports its own (already-computed, renderer-side)
+  // canonical voice.state into the same in-process Jarvis bridge instance
+  // used for askJarvis above. publishVoiceState() itself validates against
+  // the canonical VOICE_STATES set; an invalid/unknown value is dropped, not
+  // forwarded — never a crash, never a silent new state invented here.
+  trustedOn("jarvisBridge:voiceState", (_event, state) => {
+    jarvisBridge()?.publishVoiceState(state);
   });
   trustedOn("iris:boot-done", () => sendWelcomeGreeting());
   trustedOn("iris:ui-context", (_event, context) => {
@@ -4003,7 +4184,13 @@ app.whenReady().then(() => {
   });
 });
 
-app.on("will-quit", () => globalShortcut.unregisterAll());
+app.on("will-quit", () => {
+  globalShortcut.unregisterAll();
+  // Iris is the visible shell and owns its backend's lifetime: the headless
+  // Jarvis it started goes away with it, so no orphan backend survives.
+  stopJarvisBackend(jarvisBackendProcess);
+  jarvisBackendProcess = null;
+});
 app.on("before-quit", () => {
   isQuitting = true;
   shuttingDown = true;

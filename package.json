@@ -16,7 +16,7 @@
   "type": "module",
   "main": "electron/main.mjs",
   "scripts": {
-    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on tcp:5173 && node scripts/run-electron.mjs\"",
+    "dev": "node scripts/dev-electron.mjs",
     "build": "tsc --noEmit && vite build",
     "test": "node --test test/*.test.mjs",
     "check:electron": "node scripts/check-electron.mjs",
@@ -25,6 +25,9 @@
     "test:live-sleep": "npm run build && node scripts/test-live-sleep-resume.mjs",
     "test:live-speech": "npm run build && node scripts/test-live-speech-standby.mjs",
     "test:hermes-wake": "npm run build && node scripts/test-live-hermes-wake.mjs",
+    "test:jarvis-bridge-smoke": "npm run build && node scripts/test-jarvis-bridge-smoke.mjs",
+    "test:jarvis-action-smoke": "npm run build && node scripts/test-jarvis-action-smoke.mjs",
+    "test:packaged-runtime-smoke": "node scripts/test-packaged-runtime-smoke.mjs",
     "soak": "node scripts/soak-runtime.mjs",
     "preview": "vite preview",
     "start": "npm run build && node scripts/run-electron.mjs --prod",
